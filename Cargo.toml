@@ -1,0 +1,27 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/liuli-core",
+    "crates/liuli-text",
+    "crates/liuli-render",
+    "crates/liuli",
+    "apps/liuli-settings",
+    "host/liuli-sim",
+    "tools/liuli-fontpack",
+]
+exclude = ["checks/firmware"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.100"
+version = "0.1.0"
+license = "MIT"
+
+[workspace.dependencies]
+embedded-graphics-core = { version = "=0.4.1", default-features = false }
+embedded-graphics = { version = "=0.8.2", default-features = false }
+liuli-core = { path = "crates/liuli-core" }
+liuli-text = { path = "crates/liuli-text" }
+liuli-render = { path = "crates/liuli-render" }
+liuli = { path = "crates/liuli" }
+liuli-settings = { path = "apps/liuli-settings" }

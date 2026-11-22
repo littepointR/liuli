@@ -1,0 +1,5 @@
+/target
+checks/firmware/target
+**/*.rs.bk
+.idea/
+.vscode/
