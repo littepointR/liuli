@@ -1,0 +1,6 @@
+[package]
+name = "liuli-fontpack"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
