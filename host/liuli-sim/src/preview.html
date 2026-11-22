@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>liuli 嵌入式 GUI 预览</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #141820;
+      color: #e6edf5;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 14px;
+      padding: 24px;
+      margin: 0;
+    }
+    .panel {
+      display: flex;
+      gap: 20px;
+      align-items: flex-start;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    #screen-box {
+      border: 2px solid #354155;
+      border-radius: 8px;
+      overflow: hidden;
+      background: #000;
+      box-shadow: 0 12px 32px rgba(0,0,0,0.45);
+    }
+    #screen {
+      width: 640px;
+      height: 480px;
+      image-rendering: pixelated;
+      display: block;
+      cursor: crosshair;
+      touch-action: none;
+    }
+    .controls {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      width: 260px;
+      background: #1c222d;
+      padding: 16px;
+      border-radius: 8px;
+      border: 1px solid #2e3848;
+    }
+    .btn-row {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 8px;
+    }
+    button {
+      background: #273244;
+      color: #eef4fb;
+      border: 1px solid #3c4c64;
+      border-radius: 6px;
+      padding: 8px 10px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    button:hover { background: #324158; }
+    pre {
+      background: #10141b;
+      padding: 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      margin: 0;
+      overflow-x: auto;
+    }
+  </style>
+</head>
+<body>
+  <h2 style="margin:0;">liuli 中文设置页预览 (320×240 RGB565)</h2>
+  <div class="panel">
+    <div id="screen-box">
+      <img id="screen" src="/frame.png" width="640" height="480" draggable="false" alt="liuli frame" />
+    </div>
+    <div class="controls">
+      <div class="btn-row">
+        <button onclick="sendInput('prev')">旋钮上一项 (↑/←)</button>
+        <button onclick="sendInput('next')">旋钮下一项 (↓/→)</button>
+        <button onclick="sendInput('activate')">确认 (Enter)</button>
+        <button onclick="sendInput('back')">返回 (Esc)</button>
+        <button onclick="sendInput('adjust', -1)">减小 (-)</button>
+        <button onclick="sendInput('adjust', 1)">增大 (+)</button>
+      </div>
+      <div style="font-size:12px;color:#9cb0c9;">
+        鼠标可在画面上直接点击或上下拖动列表；键盘方向键/Enter/Esc/+/- 同步可用。
+      </div>
+      <pre id="state">loading...</pre>
+    </div>
+  </div>
+  <script>
+    const img = document.getElementById('screen');
+    const stateEl = document.getElementById('state');
+    let pointerDown = false;
+    let frameSerial = 0;
+
+    function refreshFrame() {
+      frameSerial += 1;
+      img.src = '/frame.png?t=' + frameSerial;
+    }
+
+    async function refreshState() {
+      const res = await fetch('/state');
+      const data = await res.json();
+      stateEl.textContent = JSON.stringify(data, null, 2);
+    }
+
+    async function sendInput(kind, v, x, y) {
+      const params = new URLSearchParams({ kind });
+      if (v !== undefined) params.set('v', String(v));
+      if (x !== undefined) params.set('x', String(x));
+      if (y !== undefined) params.set('y', String(y));
+      await fetch('/input', { method: 'POST', body: params.toString() });
+      refreshFrame();
+      refreshState();
+    }
+
+    function mapCoords(ev) {
+      const r = img.getBoundingClientRect();
+      const x = Math.max(0, Math.min(319, Math.floor((ev.clientX - r.left) * 320 / r.width)));
+      const y = Math.max(0, Math.min(239, Math.floor((ev.clientY - r.top) * 240 / r.height)));
+      return [x, y];
+    }
+
+    img.addEventListener('pointerdown', (ev) => {
+      pointerDown = true;
+      img.setPointerCapture(ev.pointerId);
+      const [x, y] = mapCoords(ev);
+      sendInput('down', 1, x, y);
+    });
+    img.addEventListener('pointermove', (ev) => {
+      if (!pointerDown) return;
+      const [x, y] = mapCoords(ev);
+      sendInput('move', 1, x, y);
+    });
+    img.addEventListener('pointerup', (ev) => {
+      if (!pointerDown) return;
+      pointerDown = false;
+      const [x, y] = mapCoords(ev);
+      sendInput('up', 1, x, y);
+    });
+    img.addEventListener('pointercancel', () => {
+      if (!pointerDown) return;
+      pointerDown = false;
+      sendInput('cancel', 1);
+    });
+
+    window.addEventListener('keydown', (ev) => {
+      if (ev.key === 'ArrowUp' || ev.key === 'ArrowLeft') { ev.preventDefault(); sendInput('prev'); }
+      else if (ev.key === 'ArrowDown' || ev.key === 'ArrowRight') { ev.preventDefault(); sendInput('next'); }
+      else if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); sendInput('activate'); }
+      else if (ev.key === 'Escape' || ev.key === 'Backspace') { ev.preventDefault(); sendInput('back'); }
+      else if (ev.key === '+' || ev.key === '=') { sendInput('adjust', 1); }
+      else if (ev.key === '-' || ev.key === '_') { sendInput('adjust', -1); }
+    });
+
+    setInterval(async () => {
+      await fetch('/tick', { method: 'POST' });
+      refreshFrame();
+      refreshState();
+    }, 100);
+
+    refreshState();
+  </script>
+</body>
+</html>

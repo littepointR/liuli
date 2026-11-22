@@ -1,0 +1,37 @@
+# 后台温度采样、关闭监测冻结并撤消期限、重新开启重设采样起点
+0 expect temp 23.0
+0 expect monitoring on
+0 expect wakeup at:1000
+
+1000 advance
+1000 expect temp 23.1
+1000 expect wakeup at:2000
+
+2500 advance
+2500 expect temp 23.2
+2500 expect wakeup at:3000
+
+# 导航至“实时监测”并关闭
+2510 next
+2510 next
+2510 next
+2510 expect focus monitor
+2520 activate
+2520 expect monitoring off
+# 2520 启动了 160ms 开关动画（每 16ms 采样），到 2680ms 动画结束
+2700 advance
+2700 expect wakeup on_event
+
+# 经过很久也不再更新温度
+8000 advance
+8000 expect temp 23.2
+8000 expect wakeup on_event
+
+# 重新开启监测，重设采样起点到 8100 -> 下一期限 9100
+8100 activate
+8100 expect monitoring on
+8300 advance
+8300 expect temp 23.2
+8300 expect wakeup at:9100
+9100 advance
+9100 expect temp 23.1

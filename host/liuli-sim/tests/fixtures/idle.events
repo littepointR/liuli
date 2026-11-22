@@ -1,0 +1,12 @@
+# 静止休眠：关闭实时监测且所有动画完成后必须到达 OnEvent
+0 next
+0 next
+0 next
+0 expect focus monitor
+10 activate
+10 expect monitoring off
+# 10 启动的 160ms 动画在 170ms 结束
+170 advance
+170 expect wakeup on_event
+5000 advance
+5000 expect wakeup on_event

@@ -1,0 +1,56 @@
+# 完整中文设置页垂直验收流程（生成 initial / dark / scroll / updated / modal 五张金图）
+0 shot initial
+0 expect focus brightness
+0 expect ring true
+0 expect editing false
+0 expect brightness 60
+0 expect sound on
+0 expect theme light
+0 expect monitoring on
+0 expect temp 23.0
+
+10 activate
+10 expect editing true
+20 adjust 2
+20 expect brightness 70
+30 activate
+30 expect editing false
+
+40 next
+40 expect focus sound
+50 activate
+50 expect sound off
+
+210 advance
+210 next
+210 expect focus theme
+220 activate
+220 expect theme dark
+380 advance
+380 shot dark
+
+390 next
+390 expect focus monitor
+400 next
+400 expect focus reset
+400 expect scroll 91
+400 shot scroll
+
+3000 advance
+3000 expect temp 23.3
+3000 shot updated
+
+3010 activate
+3010 expect modal open
+3010 expect focus cancel
+3010 shot modal
+
+3020 next
+3020 expect focus confirm
+3030 activate
+3030 expect modal closed
+3030 expect brightness 60
+3030 expect sound on
+3030 expect theme light
+3030 expect monitoring on
+3030 expect focus reset

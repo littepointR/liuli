@@ -1,0 +1,11 @@
+[package]
+name = "liuli-sim"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+embedded-graphics.workspace = true
+liuli.workspace = true
+liuli-settings.workspace = true

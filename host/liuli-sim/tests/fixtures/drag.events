@@ -1,0 +1,43 @@
+# 触摸点击、6px 手势阈值、滚动防误触、滑块横向竞争与双指针忽略
+0 expect scroll 0
+0 expect sound on
+
+# 小于 6px 移动的点击触发 Row 1 提示音切换
+10 down 1 100 106
+15 move 1 103 108
+20 up 1 103 108
+20 expect sound off
+20 expect ring false
+20 expect capture none
+
+# 垂直拖动超过 6px 锁定 ScrollY，不触发途经控件点击
+30 down 1 100 106
+35 expect capture candidate
+40 move 1 100 66
+40 expect capture scrolling
+40 expect scroll 40
+50 up 1 100 66
+50 expect capture none
+50 expect sound off
+
+# 滑回顶部后横向拖动亮度滑块
+60 down 1 100 66
+70 move 1 100 106
+80 up 1 100 106
+80 expect scroll 0
+
+90 down 1 254 62
+100 move 1 290 62
+100 expect capture slider
+100 expect scroll 0
+110 up 1 290 62
+110 expect capture none
+110 expect brightness 95
+
+# 第二指针在第一指针未抬起时被忽略
+120 down 1 100 106
+125 down 2 100 146
+130 up 2 100 146
+130 expect theme light
+135 up 1 100 106
+135 expect sound on

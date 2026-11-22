@@ -1,0 +1,31 @@
+# 模态弹窗焦点隔离、背景触摸拦截与焦点恢复
+0 next
+0 next
+0 next
+0 next
+0 expect focus reset
+0 expect ring true
+
+# 打开弹窗：焦点转到“取消”，背景触摸被遮罩消费
+10 activate
+10 expect modal open
+10 expect focus cancel
+20 down 1 50 50
+30 up 1 50 50
+30 expect modal open
+30 expect brightness 60
+
+# 弹窗内循环导航（取消 -> 恢复 -> 取消）
+40 next
+40 expect focus confirm
+50 next
+50 expect focus cancel
+60 prev
+60 expect focus confirm
+
+# 按 Back 等价取消，并恢复到原触发者与焦点环可见性
+70 back
+70 expect modal closed
+70 expect focus reset
+70 expect ring true
+70 expect scroll 91
