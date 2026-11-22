@@ -1,0 +1,11 @@
+[package]
+name = "liuli-render"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+liuli-core.workspace = true
+liuli-text.workspace = true
+embedded-graphics.workspace = true
