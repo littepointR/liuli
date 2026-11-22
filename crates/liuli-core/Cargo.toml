@@ -1,0 +1,9 @@
+[package]
+name = "liuli-core"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+embedded-graphics-core.workspace = true
