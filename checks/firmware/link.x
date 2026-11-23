@@ -57,5 +57,9 @@ SECTIONS
   }
 }
 
-ASSERT(((_edata - _sdata) + (_ebss - _sbss)) <= 131072, "liuli static RAM exceeds 128 KiB budget");
-ASSERT((_stack_start - _ebss) >= 8192, "liuli reserved stack below 8 KiB");
+_ram_used_end = _ebss;
+
+ASSERT(SIZEOF(.data) <= 1024, "liuli .data exceeds 1 KiB");
+ASSERT((_ram_used_end - ORIGIN(RAM)) <= 131072, "liuli static RAM exceeds 128 KiB");
+ASSERT((_stack_start - _ram_used_end) >= 8192, "liuli stack reserve below 8 KiB");
+ASSERT((_stack_start % 8) == 0, "liuli stack top must be 8-byte aligned");

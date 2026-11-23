@@ -3,7 +3,7 @@ resolver = "3"
 
 [package]
 name = "liuli-firmware"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "Apache-2.0 OR MIT"
 publish = false
@@ -12,6 +12,10 @@ publish = false
 embedded-graphics-core = { version = "=0.4.1", default-features = false }
 liuli = { path = "../../crates/liuli" }
 liuli-settings = { path = "../../apps/liuli-settings" }
+
+[features]
+default = []
+startup-probe = []
 
 [profile.release]
 opt-level = "s"

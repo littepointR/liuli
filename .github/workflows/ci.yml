@@ -13,22 +13,43 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
+      - shell: pwsh
+        run: .\checks\audit-locks.ps1
       - run: cargo fmt --all -- --check
+      - run: cargo fmt --manifest-path checks/firmware/Cargo.toml -- --check
       - run: cargo check --workspace --all-targets --locked
       - run: cargo test --workspace --locked
+      - run: cargo test --workspace --release --locked
+      - run: cargo test -p liuli-core --doc --locked
       - run: cargo test -p liuli-render --doc --locked
-      - run: cargo test -p liuli-sim --test allocation --locked -- --test-threads=1
-      - run: cargo tree -p liuli-settings -e features --locked
+      - run: cargo test -p liuli --test capacity --locked -- --nocapture
+      - run: cargo test -p liuli-sim --test allocation --release --locked -- --test-threads=1
       - run: cargo run -p liuli-fontpack --locked -- verify
       - run: cargo run -p liuli-sim --example headless --locked
-      - run: cargo run -p liuli-sim --locked -- replay host/liuli-sim/tests/fixtures/settings.events --out target/liuli-demo --format png
+      - run: cargo run -p liuli-sim --locked -- replay host/liuli-sim/tests/fixtures/settings.events --out target/liuli-v01 --format png
+      - run: cargo run -p liuli-sim --locked -- replay host/liuli-sim/tests/fixtures/terminal.events --out target/liuli-v02 --format png
+      - run: cargo tree -p liuli-settings -e features --locked
 
   bare-metal-thumbv7em:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: thumbv7em-none-eabihf
+          components: llvm-tools
       - run: cargo check -p liuli-settings --target thumbv7em-none-eabihf --no-default-features --locked
-      - run: cargo build --manifest-path checks/firmware/Cargo.toml --target thumbv7em-none-eabihf --release --locked
+      - working-directory: checks/firmware
+        run: cargo build --target thumbv7em-none-eabihf --release --locked
+      - shell: pwsh
+        run: .\checks\audit-firmware.ps1 -Elf checks/firmware/target/thumbv7em-none-eabihf/release/liuli-firmware -Profile Demo
+      - shell: pwsh
+        run: |
+          $sysroot = (rustc --print sysroot).Trim()
+          $llvmBin = Get-ChildItem -Path (Join-Path $sysroot 'lib\rustlib') -Filter 'llvm-objdump.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty DirectoryName
+          if ($llvmBin) { $env:PATH = "$llvmBin;$env:PATH" }
+          .\checks\audit-stack.ps1 -Elf checks/firmware/target/thumbv7em-none-eabihf/release/liuli-firmware -MaxThreadBytes 6144
+      - working-directory: checks/firmware
+        run: cargo build --target thumbv7em-none-eabihf --release --locked --features startup-probe --target-dir target/startup-probe
+      - shell: pwsh
+        run: .\checks\audit-firmware.ps1 -Elf checks/firmware/target/startup-probe/thumbv7em-none-eabihf/release/liuli-firmware -Profile StartupProbe
