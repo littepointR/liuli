@@ -8,9 +8,12 @@ use embedded_graphics::primitives::Rectangle;
 use liuli_core::capacity::{PresentError, PresentStatus};
 use liuli_core::damage::DamageSet;
 use liuli_core::geometry::{Rect, rgb565_to_u16, u16_to_rgb565};
-use liuli_core::paint::{CommandList, PaintCmd, StaticTextLookup};
-use liuli_render::{BandTarget, present_sync, present_sync_with};
-use liuli_text::Lf4Font;
+use liuli_core::paint::{CommandList, PaintCmd, SliceSceneResources};
+use liuli_render::{
+    BandTarget, BufferTooSmall, ByteOrder, RECOMMENDED_SPI_CHUNK_BYTES, SpiWindowBus,
+    SpiWindowTarget, encode_rgb565, present_sync, present_sync_with,
+};
+use liuli_text::{FontSet, Lf4Font};
 
 fn dummy_lf4() -> Vec<u8> {
     let mut out = Vec::new();
@@ -191,7 +194,7 @@ impl DrawTarget for SubOriginRecordingTarget {
 #[test]
 fn present_sync_honors_draw_iter_only_non_zero_origin_and_flush_failure() {
     let lf4 = dummy_lf4();
-    let font = Lf4Font::from_bytes(&lf4).unwrap();
+    let font = FontSet::single(Lf4Font::from_bytes(&lf4).unwrap());
     let screen = Rect::new(0, 0, 16, 12);
     let mut cmds = CommandList::new();
     cmds.root_bg = u16_to_rgb565(0x001F);
@@ -221,7 +224,7 @@ fn present_sync_honors_draw_iter_only_non_zero_origin_and_flush_failure() {
         4,
         &cmds,
         &mut dmg,
-        &StaticTextLookup,
+        &SliceSceneResources::EMPTY,
         &font,
     );
     assert!(matches!(err, Err(PresentError::BufferTooSmall)));
@@ -236,7 +239,7 @@ fn present_sync_honors_draw_iter_only_non_zero_origin_and_flush_failure() {
         4,
         &cmds,
         &mut dmg,
-        &StaticTextLookup,
+        &SliceSceneResources::EMPTY,
         &font,
     )
     .unwrap();
@@ -264,7 +267,7 @@ fn present_sync_honors_draw_iter_only_non_zero_origin_and_flush_failure() {
         4,
         &cmds,
         &mut dmg,
-        &StaticTextLookup,
+        &SliceSceneResources::EMPTY,
         &font,
         |_| Err("flush failed"),
     );
@@ -279,7 +282,7 @@ fn present_sync_honors_draw_iter_only_non_zero_origin_and_flush_failure() {
         4,
         &cmds,
         &mut dmg,
-        &StaticTextLookup,
+        &SliceSceneResources::EMPTY,
         &font,
         |_| Ok(()),
     )
@@ -288,4 +291,361 @@ fn present_sync_honors_draw_iter_only_non_zero_origin_and_flush_failure() {
     assert!(dmg.is_empty());
     assert_eq!(rec_target.fb, iter_target.fb);
     assert_eq!(rgb565_to_u16(u16_to_rgb565(0xF800)), 0xF800);
+}
+
+#[test]
+fn encode_rgb565_vectors_empty_odd_short_and_sentinel() {
+    let vec_words = [0xF800u16, 0x07E0, 0x001F, 0x1234];
+
+    let mut be_out = [0xAAu8; 10];
+    assert_eq!(
+        encode_rgb565(&vec_words, &mut be_out, ByteOrder::BigEndian),
+        Ok(8)
+    );
+    assert_eq!(
+        &be_out[..8],
+        &[0xF8, 0x00, 0x07, 0xE0, 0x00, 0x1F, 0x12, 0x34]
+    );
+    assert_eq!(&be_out[8..], &[0xAA, 0xAA]);
+
+    let mut le_out = [0xAAu8; 10];
+    assert_eq!(
+        encode_rgb565(&vec_words, &mut le_out, ByteOrder::LittleEndian),
+        Ok(8)
+    );
+    assert_eq!(
+        &le_out[..8],
+        &[0x00, 0xF8, 0xE0, 0x07, 0x1F, 0x00, 0x34, 0x12]
+    );
+    assert_eq!(&le_out[8..], &[0xAA, 0xAA]);
+
+    // Empty input works even into empty slice; non-empty buffer sentinels stay intact.
+    assert_eq!(encode_rgb565(&[], &mut [], ByteOrder::BigEndian), Ok(0));
+    let mut empty_sentinel = [0x77u8; 4];
+    assert_eq!(
+        encode_rgb565(&[], &mut empty_sentinel, ByteOrder::LittleEndian),
+        Ok(0)
+    );
+    assert_eq!(empty_sentinel, [0x77; 4]);
+
+    // Odd pixel counts (1 and 3 words)
+    let mut odd_out = [0xCCu8; 8];
+    assert_eq!(
+        encode_rgb565(&vec_words[..3], &mut odd_out, ByteOrder::BigEndian),
+        Ok(6)
+    );
+    assert_eq!(&odd_out[..6], &[0xF8, 0x00, 0x07, 0xE0, 0x00, 0x1F]);
+    assert_eq!(&odd_out[6..], &[0xCC, 0xCC]);
+
+    // Short output fails without touching any byte of the output slice.
+    let mut short_out = [0x55u8; 7];
+    assert_eq!(
+        encode_rgb565(&vec_words, &mut short_out, ByteOrder::BigEndian),
+        Err(BufferTooSmall)
+    );
+    assert_eq!(short_out, [0x55; 7]);
+}
+
+struct MockSpiBus {
+    origin: Point,
+    w: u32,
+    h: u32,
+    order: ByteOrder,
+    active_win: Option<Rect>,
+    byte_buf: Vec<u8>,
+    fb: Vec<u16>,
+    window_log: Vec<Rect>,
+    write_chunks: Vec<usize>,
+    flush_count: usize,
+    fail_window_call: Option<usize>,
+    fail_write_call: Option<usize>,
+    fail_flush: bool,
+}
+
+impl MockSpiBus {
+    fn new(origin: Point, w: u32, h: u32, order: ByteOrder) -> Self {
+        Self {
+            origin,
+            w,
+            h,
+            order,
+            active_win: None,
+            byte_buf: Vec::new(),
+            fb: vec![0; (w * h) as usize],
+            window_log: Vec::new(),
+            write_chunks: Vec::new(),
+            flush_count: 0,
+            fail_window_call: None,
+            fail_write_call: None,
+            fail_flush: false,
+        }
+    }
+
+    fn drain_words_to_fb(&mut self) {
+        let Some(win) = self.active_win else {
+            return;
+        };
+        assert_eq!(self.byte_buf.len() % 2, 0, "odd SPI byte count");
+        let words: Vec<u16> = self
+            .byte_buf
+            .chunks_exact(2)
+            .map(|b| match self.order {
+                ByteOrder::BigEndian => u16::from_be_bytes([b[0], b[1]]),
+                ByteOrder::LittleEndian => u16::from_le_bytes([b[0], b[1]]),
+            })
+            .collect();
+        let expected = (win.w as usize) * (win.h as usize);
+        assert_eq!(
+            words.len(),
+            expected,
+            "window {win:?} expected {expected} pixels, got {}",
+            words.len()
+        );
+        for ry in 0..win.h as usize {
+            for rx in 0..win.w as usize {
+                let lx = (win.x + rx as i32) - self.origin.x;
+                let ly = (win.y + ry as i32) - self.origin.y;
+                if lx >= 0 && lx < self.w as i32 && ly >= 0 && ly < self.h as i32 {
+                    self.fb[(ly as usize) * (self.w as usize) + (lx as usize)] =
+                        words[ry * (win.w as usize) + rx];
+                }
+            }
+        }
+        self.byte_buf.clear();
+    }
+}
+
+impl SpiWindowBus for MockSpiBus {
+    type Error = &'static str;
+
+    fn set_window(&mut self, rect: Rect) -> Result<(), Self::Error> {
+        let idx = self.window_log.len();
+        if self.fail_window_call == Some(idx) {
+            self.active_win = None;
+            self.byte_buf.clear();
+            return Err("window fail");
+        }
+        self.drain_words_to_fb();
+        self.window_log.push(rect);
+        self.active_win = Some(rect);
+        Ok(())
+    }
+
+    fn write_bytes(&mut self, bytes: &[u8]) -> Result<(), Self::Error> {
+        let idx = self.write_chunks.len();
+        if self.fail_write_call == Some(idx) {
+            self.active_win = None;
+            self.byte_buf.clear();
+            return Err("write fail");
+        }
+        self.write_chunks.push(bytes.len());
+        self.byte_buf.extend_from_slice(bytes);
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<(), Self::Error> {
+        if self.fail_flush {
+            self.active_win = None;
+            self.byte_buf.clear();
+            return Err("flush fail");
+        }
+        self.drain_words_to_fb();
+        self.active_win = None;
+        self.flush_count += 1;
+        Ok(())
+    }
+}
+
+#[test]
+fn spi_window_target_chunks_stride_flush_idle_and_error_recovery() {
+    let lf4 = dummy_lf4();
+    let font = FontSet::single(Lf4Font::from_bytes(&lf4).unwrap());
+    let screen = Rect::new(0, 0, 20, 14);
+    let mut cmds = CommandList::new();
+    cmds.root_bg = u16_to_rgb565(0x001F);
+    cmds.screen = screen;
+    cmds.push(PaintCmd::FillRect {
+        rect: Rect::new(3, 2, 11, 9),
+        clip: screen,
+        color: u16_to_rgb565(0xF800),
+    })
+    .unwrap();
+    cmds.push(PaintCmd::FillRect {
+        rect: Rect::new(6, 5, 5, 4),
+        clip: screen,
+        color: u16_to_rgb565(0x07E0),
+    })
+    .unwrap();
+
+    // Scratch too small (< 2 B) rejected
+    let mut too_small = [0u8; 1];
+    assert!(
+        SpiWindowTarget::new(
+            MockSpiBus::new(Point::new(0, 0), 20, 14, ByteOrder::BigEndian),
+            screen,
+            ByteOrder::BigEndian,
+            &mut too_small
+        )
+        .is_err()
+    );
+
+    // Reference DrawTarget framebuffer
+    let mut ref_target = SubOriginRecordingTarget {
+        origin: Point::new(0, 0),
+        w: 20,
+        h: 14,
+        fb: vec![0; 20 * 14],
+        contiguous_calls: Vec::new(),
+        fail_on_call: None,
+    };
+    let mut scratch = [0u16; 20 * 4];
+    let mut dmg = DamageSet::new();
+    dmg.mark_full_screen(screen);
+    present_sync(
+        &mut ref_target,
+        &mut scratch,
+        screen,
+        4,
+        &cmds,
+        &mut dmg,
+        &SliceSceneResources::EMPTY,
+        &font,
+    )
+    .unwrap();
+
+    // Test both BE (64 B chunk) and LE (tight 6 B chunk crossing pixel rows)
+    for (order, chunk_len) in [
+        (ByteOrder::BigEndian, RECOMMENDED_SPI_CHUNK_BYTES),
+        (ByteOrder::LittleEndian, 6usize),
+    ] {
+        let mut chunk = vec![0u8; chunk_len];
+        let mut spi = SpiWindowTarget::new(
+            MockSpiBus::new(Point::new(0, 0), 20, 14, order),
+            screen,
+            order,
+            &mut chunk,
+        )
+        .unwrap();
+        dmg.mark_full_screen(screen);
+        let (st, metrics) = present_sync_with(
+            &mut spi,
+            &mut scratch,
+            screen,
+            4,
+            &cmds,
+            &mut dmg,
+            &SliceSceneResources::EMPTY,
+            &font,
+            |t| t.flush(),
+        )
+        .unwrap();
+        assert_eq!(st, PresentStatus::Presented);
+        assert_eq!(metrics.bands, 4); // 14 rows split by band_h=4 -> 4+4+4+2
+        assert_eq!(spi.bus().window_log.len(), 4);
+        assert_eq!(spi.bus().flush_count, 1);
+        assert!(spi.bus().write_chunks.iter().all(|&c| c <= chunk_len));
+        assert_eq!(spi.bus().fb, ref_target.fb);
+
+        // Idle second frame with empty damage must not touch SPI bus at all!
+        let wins_before = spi.bus().window_log.len();
+        let writes_before = spi.bus().write_chunks.len();
+        let flushes_before = spi.bus().flush_count;
+        let (st_idle, _) = present_sync_with(
+            &mut spi,
+            &mut scratch,
+            screen,
+            4,
+            &cmds,
+            &mut dmg,
+            &SliceSceneResources::EMPTY,
+            &font,
+            |t| t.flush(),
+        )
+        .unwrap();
+        assert_eq!(st_idle, PresentStatus::Idle);
+        assert_eq!(spi.bus().window_log.len(), wins_before);
+        assert_eq!(spi.bus().write_chunks.len(), writes_before);
+        assert_eq!(spi.bus().flush_count, flushes_before);
+    }
+
+    // Clipped non-zero origin window stride preservation: area (-1, -1, 10, 6) clipped to (0, 0, 5, 4)
+    {
+        let bounds = Rect::new(10, 20, 5, 4);
+        let mut chunk = [0u8; 6];
+        let mut spi = SpiWindowTarget::new(
+            MockSpiBus::new(Point::new(10, 20), 5, 4, ByteOrder::BigEndian),
+            bounds,
+            ByteOrder::BigEndian,
+            &mut chunk,
+        )
+        .unwrap();
+        // Source grid: 7x6 centered at (9, 19), i.e., top-left overlaps left by 1 col and top by 1 row
+        let mut src_colors = Vec::new();
+        for sy in 0..6u16 {
+            for sx in 0..7u16 {
+                let raw = ((sy + 1) << 11) | (sx + 1);
+                src_colors.push(u16_to_rgb565(raw));
+            }
+        }
+        spi.fill_contiguous(
+            &Rectangle::new(Point::new(9, 19), Size::new(7, 6)),
+            src_colors,
+        )
+        .unwrap();
+        spi.flush().unwrap();
+        assert_eq!(spi.bus().window_log, vec![bounds]);
+        for ry in 0..4u16 {
+            for rx in 0..5u16 {
+                let expected = ((ry + 2) << 11) | (rx + 2);
+                assert_eq!(spi.bus().fb[(ry as usize) * 5 + (rx as usize)], expected);
+            }
+        }
+    }
+
+    // Error recovery: fail set_window, write_bytes, and flush each keep full-screen damage
+    for fail_mode in 0..3 {
+        let mut chunk = [0u8; 16];
+        let mut bus = MockSpiBus::new(Point::new(0, 0), 20, 14, ByteOrder::BigEndian);
+        match fail_mode {
+            0 => bus.fail_window_call = Some(1),
+            1 => bus.fail_write_call = Some(2),
+            _ => bus.fail_flush = true,
+        }
+        let mut spi = SpiWindowTarget::new(bus, screen, ByteOrder::BigEndian, &mut chunk).unwrap();
+        dmg.clear();
+        dmg.add(Rect::new(0, 0, 10, 8), screen);
+        let res = present_sync_with(
+            &mut spi,
+            &mut scratch,
+            screen,
+            4,
+            &cmds,
+            &mut dmg,
+            &SliceSceneResources::EMPTY,
+            &font,
+            |t| t.flush(),
+        );
+        assert!(matches!(res, Err(PresentError::Target(_))));
+        assert!(dmg.is_full_screen());
+
+        // Clear fault and retry full screen
+        spi.bus_mut().fail_window_call = None;
+        spi.bus_mut().fail_write_call = None;
+        spi.bus_mut().fail_flush = false;
+        let (st, _) = present_sync_with(
+            &mut spi,
+            &mut scratch,
+            screen,
+            4,
+            &cmds,
+            &mut dmg,
+            &SliceSceneResources::EMPTY,
+            &font,
+            |t| t.flush(),
+        )
+        .unwrap();
+        assert_eq!(st, PresentStatus::Presented);
+        assert!(dmg.is_empty());
+        assert_eq!(spi.bus().fb, ref_target.fb);
+    }
 }

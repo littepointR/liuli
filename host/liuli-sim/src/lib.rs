@@ -3,3 +3,4 @@ pub mod image;
 pub mod preview;
 pub mod replay;
 pub mod screen;
+pub mod sim;

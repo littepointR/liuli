@@ -19,21 +19,29 @@ pub mod prelude {
     pub use liuli_core::capacity::{
         BuildError, DEFAULT_BAND_HEIGHT, DEFAULT_BAND_PIXELS, DEFAULT_BAND_WIDTH,
         DEFAULT_SCREEN_HEIGHT, DEFAULT_SCREEN_WIDTH, DispatchError, FrameMetrics, LayoutError,
-        MAX_ANIMATIONS, MAX_COMMANDS, MAX_DAMAGE, MAX_DEPTH, MAX_MODALS, MAX_NODES, MAX_TEXT_BYTES,
-        PresentError, PresentStatus, TimeError,
+        MAX_ANIMATIONS, MAX_COMMANDS, MAX_DAMAGE, MAX_DEPTH, MAX_MODALS, MAX_NODES,
+        MAX_SPARKLINE_SAMPLES, MAX_SPARKLINES, MAX_TEXT_BYTES, PresentError, PresentStatus,
+        TimeError, TransactionError,
     };
     pub use liuli_core::damage::DamageSet;
     pub use liuli_core::geometry::Rect;
-    pub use liuli_core::input::{ActionKind, NavDir, PointerId, RawInput, UiAction};
-    pub use liuli_core::time::{InstantMs, NextWakeup};
+    pub use liuli_core::input::{ActionKind, HoldKey, NavDir, PointerId, RawInput, UiAction};
+    pub use liuli_core::paint::{SceneResources, SliceSceneResources, TextId};
+    pub use liuli_core::time::{
+        Easing, InstantMs, MAX_REPEAT_STEPS_PER_ADVANCE, NextWakeup, REPEAT_DELAY_MS,
+        REPEAT_PERIOD_MS,
+    };
     pub use liuli_core::view::{
-        Align, App, Change, EdgeInsets, IconKind, Key, Length, NodeKind, NodeProps, TextRef,
-        ViewBuilder,
+        Align, App, Change, Children, EdgeInsets, FontId, IconKind, Key, Length, NodeKind,
+        NodeProps, PageRestore, SampleRing, TextAlign, TextRef, ViewBuilder,
     };
     pub use liuli_render::{
-        BandSlot, DmaCoordinator, DmaSink, FreeBand, PollOutcome, ReadyBand, StartOutcome,
+        AlignedBand, BandSlot, BufferTooSmall, ByteOrder, CACHE_LINE_BYTES, DmaCacheOps,
+        DmaCoordinator, DmaSink, FreeBand, InFlightBand, NoCacheOps, PollOutcome,
+        RECOMMENDED_SPI_CHUNK_BYTES, ReadyBand, SpiWindowBus, SpiWindowTarget, StartOutcome,
+        TeError, TeGate, TeMode, TeWait, encode_rgb565,
     };
-    pub use liuli_text::Lf4Font;
+    pub use liuli_text::{FontSet, Lf4Font};
 
     pub use crate::{Engine, Storage};
 }

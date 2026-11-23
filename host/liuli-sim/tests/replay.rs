@@ -69,3 +69,47 @@ fn replay_reports_line_numbers_on_invalid_scripts() {
         "unexpected error: {err}"
     );
 }
+
+#[test]
+fn replay_terminal_fixture_passes_and_captures_all_seven_shots() {
+    let report = run_replay_file(&fixture_path("terminal.events"), None, ImageFormat::Ppm)
+        .expect("terminal.events replay failed");
+    let shot_names: Vec<&str> = report.shots.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(
+        shot_names,
+        vec![
+            "dashboard-initial",
+            "dashboard-wave",
+            "settings-restored",
+            "diagnostics-small12",
+            "reset-confirm",
+            "toast-visible",
+            "toast-expired",
+        ]
+    );
+}
+
+#[test]
+fn replay_rejects_unsafe_duplicate_and_late_scenario_directives() {
+    for bad_shot in [
+        "0 shot ../evil\n",
+        "0 shot a/b\n",
+        "0 shot a\\b\n",
+        "0 shot C:drive\n",
+        "0 shot .\n",
+        "0 shot ..\n",
+    ] {
+        let err = run_replay_str(bad_shot, None, ImageFormat::Ppm).unwrap_err();
+        assert!(err.contains("line 1"), "missing line number in: {err}");
+    }
+
+    let dup = "0 shot dup\n100 shot dup\n";
+    let err = run_replay_str(dup, None, ImageFormat::Ppm).unwrap_err();
+    assert!(err.contains("line 2"), "unexpected dup error: {err}");
+    assert!(err.contains("duplicate"), "unexpected dup error: {err}");
+
+    let late_scenario = "0 advance\n10 scenario terminal\n";
+    let err = run_replay_str(late_scenario, None, ImageFormat::Ppm).unwrap_err();
+    assert!(err.contains("line 2"), "unexpected scenario error: {err}");
+    assert!(err.contains("scenario"), "unexpected scenario error: {err}");
+}

@@ -6,6 +6,8 @@ pub const MAX_DAMAGE: usize = 12;
 pub const MAX_ANIMATIONS: usize = 8;
 pub const MAX_MODALS: usize = 1;
 pub const MAX_ACTIONS: usize = 8;
+pub const MAX_SPARKLINES: usize = 2;
+pub const MAX_SPARKLINE_SAMPLES: usize = 32;
 
 pub const DEFAULT_SCREEN_WIDTH: u32 = 320;
 pub const DEFAULT_SCREEN_HEIGHT: u32 = 240;
@@ -26,6 +28,11 @@ pub enum BuildError {
     InvalidScrollFill,
     GenerationExhausted,
     NoRoot,
+    MultipleRoots,
+    InvalidKind,
+    InvalidRange,
+    Sparklines,
+    Layout(LayoutError),
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
@@ -43,6 +50,27 @@ pub enum TimeError {
 pub enum DispatchError<E = ()> {
     WentBackwards,
     Busy(E),
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub enum TransactionError<E = ()> {
+    WentBackwards,
+    Busy(E),
+    Build(BuildError),
+}
+
+impl<E> From<TimeError> for TransactionError<E> {
+    fn from(value: TimeError) -> Self {
+        match value {
+            TimeError::WentBackwards => Self::WentBackwards,
+        }
+    }
+}
+
+impl<E> From<BuildError> for TransactionError<E> {
+    fn from(value: BuildError) -> Self {
+        Self::Build(value)
+    }
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]

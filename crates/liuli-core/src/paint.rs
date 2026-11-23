@@ -1,22 +1,31 @@
-use crate::capacity::{BuildError, MAX_COMMANDS, MAX_DEPTH};
+use crate::capacity::{BuildError, MAX_COMMANDS, MAX_DEPTH, MAX_NODES};
 use crate::geometry::{Point, Rect, Rgb565};
 use crate::node::RetainedTree;
 use crate::time::{ANIM_SCALE, AnimPool, AnimProp};
-use crate::view::{Align, IconKind, NONE_IDX, NodeKind, TextRef};
+use crate::view::{
+    Align, BUTTON_ICON_GAP, BUTTON_ICON_SIZE, BUTTON_ICON_SPAN, FontId, IconKind, NodeKind,
+    SlotLink, TextAlign,
+};
+
+#[repr(transparent)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Default)]
+pub struct TextId(pub u16);
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
+#[repr(u8)]
 pub enum PaintCmd {
+    Empty = 0,
     FillRect {
         rect: Rect,
         clip: Rect,
         color: Rgb565,
-    },
+    } = 1,
     StrokeRect {
         rect: Rect,
         clip: Rect,
         color: Rgb565,
         width: u8,
-    },
+    } = 2,
     FillRoundedRect {
         rect: Rect,
         clip: Rect,
@@ -24,46 +33,82 @@ pub enum PaintCmd {
         radius: u8,
         border_color: Option<Rgb565>,
         border_width: u8,
-    },
+    } = 3,
     Text {
         pos: Point,
         clip: Rect,
-        ink: Rect,
-        text: TextRef,
+        wrap_width: u32,
+        text: TextId,
         color: Rgb565,
-        max_width: u32,
+        font: FontId,
+        align: TextAlign,
         max_lines: u8,
         ellipsis: bool,
-    },
+    } = 4,
     Overlay {
         rect: Rect,
         clip: Rect,
         color: Rgb565,
         alpha: u8,
-    },
+    } = 5,
     Icon {
         rect: Rect,
         clip: Rect,
         kind: IconKind,
         color: Rgb565,
-    },
+    } = 6,
+    Sparkline {
+        rect: Rect,
+        clip: Rect,
+        color: Rgb565,
+        series: u8,
+        min: i16,
+        max: i16,
+        stroke_width: u8,
+    } = 7,
 }
 
+const _: () = assert!(core::mem::size_of::<PaintCmd>() <= 48);
+
 impl PaintCmd {
-    pub const EMPTY: Self = Self::FillRect {
-        rect: Rect::ZERO,
-        clip: Rect::ZERO,
-        color: Rgb565::new(0, 0, 0),
-    };
+    pub const EMPTY: Self = Self::Empty;
+
+    #[allow(clippy::too_many_arguments)]
+    #[inline]
+    pub const fn text(
+        pos: Point,
+        clip: Rect,
+        text: TextId,
+        color: Rgb565,
+        wrap_width: u32,
+        max_lines: u8,
+        ellipsis: bool,
+        font: FontId,
+        align: TextAlign,
+    ) -> Self {
+        Self::Text {
+            pos,
+            clip,
+            wrap_width,
+            text,
+            color,
+            font,
+            align,
+            max_lines,
+            ellipsis,
+        }
+    }
 
     pub fn bounds(&self) -> Rect {
         match *self {
-            Self::FillRect { rect, clip, .. } => rect.intersect(clip),
-            Self::StrokeRect { rect, clip, .. } => rect.intersect(clip),
-            Self::FillRoundedRect { rect, clip, .. } => rect.intersect(clip),
-            Self::Text { ink, clip, .. } => ink.intersect(clip),
-            Self::Overlay { rect, clip, .. } => rect.intersect(clip),
-            Self::Icon { rect, clip, .. } => rect.intersect(clip),
+            Self::Empty => Rect::ZERO,
+            Self::FillRect { rect, clip, .. }
+            | Self::StrokeRect { rect, clip, .. }
+            | Self::FillRoundedRect { rect, clip, .. }
+            | Self::Overlay { rect, clip, .. }
+            | Self::Icon { rect, clip, .. }
+            | Self::Sparkline { rect, clip, .. } => rect.intersect(clip),
+            Self::Text { clip, .. } => clip,
         }
     }
 }
@@ -76,13 +121,15 @@ pub struct CommandList {
 }
 
 impl CommandList {
+    pub const ZERO: Self = Self {
+        cmds: [PaintCmd::EMPTY; MAX_COMMANDS],
+        count: 0,
+        root_bg: Rgb565::new(0, 0, 0),
+        screen: Rect::ZERO,
+    };
+
     pub const fn new() -> Self {
-        Self {
-            cmds: [PaintCmd::EMPTY; MAX_COMMANDS],
-            count: 0,
-            root_bg: Rgb565::new(0, 0, 0),
-            screen: Rect::ZERO,
-        }
+        Self::ZERO
     }
 
     pub fn reset(&mut self) {
@@ -109,30 +156,49 @@ impl Default for CommandList {
     }
 }
 
-pub trait TextMetricsRef {
-    fn line_height(&self) -> u32;
+pub trait SceneResources {
+    fn text(&self, id: TextId) -> &str;
+    fn sparkline(&self, series: u8) -> &[i16];
 }
 
-pub trait TextLookup {
-    fn lookup(&self, text: TextRef) -> &str;
-}
-
-impl TextLookup for RetainedTree {
+impl SceneResources for RetainedTree {
     #[inline]
-    fn lookup(&self, text: TextRef) -> &str {
-        self.text_str(text)
+    fn text(&self, id: TextId) -> &str {
+        let idx = id.0 as usize;
+        if idx < MAX_NODES && self.nodes[idx].occupied {
+            self.text_str(self.nodes[idx].props.text())
+        } else {
+            ""
+        }
+    }
+
+    #[inline]
+    fn sparkline(&self, series: u8) -> &[i16] {
+        self.sparklines.slice(series)
     }
 }
 
-pub struct StaticTextLookup;
+pub struct SliceSceneResources<'a> {
+    pub texts: &'a [&'a str],
+    pub sparklines: &'a [&'a [i16]],
+}
 
-impl TextLookup for StaticTextLookup {
+impl<'a> SliceSceneResources<'a> {
+    pub const EMPTY: Self = Self {
+        texts: &[],
+        sparklines: &[],
+    };
+}
+
+impl SceneResources for SliceSceneResources<'_> {
     #[inline]
-    fn lookup(&self, text: TextRef) -> &str {
-        match text {
-            TextRef::Static(s) => s,
-            TextRef::Dynamic(_) => "",
-        }
+    fn text(&self, id: TextId) -> &str {
+        self.texts.get(id.0 as usize).copied().unwrap_or("")
+    }
+
+    #[inline]
+    fn sparkline(&self, series: u8) -> &[i16] {
+        self.sparklines.get(series as usize).copied().unwrap_or(&[])
     }
 }
 
@@ -141,6 +207,13 @@ pub struct PaintFocusInfo {
     pub focused_slot: Option<u16>,
     pub ring_visible: bool,
     pub editing: bool,
+}
+
+#[derive(Copy, Clone)]
+struct PaintDepthFrame {
+    slot: u16,
+    stage: u8,
+    next_child: SlotLink,
 }
 
 pub fn emit_commands(
@@ -153,36 +226,32 @@ pub fn emit_commands(
     out.reset();
     out.screen = screen;
 
-    if tree.root == NONE_IDX {
+    let Some(root_idx) = tree.root.get() else {
         return Ok(());
-    }
+    };
 
-    let root = &tree.nodes[tree.root as usize];
-    out.root_bg = root.props.bg.unwrap_or(Rgb565::new(0, 0, 0));
+    let root = &tree.nodes[root_idx];
+    out.root_bg = root.props.bg().unwrap_or(Rgb565::new(0, 0, 0));
 
-    // Iterative pre-order traversal preserving declaration z-order.
-    // On each frame, stack entries are `(node_slot, stage)`:
-    // stage 0 => emit self pre-order, push children in reverse sibling order (or direct, see below)
-    // stage 1 => emit post-children (scrollbar for ScrollY + focus ring)
-    #[derive(Copy, Clone)]
-    struct Frame {
-        slot: u16,
-        stage: u8,
-    }
-
-    let mut stack = [Frame { slot: 0, stage: 0 }; MAX_DEPTH * 8];
-    let mut sp = 0usize;
-    stack[sp] = Frame {
-        slot: tree.root,
+    let mut stack = [PaintDepthFrame {
+        slot: 0,
         stage: 0,
+        next_child: SlotLink::NONE,
+    }; MAX_DEPTH + 2];
+    let mut sp = 0usize;
+    stack[sp] = PaintDepthFrame {
+        slot: root_idx as u16,
+        stage: 0,
+        next_child: SlotLink::NONE,
     };
     sp += 1;
 
     while sp > 0 {
-        sp -= 1;
-        let frame = stack[sp];
+        let top = sp - 1;
+        let frame = stack[top];
         let node = &tree.nodes[frame.slot as usize];
-        if !node.occupied || !node.props.visible {
+        if !node.occupied || !node.props.visible() {
+            sp -= 1;
             continue;
         }
 
@@ -194,7 +263,7 @@ pub fn emit_commands(
             if visible || node.kind == NodeKind::Modal {
                 match node.kind {
                     NodeKind::Root => {
-                        if let Some(bg) = node.props.bg {
+                        if let Some(bg) = node.props.bg() {
                             out.push(PaintCmd::FillRect {
                                 rect,
                                 clip,
@@ -217,7 +286,7 @@ pub fn emit_commands(
                         emit_box_bg_and_border(node, rect, clip, out)?;
                     }
                     NodeKind::Label => {
-                        if let Some(bg) = node.props.bg {
+                        if let Some(bg) = node.props.bg() {
                             out.push(PaintCmd::FillRect {
                                 rect,
                                 clip,
@@ -232,7 +301,11 @@ pub fn emit_commands(
                         );
                         let text_x = inner.x;
                         let mut text_y = inner.y;
-                        if let Some((_, text_size, _, _)) = node.text_cache {
+                        let align = node.props.text_align();
+                        let font = node.props.font();
+                        let mut text_clip = clip;
+                        if node.text_cache.valid {
+                            let text_size = node.text_cache.size;
                             if node.props.align_cross == Align::Center && inner.h > text_size.height
                             {
                                 text_y += ((inner.h - text_size.height) / 2) as i32;
@@ -241,36 +314,45 @@ pub fn emit_commands(
                             {
                                 text_y += (inner.h - text_size.height) as i32;
                             }
+                            if node.text_cache.align == align
+                                && (align == TextAlign::Start
+                                    || node.text_cache.wrap_width == inner.w)
+                            {
+                                text_clip = clip
+                                    .intersect(node.text_cache.rel_ink.translate(text_x, text_y));
+                            }
                         }
-                        let mut ink = node.ink_rect;
-                        if let Some((_, _, rel_ink, _)) = node.text_cache {
-                            ink = rel_ink.translate(text_x, text_y);
+                        if !text_clip.is_empty() {
+                            out.push(PaintCmd::text(
+                                Point::new(text_x, text_y),
+                                text_clip,
+                                TextId(frame.slot),
+                                node.props.fg,
+                                inner.w,
+                                node.props.max_lines,
+                                node.props.ellipsis(),
+                                font,
+                                align,
+                            ))?;
                         }
-                        out.push(PaintCmd::Text {
-                            pos: Point::new(text_x, text_y),
-                            clip,
-                            ink,
-                            text: node.props.text,
-                            color: node.props.fg,
-                            max_width: inner.w,
-                            max_lines: node.props.max_lines,
-                            ellipsis: node.props.ellipsis,
-                        })?;
                     }
                     NodeKind::Button => {
                         let bg = if node.pressed {
-                            Some(darken_or_mix(node.props.bg.unwrap_or(node.props.accent), 3))
+                            Some(darken_or_mix(
+                                node.props.bg().unwrap_or(node.props.accent),
+                                3,
+                            ))
                         } else {
-                            node.props.bg
+                            node.props.bg()
                         };
                         if let Some(bg_col) = bg {
-                            if node.props.radius > 0 || node.props.border_color.is_some() {
+                            if node.props.radius > 0 || node.props.border_color().is_some() {
                                 out.push(PaintCmd::FillRoundedRect {
                                     rect,
                                     clip,
                                     color: bg_col,
                                     radius: node.props.radius,
-                                    border_color: node.props.border_color,
+                                    border_color: node.props.border_color(),
                                     border_width: node.props.border_width,
                                 })?;
                             } else {
@@ -280,7 +362,7 @@ pub fn emit_commands(
                                     color: bg_col,
                                 })?;
                             }
-                        } else if let Some(bc) = node.props.border_color
+                        } else if let Some(bc) = node.props.border_color()
                             && node.props.border_width > 0
                         {
                             out.push(PaintCmd::StrokeRect {
@@ -297,179 +379,320 @@ pub fn emit_commands(
                             node.props.padding.right as u32,
                             node.props.padding.bottom as u32,
                         );
-                        let text_x;
-                        let mut text_y = inner.y;
-                        let icon_w = if node.props.icon != IconKind::None {
-                            16
+                        let has_icon = node.props.icon != IconKind::None;
+                        let icon_w = if has_icon { BUTTON_ICON_SIZE } else { 0 };
+                        let gap_w = if has_icon { BUTTON_ICON_GAP } else { 0 };
+                        let icon_span = if has_icon { BUTTON_ICON_SPAN } else { 0 };
+                        let text_w = if node.text_cache.valid {
+                            node.text_cache.size.width
                         } else {
                             0
                         };
-                        let gap_w = if icon_w > 0 { 4 } else { 0 };
-                        let text_w = node.text_cache.map(|c| c.1.width).unwrap_or(0);
-                        let text_h = node.text_cache.map(|c| c.1.height).unwrap_or(16);
-                        let total_w = icon_w + gap_w + text_w;
-                        let start_x = if inner.w > total_w {
-                            inner.x + ((inner.w - total_w) / 2) as i32
+                        let text_h = if node.text_cache.valid {
+                            node.text_cache.size.height
                         } else {
-                            inner.x
+                            16
                         };
-                        if node.props.icon != IconKind::None {
-                            let iy = inner.y + ((inner.h.saturating_sub(14)) / 2) as i32;
-                            out.push(PaintCmd::Icon {
-                                rect: Rect::new(start_x, iy, 14, 14),
-                                clip,
-                                kind: node.props.icon,
-                                color: node.props.fg,
-                            })?;
-                            text_x = start_x + 18;
-                        } else {
-                            text_x = start_x;
-                        }
+                        let mut text_y = inner.y;
                         if inner.h > text_h {
                             text_y = inner.y + ((inner.h - text_h) / 2) as i32;
                         }
-                        let rel_ink = node
-                            .text_cache
-                            .map(|c| c.2)
-                            .unwrap_or(Rect::new(0, 0, text_w, text_h));
-                        out.push(PaintCmd::Text {
-                            pos: Point::new(text_x, text_y),
-                            clip,
-                            ink: rel_ink.translate(text_x, text_y),
-                            text: node.props.text,
-                            color: node.props.fg,
-                            max_width: inner.w.saturating_sub(icon_w + gap_w),
-                            max_lines: node.props.max_lines.max(1),
-                            ellipsis: node.props.ellipsis,
-                        })?;
+                        let wrap_w = inner.w.saturating_sub(icon_span);
+                        let align = node.props.text_align();
+                        let font = node.props.font();
+                        let text_x;
+                        let cmd_align;
+                        if align == TextAlign::Start {
+                            let total_w = icon_w + gap_w + text_w;
+                            let start_x = if inner.w > total_w {
+                                inner.x + ((inner.w - total_w) / 2) as i32
+                            } else {
+                                inner.x
+                            };
+                            if has_icon {
+                                let iy = inner.y
+                                    + ((inner.h.saturating_sub(BUTTON_ICON_SIZE)) / 2) as i32;
+                                out.push(PaintCmd::Icon {
+                                    rect: Rect::new(
+                                        start_x,
+                                        iy,
+                                        BUTTON_ICON_SIZE,
+                                        BUTTON_ICON_SIZE,
+                                    ),
+                                    clip,
+                                    kind: node.props.icon,
+                                    color: node.props.fg,
+                                })?;
+                                text_x = start_x + BUTTON_ICON_SPAN as i32;
+                            } else {
+                                text_x = start_x;
+                            }
+                            cmd_align = TextAlign::Start;
+                        } else {
+                            if has_icon {
+                                let iy = inner.y
+                                    + ((inner.h.saturating_sub(BUTTON_ICON_SIZE)) / 2) as i32;
+                                out.push(PaintCmd::Icon {
+                                    rect: Rect::new(
+                                        inner.x,
+                                        iy,
+                                        BUTTON_ICON_SIZE,
+                                        BUTTON_ICON_SIZE,
+                                    ),
+                                    clip,
+                                    kind: node.props.icon,
+                                    color: node.props.fg,
+                                })?;
+                            }
+                            text_x = inner.x + icon_span as i32;
+                            cmd_align = align;
+                        }
+                        let text_clip = if node.text_cache.valid
+                            && node.text_cache.align == cmd_align
+                            && (cmd_align == TextAlign::Start
+                                || node.text_cache.wrap_width == wrap_w)
+                        {
+                            clip.intersect(node.text_cache.rel_ink.translate(text_x, text_y))
+                        } else {
+                            clip
+                        };
+                        if !text_clip.is_empty() {
+                            out.push(PaintCmd::text(
+                                Point::new(text_x, text_y),
+                                text_clip,
+                                TextId(frame.slot),
+                                node.props.fg,
+                                wrap_w,
+                                node.props.max_lines.max(1),
+                                node.props.ellipsis(),
+                                font,
+                                cmd_align,
+                            ))?;
+                        }
                     }
                     NodeKind::Toggle => {
-                        let track_w = rect.w.clamp(28, 48);
-                        let track_h = rect.h.clamp(18, 26);
-                        let track_x = rect.x + ((rect.w - track_w) / 2) as i32;
-                        let track_y = rect.y + ((rect.h - track_h) / 2) as i32;
-                        let track_rect = Rect::new(track_x, track_y, track_w, track_h);
+                        if !rect.is_empty() {
+                            let track_w = rect.w.min(48);
+                            let track_h = rect.h.min(26);
+                            let track_x = rect.x + ((rect.w - track_w) / 2) as i32;
+                            let track_y = rect.y + ((rect.h - track_h) / 2) as i32;
+                            let track_rect = Rect::new(track_x, track_y, track_w, track_h);
 
-                        let default_progress = if node.props.checked { ANIM_SCALE } else { 0 };
-                        let progress = anims
-                            .cached_value(node.key, AnimProp::ToggleKnob)
-                            .unwrap_or(default_progress)
-                            .clamp(0, ANIM_SCALE);
+                            let default_progress =
+                                if node.props.checked() { ANIM_SCALE } else { 0 };
+                            let progress = anims
+                                .cached_value(node.key, AnimProp::ToggleKnob)
+                                .unwrap_or(default_progress)
+                                .clamp(0, ANIM_SCALE);
 
-                        let track_off = node.props.bg.unwrap_or(Rgb565::new(10, 20, 10));
-                        let track_on = node.props.accent;
-                        let track_color =
-                            blend_rgb565_scale(track_off, track_on, progress, ANIM_SCALE);
+                            let track_off = node.props.bg().unwrap_or(Rgb565::new(10, 20, 10));
+                            let track_on = node.props.accent;
+                            let track_color =
+                                blend_rgb565_scale(track_off, track_on, progress, ANIM_SCALE);
 
-                        let r = (track_h / 2) as u8;
-                        out.push(PaintCmd::FillRoundedRect {
-                            rect: track_rect,
-                            clip,
-                            color: track_color,
-                            radius: r,
-                            border_color: node.props.border_color,
-                            border_width: node.props.border_width,
-                        })?;
+                            let r = (track_h / 2) as u8;
+                            out.push(PaintCmd::FillRoundedRect {
+                                rect: track_rect,
+                                clip,
+                                color: track_color,
+                                radius: r,
+                                border_color: node.props.border_color(),
+                                border_width: node.props.border_width,
+                            })?;
 
-                        let knob_size = track_h.saturating_sub(4).max(8);
-                        let travel = track_w.saturating_sub(knob_size + 4) as i32;
-                        let knob_x =
-                            track_x + 2 + ((travel * progress + ANIM_SCALE / 2) / ANIM_SCALE);
-                        let knob_y = track_y + 2;
-                        let knob_rect = Rect::new(knob_x, knob_y, knob_size, knob_size);
-                        out.push(PaintCmd::FillRoundedRect {
-                            rect: knob_rect,
-                            clip,
-                            color: node.props.fg,
-                            radius: (knob_size / 2) as u8,
-                            border_color: None,
-                            border_width: 0,
-                        })?;
+                            let inset = (track_h / 4).min(2);
+                            let knob_size = track_h.saturating_sub(inset * 2).min(track_w);
+                            if knob_size > 0 {
+                                let travel = track_w
+                                    .saturating_sub(knob_size.saturating_add(inset * 2))
+                                    as i32;
+                                let knob_x = track_x
+                                    + inset as i32
+                                    + ((travel * progress + ANIM_SCALE / 2) / ANIM_SCALE);
+                                let knob_y =
+                                    track_y + ((track_h.saturating_sub(knob_size)) / 2) as i32;
+                                let knob_rect = Rect::new(knob_x, knob_y, knob_size, knob_size);
+                                out.push(PaintCmd::FillRoundedRect {
+                                    rect: knob_rect,
+                                    clip,
+                                    color: node.props.fg,
+                                    radius: (knob_size / 2) as u8,
+                                    border_color: None,
+                                    border_width: 0,
+                                })?;
+                            }
+                        }
                     }
                     NodeKind::Slider => {
-                        let track_h = 6u32.min(rect.h.max(2));
-                        let knob_w = 12u32;
-                        let knob_h = rect.h.clamp(14, 20);
-                        let pad_x = (knob_w / 2) as i32;
-                        let usable_w = rect.w.saturating_sub(knob_w).max(1);
-                        let track_x = rect.x + pad_x;
-                        let track_y = rect.y + ((rect.h - track_h) / 2) as i32;
-                        let track_rect = Rect::new(track_x, track_y, usable_w, track_h);
-                        let track_bg = node.props.bg.unwrap_or(Rgb565::new(10, 20, 10));
+                        if !rect.is_empty() {
+                            let track_h = rect.h.min(6).max(1);
+                            let knob_w = rect.w.min(12);
+                            let knob_h = rect.h.min(20);
+                            let pad_x = (knob_w / 2) as i32;
+                            let usable_w = rect.w.saturating_sub(knob_w);
+                            let track_x = rect.x + pad_x;
+                            let track_y = rect.y + ((rect.h.saturating_sub(track_h)) / 2) as i32;
+                            let track_bg = node.props.bg().unwrap_or(Rgb565::new(10, 20, 10));
 
-                        out.push(PaintCmd::FillRoundedRect {
-                            rect: track_rect,
-                            clip,
-                            color: track_bg,
-                            radius: (track_h / 2) as u8,
-                            border_color: None,
-                            border_width: 0,
-                        })?;
+                            let min = node.props.min as i64;
+                            let max = node.props.max as i64;
+                            let span = (max - min).max(1);
+                            let clamped = (node.props.value as i64).clamp(min, max.max(min));
+                            let rel = (clamped - min).max(0);
+                            let fill_w = ((usable_w as i64 * rel) / span) as u32;
 
-                        let span = (node.props.max as i32 - node.props.min as i32).max(1);
-                        let clamped = (node.props.value as i32)
-                            .clamp(node.props.min as i32, node.props.max as i32);
-                        let rel = clamped - node.props.min as i32;
-                        let fill_w = ((usable_w as i64 * rel as i64) / span as i64) as u32;
-                        if fill_w > 0 {
+                            if usable_w > 0 {
+                                let track_rect = Rect::new(track_x, track_y, usable_w, track_h);
+                                out.push(PaintCmd::FillRoundedRect {
+                                    rect: track_rect,
+                                    clip,
+                                    color: track_bg,
+                                    radius: (track_h / 2) as u8,
+                                    border_color: None,
+                                    border_width: 0,
+                                })?;
+
+                                if fill_w > 0 {
+                                    out.push(PaintCmd::FillRoundedRect {
+                                        rect: Rect::new(track_x, track_y, fill_w, track_h),
+                                        clip,
+                                        color: node.props.accent,
+                                        radius: (track_h / 2) as u8,
+                                        border_color: None,
+                                        border_width: 0,
+                                    })?;
+                                }
+                            }
+
+                            if knob_w > 0 && knob_h > 0 {
+                                let knob_x = if usable_w > 0 {
+                                    track_x + fill_w as i32 - pad_x
+                                } else {
+                                    rect.x + ((rect.w.saturating_sub(knob_w)) / 2) as i32
+                                };
+                                let knob_y = rect.y + ((rect.h.saturating_sub(knob_h)) / 2) as i32;
+                                let is_editing =
+                                    focus.editing && focus.focused_slot == Some(frame.slot);
+                                out.push(PaintCmd::FillRoundedRect {
+                                    rect: Rect::new(knob_x, knob_y, knob_w, knob_h),
+                                    clip,
+                                    color: node.props.fg,
+                                    radius: 4u8.min((knob_h / 2) as u8),
+                                    border_color: Some(if is_editing {
+                                        node.props.focus_color
+                                    } else {
+                                        node.props.accent
+                                    }),
+                                    border_width: if is_editing { 2 } else { 1 },
+                                })?;
+                            }
+                        }
+                    }
+                    NodeKind::ProgressBar => {
+                        if !rect.is_empty() && !rect.intersect(clip).is_empty() {
+                            let track_bg = node.props.bg().unwrap_or(Rgb565::new(10, 20, 10));
+                            let radius = node.props.radius.min((rect.h / 2).min(255) as u8);
+                            let border_color = node.props.border_color();
+                            let border_width = node.props.border_width;
                             out.push(PaintCmd::FillRoundedRect {
-                                rect: Rect::new(track_x, track_y, fill_w, track_h),
+                                rect,
                                 clip,
+                                color: track_bg,
+                                radius,
+                                border_color,
+                                border_width,
+                            })?;
+
+                            let bw = if border_color.is_some() && border_width > 0 {
+                                border_width as u32
+                            } else {
+                                0
+                            };
+                            let inner = rect.inset(bw, bw, bw, bw);
+                            if !inner.is_empty() {
+                                let min = node.props.min as i64;
+                                let max = node.props.max as i64;
+                                let fill_w = if min >= max {
+                                    inner.w
+                                } else {
+                                    let clamped = (node.props.value as i64).clamp(min, max);
+                                    let span = max - min;
+                                    (((inner.w as i64) * (clamped - min) + span / 2) / span)
+                                        .clamp(0, inner.w as i64)
+                                        as u32
+                                };
+                                if fill_w > 0 {
+                                    let fill_rect = Rect::new(inner.x, inner.y, fill_w, inner.h);
+                                    let fill_r = radius
+                                        .saturating_sub(bw as u8)
+                                        .min((fill_rect.h / 2).min(255) as u8)
+                                        .min((fill_rect.w / 2).min(255) as u8);
+                                    out.push(PaintCmd::FillRoundedRect {
+                                        rect: fill_rect,
+                                        clip: clip.intersect(inner),
+                                        color: node.props.accent,
+                                        radius: fill_r,
+                                        border_color: None,
+                                        border_width: 0,
+                                    })?;
+                                }
+                            }
+                        }
+                    }
+                    NodeKind::Sparkline => {
+                        emit_box_bg_and_border(node, rect, clip, out)?;
+                        let inner = rect.inset(
+                            node.props.padding.left as u32,
+                            node.props.padding.top as u32,
+                            node.props.padding.right as u32,
+                            node.props.padding.bottom as u32,
+                        );
+                        let eff_clip = clip.intersect(inner);
+                        if !eff_clip.is_empty() {
+                            out.push(PaintCmd::Sparkline {
+                                rect: inner,
+                                clip: eff_clip,
                                 color: node.props.accent,
-                                radius: (track_h / 2) as u8,
-                                border_color: None,
-                                border_width: 0,
+                                series: node.props.series,
+                                min: node.props.min,
+                                max: node.props.max,
+                                stroke_width: 1,
                             })?;
                         }
-
-                        let knob_x = track_x + fill_w as i32 - (knob_w / 2) as i32;
-                        let knob_y = rect.y + ((rect.h - knob_h) / 2) as i32;
-                        let is_editing = focus.editing && focus.focused_slot == Some(frame.slot);
-                        out.push(PaintCmd::FillRoundedRect {
-                            rect: Rect::new(knob_x, knob_y, knob_w, knob_h),
-                            clip,
-                            color: node.props.fg,
-                            radius: 4,
-                            border_color: Some(if is_editing {
-                                node.props.focus_color
-                            } else {
-                                node.props.accent
-                            }),
-                            border_width: if is_editing { 2 } else { 1 },
-                        })?;
                     }
                 }
             }
 
-            // Push stage 1 for post-children (scrollbar + focus ring)
-            stack[sp] = Frame {
-                slot: frame.slot,
-                stage: 1,
-            };
-            sp += 1;
-
-            // Collect children onto temp buffer and push in reverse so first child pops first
-            let mut children = [NONE_IDX; 64];
-            let mut child_cnt = 0usize;
-            let mut ch = node.first_child;
-            while ch != NONE_IDX {
-                children[child_cnt] = ch;
-                child_cnt += 1;
-                ch = tree.nodes[ch as usize].next_sibling;
+            stack[top].stage = 1;
+            stack[top].next_child = node.first_child;
+        } else {
+            // Walk children in forward declaration order; emit post-children overlays when finished.
+            let mut next_link = frame.next_child;
+            let mut found = None;
+            while let Some(ch_idx) = next_link.get() {
+                let cn = &tree.nodes[ch_idx];
+                if cn.occupied && cn.props.visible() {
+                    found = Some((ch_idx, cn.next_sibling));
+                    break;
+                }
+                next_link = cn.next_sibling;
             }
-            while child_cnt > 0 {
-                child_cnt -= 1;
+
+            if let Some((ch_idx, after_sib)) = found {
+                stack[top].next_child = after_sib;
                 if sp >= stack.len() {
                     return Err(BuildError::Depth);
                 }
-                stack[sp] = Frame {
-                    slot: children[child_cnt],
+                stack[sp] = PaintDepthFrame {
+                    slot: ch_idx as u16,
                     stage: 0,
+                    next_child: SlotLink::NONE,
                 };
                 sp += 1;
+                continue;
             }
-        } else {
-            // Stage 1: post-children overlays (ScrollY scrollbar, focus ring)
+
+            // Stage post-children: ScrollY scrollbar & focus ring, then pop frame
             let clip = node.clip_rect;
             let rect = node.layout_rect;
 
@@ -479,8 +702,9 @@ pub fn emit_commands(
                 && rect.w > 6
             {
                 let track_h = rect.h.saturating_sub(4);
+                let min_thumb = 12.min(track_h) as u64;
                 let thumb_h = ((track_h as u64 * rect.h as u64) / node.content_height as u64)
-                    .clamp(12, track_h as u64) as u32;
+                    .clamp(min_thumb, track_h as u64) as u32;
                 let max_scroll = node.content_height.saturating_sub(rect.h).max(1);
                 let thumb_travel = track_h.saturating_sub(thumb_h);
                 let thumb_y = rect.y
@@ -524,6 +748,8 @@ pub fn emit_commands(
                     }
                 }
             }
+
+            sp -= 1;
         }
     }
 
@@ -540,26 +766,26 @@ fn emit_box_bg_and_border(
         return Ok(());
     }
     let bg = if node.pressed {
-        node.props.bg.map(|c| darken_or_mix(c, 3))
+        node.props.bg().map(|c| darken_or_mix(c, 3))
     } else {
-        node.props.bg
+        node.props.bg()
     };
     if let Some(color) = bg {
         if node.props.radius > 0
-            || (node.props.border_color.is_some() && node.props.border_width > 0)
+            || (node.props.border_color().is_some() && node.props.border_width > 0)
         {
             out.push(PaintCmd::FillRoundedRect {
                 rect,
                 clip,
                 color,
                 radius: node.props.radius,
-                border_color: node.props.border_color,
+                border_color: node.props.border_color(),
                 border_width: node.props.border_width,
             })?;
         } else {
             out.push(PaintCmd::FillRect { rect, clip, color })?;
         }
-    } else if let Some(bc) = node.props.border_color
+    } else if let Some(bc) = node.props.border_color()
         && node.props.border_width > 0
     {
         out.push(PaintCmd::StrokeRect {

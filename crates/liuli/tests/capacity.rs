@@ -52,17 +52,38 @@ fn generation_exhausted_returns_err_without_wraparound() {
     let mut anims = AnimPool::new();
     let mut dmg = DamageSet::new();
 
-    // Prime slot 1's generation high-water mark to u16::MAX
-    t1.generation_hwm[1] = u16::MAX;
+    // Prime slot 1's generation high-water mark to u32::MAX; reconciler must skip slot 1 and use slot 2.
+    t1.generation_hwm[1] = u32::MAX;
 
     {
         let mut vb = ViewBuilder::new(&mut draft);
-        vb.begin(Key(1), NodeKind::Root, NodeProps::new()).unwrap();
-        vb.leaf(Key(2), NodeKind::Label, NodeProps::new()).unwrap();
-        vb.end().unwrap();
+        vb.root(Key(1), NodeProps::new(), |ui| {
+            ui.label(Key(2), NodeProps::new())?;
+            Ok(())
+        })
+        .unwrap();
         vb.finish().unwrap();
     }
 
+    let ok = reconcile_into(
+        &draft,
+        &t1,
+        &mut t2,
+        screen,
+        &font,
+        &mut anims,
+        None,
+        None,
+        InstantMs(0),
+        &mut dmg,
+    );
+    assert!(ok.is_ok());
+    assert_eq!(t2.find_slot_by_key(Key(2)), Some(2));
+    assert_eq!(t2.generation_hwm[1], u32::MAX);
+
+    // Exhaust every free slot -> must fail cleanly with BuildError::GenerationExhausted.
+    t1.generation_hwm = [u32::MAX; liuli::core::capacity::MAX_NODES];
+    dmg.clear();
     let res = reconcile_into(
         &draft,
         &t1,

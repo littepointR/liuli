@@ -8,10 +8,9 @@ use embedded_graphics::primitives::{
     StrokeAlignment, Triangle,
 };
 use embedded_graphics::{Drawable, Pixel};
-use liuli::core::node::RetainedTree;
-use liuli::core::paint::{CommandList, PaintCmd, TextLookup};
+use liuli::core::paint::{CommandList, PaintCmd, SceneResources};
 use liuli::prelude::{IconKind, Point, Rect};
-use liuli::text::{Lf4Font, TextLayoutOptions, a4_pixel, blend_rgb565_a4, visit_layout_glyphs};
+use liuli::text::{FontSet, TextLayoutOptions, a4_pixel, blend_rgb565_a4, visit_layout_glyphs};
 
 use crate::image::{encode_png_rgb8, encode_ppm, rgb565_to_rgb8};
 
@@ -177,8 +176,8 @@ impl DrawTarget for MemoryScreen {
 /// rendering the full scene directly into a full-screen `MemoryScreen` in global coordinates.
 pub fn render_reference_fullscreen(
     cmds: &CommandList,
-    tree: &RetainedTree,
-    font: &Lf4Font<'_>,
+    resources: &impl SceneResources,
+    fonts: &FontSet<'_>,
 ) -> MemoryScreen {
     let mut screen = MemoryScreen::new(cmds.screen.w, cmds.screen.h);
     let _ = screen.clear(cmds.root_bg);
@@ -187,6 +186,7 @@ pub fn render_reference_fullscreen(
 
     for cmd in cmds.as_slice() {
         match *cmd {
+            PaintCmd::Empty => {}
             PaintCmd::FillRect { rect, clip, color } => {
                 let eff = rect.intersect(clip).intersect(full);
                 if !eff.is_empty() {
@@ -262,35 +262,38 @@ pub fn render_reference_fullscreen(
             PaintCmd::Text {
                 pos,
                 clip,
-                ink: _,
+                wrap_width,
                 text,
                 color,
-                max_width,
+                font: font_id,
+                align,
                 max_lines,
                 ellipsis,
             } => {
                 let eff_clip = clip.intersect(full);
-                if eff_clip.is_empty() || max_width == 0 {
+                if eff_clip.is_empty() || wrap_width == 0 {
                     continue;
                 }
                 let width_limit_clip = eff_clip.intersect(Rect::new(
                     eff_clip.x,
                     eff_clip.y,
-                    ((pos.x as i64 + max_width as i64) - eff_clip.x as i64)
+                    ((pos.x as i64 + wrap_width as i64) - eff_clip.x as i64)
                         .clamp(0, u32::MAX as i64) as u32,
                     eff_clip.h,
                 ));
                 if width_limit_clip.is_empty() {
                     continue;
                 }
-                let s = tree.lookup(text);
+                let s = resources.text(text);
+                let font = fonts.get(font_id);
                 visit_layout_glyphs(
                     font,
                     s,
                     TextLayoutOptions {
-                        max_width,
+                        max_width: wrap_width,
                         max_lines,
                         ellipsis,
+                        align,
                     },
                     |pg| {
                         let gx = pos.x + pg.x;
@@ -327,73 +330,187 @@ pub fn render_reference_fullscreen(
                 kind,
                 color,
             } => {
-                let eff_clip = clip.intersect(full);
+                if rect.w < 3 || rect.h < 3 {
+                    continue;
+                }
+                let eff_clip = clip.intersect(rect).intersect(full);
                 if eff_clip.is_empty() {
                     continue;
                 }
                 let mut clipped = screen.clipped(&eff_clip.to_eg());
-                let x = rect.x;
-                let y = rect.y;
-                let w = rect.w as i32;
-                let h = rect.h as i32;
-                let stroke = PrimitiveStyle::with_stroke(color, 2);
+                let sx = |u: i32| rect.x + (u * (rect.w as i32)) / 14;
+                let sy = |v: i32| rect.y + (v * (rect.h as i32)) / 14;
+                let sw = |u: i32| ((u * (rect.w as i32)) / 14).max(1) as u32;
+                let stroke = PrimitiveStyle::with_stroke(
+                    color,
+                    if rect.w >= 10 && rect.h >= 10 { 2 } else { 1 },
+                );
                 let thin = PrimitiveStyle::with_stroke(color, 1);
+                let fill = PrimitiveStyle::with_fill(color);
+                let draw_line =
+                    |clipped: &mut embedded_graphics::draw_target::Clipped<'_, MemoryScreen>,
+                     x0,
+                     y0,
+                     x1,
+                     y1,
+                     st| {
+                        let _ = Line::new(Point::new(sx(x0), sy(y0)), Point::new(sx(x1), sy(y1)))
+                            .into_styled(st)
+                            .draw(clipped);
+                    };
+
                 match kind {
                     IconKind::None => {}
                     IconKind::ChevronRight => {
-                        let mid_y = y + h / 2;
-                        let _ = Line::new(Point::new(x + 4, y + 3), Point::new(x + w - 4, mid_y))
-                            .into_styled(stroke)
-                            .draw(&mut clipped);
-                        let _ =
-                            Line::new(Point::new(x + w - 4, mid_y), Point::new(x + 4, y + h - 3))
-                                .into_styled(stroke)
-                                .draw(&mut clipped);
+                        draw_line(&mut clipped, 4, 3, 10, 7, stroke);
+                        draw_line(&mut clipped, 10, 7, 4, 11, stroke);
                     }
                     IconKind::Check => {
-                        let _ = Line::new(
-                            Point::new(x + 2, y + h / 2),
-                            Point::new(x + w / 2 - 1, y + h - 3),
-                        )
-                        .into_styled(stroke)
-                        .draw(&mut clipped);
-                        let _ = Line::new(
-                            Point::new(x + w / 2 - 1, y + h - 3),
-                            Point::new(x + w - 2, y + 3),
-                        )
-                        .into_styled(stroke)
-                        .draw(&mut clipped);
+                        draw_line(&mut clipped, 2, 7, 6, 11, stroke);
+                        draw_line(&mut clipped, 6, 11, 12, 3, stroke);
                     }
                     IconKind::Warning => {
                         let _ = Triangle::new(
-                            Point::new(x + w / 2, y + 1),
-                            Point::new(x + 1, y + h - 2),
-                            Point::new(x + w - 2, y + h - 2),
+                            Point::new(sx(7), sy(1)),
+                            Point::new(sx(1), sy(12)),
+                            Point::new(sx(12), sy(12)),
                         )
                         .into_styled(thin)
                         .draw(&mut clipped);
+                        draw_line(&mut clipped, 7, 5, 7, 8, thin);
+                        let _ = Pixel(Point::new(sx(7), sy(10)), color).draw(&mut clipped);
                     }
                     IconKind::Sliders => {
-                        let _ = Line::new(Point::new(x + 1, y + 4), Point::new(x + w - 2, y + 4))
-                            .into_styled(thin)
+                        draw_line(&mut clipped, 1, 4, 12, 4, thin);
+                        draw_line(&mut clipped, 1, 9, 12, 9, thin);
+                        let d = sw(4).max(2);
+                        let _ = Circle::new(Point::new(sx(3), sy(2)), d)
+                            .into_styled(fill)
                             .draw(&mut clipped);
-                        let _ = Line::new(
-                            Point::new(x + 1, y + h - 5),
-                            Point::new(x + w - 2, y + h - 5),
+                        let _ = Circle::new(Point::new(sx(7), sy(7)), d)
+                            .into_styled(fill)
+                            .draw(&mut clipped);
+                    }
+                    IconKind::Bell => {
+                        draw_line(&mut clipped, 5, 2, 9, 2, thin);
+                        draw_line(&mut clipped, 4, 3, 4, 8, thin);
+                        draw_line(&mut clipped, 10, 3, 10, 8, thin);
+                        draw_line(&mut clipped, 4, 3, 5, 2, thin);
+                        draw_line(&mut clipped, 9, 2, 10, 3, thin);
+                        draw_line(&mut clipped, 4, 8, 2, 10, thin);
+                        draw_line(&mut clipped, 10, 8, 12, 10, thin);
+                        draw_line(&mut clipped, 2, 10, 12, 10, thin);
+                        draw_line(&mut clipped, 6, 12, 8, 12, thin);
+                    }
+                    IconKind::Moon => {
+                        draw_line(&mut clipped, 9, 2, 5, 3, thin);
+                        draw_line(&mut clipped, 5, 3, 3, 6, thin);
+                        draw_line(&mut clipped, 3, 6, 3, 8, thin);
+                        draw_line(&mut clipped, 3, 8, 5, 11, thin);
+                        draw_line(&mut clipped, 5, 11, 9, 12, thin);
+                        draw_line(&mut clipped, 9, 12, 7, 9, thin);
+                        draw_line(&mut clipped, 7, 9, 7, 5, thin);
+                        draw_line(&mut clipped, 7, 5, 9, 2, thin);
+                    }
+                    IconKind::Thermometer => {
+                        draw_line(&mut clipped, 7, 2, 7, 9, stroke);
+                        let d = sw(5).max(3);
+                        let _ = Circle::new(Point::new(sx(5), sy(8)), d)
+                            .into_styled(fill)
+                            .draw(&mut clipped);
+                        draw_line(&mut clipped, 10, 3, 12, 3, thin);
+                        draw_line(&mut clipped, 10, 6, 12, 6, thin);
+                    }
+                    IconKind::Reset => {
+                        draw_line(&mut clipped, 7, 2, 11, 4, thin);
+                        draw_line(&mut clipped, 11, 4, 11, 9, thin);
+                        draw_line(&mut clipped, 11, 9, 7, 11, thin);
+                        draw_line(&mut clipped, 7, 11, 3, 9, thin);
+                        draw_line(&mut clipped, 3, 9, 3, 5, thin);
+                        draw_line(&mut clipped, 3, 5, 6, 2, thin);
+                        draw_line(&mut clipped, 3, 2, 3, 5, thin);
+                        draw_line(&mut clipped, 3, 5, 6, 5, thin);
+                    }
+                    IconKind::Gauge => {
+                        draw_line(&mut clipped, 2, 10, 3, 6, thin);
+                        draw_line(&mut clipped, 3, 6, 7, 3, thin);
+                        draw_line(&mut clipped, 7, 3, 11, 6, thin);
+                        draw_line(&mut clipped, 11, 6, 12, 10, thin);
+                        draw_line(&mut clipped, 7, 10, 11, 5, thin);
+                        let d = sw(3).max(2);
+                        let _ = Circle::new(Point::new(sx(6), sy(9)), d)
+                            .into_styled(fill)
+                            .draw(&mut clipped);
+                    }
+                    IconKind::Waveform => {
+                        draw_line(&mut clipped, 1, 7, 4, 7, thin);
+                        draw_line(&mut clipped, 4, 7, 5, 3, thin);
+                        draw_line(&mut clipped, 5, 3, 7, 11, thin);
+                        draw_line(&mut clipped, 7, 11, 9, 4, thin);
+                        draw_line(&mut clipped, 9, 4, 10, 7, thin);
+                        draw_line(&mut clipped, 10, 7, 13, 7, thin);
+                    }
+                    IconKind::Diagnostics => {
+                        let _ = Rectangle::new(
+                            Point::new(sx(1), sy(2)),
+                            Size::new(
+                                (sx(13) - sx(1)).max(1) as u32,
+                                (sy(12) - sy(2)).max(1) as u32,
+                            ),
                         )
                         .into_styled(thin)
                         .draw(&mut clipped);
-                        let _ = Circle::new(Point::new(x + 4, y + 2), 5)
-                            .into_styled(PrimitiveStyle::with_fill(color))
-                            .draw(&mut clipped);
-                        let _ = Circle::new(Point::new(x + w - 9, y + h - 7), 5)
-                            .into_styled(PrimitiveStyle::with_fill(color))
-                            .draw(&mut clipped);
+                        draw_line(&mut clipped, 4, 10, 4, 7, stroke);
+                        draw_line(&mut clipped, 7, 10, 7, 4, stroke);
+                        draw_line(&mut clipped, 10, 10, 10, 6, stroke);
                     }
-                    IconKind::Bell | IconKind::Moon | IconKind::Thermometer | IconKind::Reset => {
-                        let _ = Circle::new(Point::new(x + 2, y + 2), (w.min(h) - 4).max(4) as u32)
-                            .into_styled(thin)
-                            .draw(&mut clipped);
+                }
+            }
+            PaintCmd::Sparkline {
+                rect,
+                clip,
+                color,
+                series,
+                min,
+                max,
+                stroke_width,
+            } => {
+                let samples = resources.sparkline(series);
+                let eff_clip = clip.intersect(rect).intersect(full);
+                if eff_clip.is_empty() || rect.is_empty() || samples.is_empty() {
+                    continue;
+                }
+                let map_pt = |idx: usize, total: usize, sample: i16| -> Point {
+                    let w_span = (rect.w as i64).saturating_sub(1);
+                    let h_span = (rect.h as i64).saturating_sub(1);
+                    let px = if total <= 1 || w_span <= 0 {
+                        rect.x + (w_span.max(0) / 2) as i32
+                    } else {
+                        rect.x + ((idx as i64 * w_span) / ((total - 1) as i64)) as i32
+                    };
+                    let py = if h_span <= 0 {
+                        rect.y
+                    } else if min >= max {
+                        rect.y + (h_span / 2) as i32
+                    } else {
+                        let span = max as i64 - min as i64;
+                        let clamped = (sample as i64).clamp(min as i64, max as i64);
+                        let num = (max as i64 - clamped) * h_span + span / 2;
+                        rect.y + (num / span) as i32
+                    };
+                    Point::new(px, py)
+                };
+                let mut clipped = screen.clipped(&eff_clip.to_eg());
+                let n = samples.len();
+                if n == 1 {
+                    let _ = Pixel(map_pt(0, 1, samples[0]), color).draw(&mut clipped);
+                } else {
+                    let style = PrimitiveStyle::with_stroke(color, stroke_width.max(1) as u32);
+                    let mut prev = map_pt(0, n, samples[0]);
+                    for (i, &val) in samples.iter().enumerate().skip(1) {
+                        let next = map_pt(i, n, val);
+                        let _ = Line::new(prev, next).into_styled(style).draw(&mut clipped);
+                        prev = next;
                     }
                 }
             }

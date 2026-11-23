@@ -1,3 +1,5 @@
+use liuli_core::view::FontId;
+
 pub const LF4_MAGIC: &[u8; 4] = b"LLF4";
 pub const LF4_VERSION: u16 = 1;
 pub const LF4_HEADER_SIZE: usize = 24;
@@ -190,6 +192,45 @@ impl<'a> Lf4Font<'a> {
             metrics,
             data: &self.bytes[start..start + len],
         }
+    }
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub struct FontSet<'a> {
+    body16: Lf4Font<'a>,
+    small12: Lf4Font<'a>,
+}
+
+impl<'a> FontSet<'a> {
+    #[inline]
+    pub const fn new(body16: Lf4Font<'a>, small12: Lf4Font<'a>) -> Self {
+        Self { body16, small12 }
+    }
+
+    #[inline]
+    pub const fn single(font: Lf4Font<'a>) -> Self {
+        Self {
+            body16: font,
+            small12: font,
+        }
+    }
+
+    #[inline]
+    pub const fn get(&self, id: FontId) -> &Lf4Font<'a> {
+        match id {
+            FontId::Body16 => &self.body16,
+            FontId::Small12 => &self.small12,
+        }
+    }
+
+    #[inline]
+    pub const fn body16(&self) -> &Lf4Font<'a> {
+        &self.body16
+    }
+
+    #[inline]
+    pub const fn small12(&self) -> &Lf4Font<'a> {
+        &self.small12
     }
 }
 

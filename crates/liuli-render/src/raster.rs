@@ -1,6 +1,7 @@
 use core::convert::Infallible;
 
 use embedded_graphics::Drawable;
+use embedded_graphics::Pixel;
 use embedded_graphics::draw_target::{DrawTarget, DrawTargetExt};
 use embedded_graphics::geometry::Size;
 use embedded_graphics::pixelcolor::Rgb565;
@@ -9,9 +10,9 @@ use embedded_graphics::primitives::{
     StrokeAlignment, Triangle,
 };
 use liuli_core::geometry::{Point, Rect, rgb565_to_u16, u16_to_rgb565};
-use liuli_core::paint::{CommandList, PaintCmd, TextLookup};
+use liuli_core::paint::{CommandList, PaintCmd, SceneResources};
 use liuli_core::view::IconKind;
-use liuli_text::{Lf4Font, TextLayoutOptions, a4_pixel, blend_rgb565_a4, visit_layout_glyphs};
+use liuli_text::{FontSet, TextLayoutOptions, a4_pixel, blend_rgb565_a4, visit_layout_glyphs};
 
 use crate::band::BandTarget;
 
@@ -27,23 +28,20 @@ where
 {
     let band_rect = target.band_rect();
     let eff_clip = global_clip.intersect(band_rect);
-    if eff_clip.is_empty() {
-        // Note: EG Drawable has arbitrary Output; caller skips empty eff_clip or uses Output = ()
-    }
     let offset = Point::new(-band_rect.x, -band_rect.y);
     let mut translated = target.translated(offset);
     let mut clipped = translated.clipped(&eff_clip.to_eg());
     drawable.draw(&mut clipped)
 }
 
-pub fn render_band<'f, L>(
+pub fn render_band<'f, R>(
     target: &mut BandTarget<'_>,
     cmds: &CommandList,
-    text_lookup: &L,
-    font: &Lf4Font<'f>,
+    resources: &R,
+    fonts: &FontSet<'f>,
 ) -> u32
 where
-    L: TextLookup + ?Sized,
+    R: SceneResources + ?Sized,
 {
     let _ = target.clear(cmds.root_bg);
     let band_rect = target.band_rect();
@@ -56,6 +54,7 @@ where
         replayed += 1;
 
         match *cmd {
+            PaintCmd::Empty => {}
             PaintCmd::FillRect { rect, clip, color } => {
                 let eff = rect.intersect(clip).intersect(band_rect);
                 if !eff.is_empty() {
@@ -137,28 +136,30 @@ where
             PaintCmd::Text {
                 pos,
                 clip,
-                ink: _,
+                wrap_width,
                 text,
                 color,
-                max_width,
+                font: font_id,
+                align,
                 max_lines,
                 ellipsis,
             } => {
                 let eff_clip = clip.intersect(band_rect);
-                if eff_clip.is_empty() || max_width == 0 {
+                if eff_clip.is_empty() || wrap_width == 0 {
                     continue;
                 }
                 let width_limit_clip = eff_clip.intersect(Rect::new(
                     eff_clip.x,
                     eff_clip.y,
-                    ((pos.x as i64 + max_width as i64) - eff_clip.x as i64)
+                    ((pos.x as i64 + wrap_width as i64) - eff_clip.x as i64)
                         .clamp(0, u32::MAX as i64) as u32,
                     eff_clip.h,
                 ));
                 if width_limit_clip.is_empty() {
                     continue;
                 }
-                let s = text_lookup.lookup(text);
+                let s = resources.text(text);
+                let font = fonts.get(font_id);
                 let stride = target.width() as usize;
                 let words = target.words_mut();
 
@@ -166,9 +167,10 @@ where
                     font,
                     s,
                     TextLayoutOptions {
-                        max_width,
+                        max_width: wrap_width,
                         max_lines,
                         ellipsis,
+                        align,
                     },
                     |pg| {
                         let gx = pos.x + pg.x;
@@ -210,75 +212,248 @@ where
             } => {
                 draw_icon(target, rect, clip, kind, color);
             }
+            PaintCmd::Sparkline {
+                rect,
+                clip,
+                color,
+                series,
+                min,
+                max,
+                stroke_width,
+            } => {
+                draw_sparkline(
+                    target,
+                    rect,
+                    clip,
+                    color,
+                    resources.sparkline(series),
+                    min,
+                    max,
+                    stroke_width,
+                );
+            }
         }
     }
 
     replayed
 }
 
+#[inline]
+pub fn map_sparkline_point(
+    rect: Rect,
+    idx: usize,
+    total: usize,
+    sample: i16,
+    min: i16,
+    max: i16,
+) -> Point {
+    let w_span = (rect.w as i64).saturating_sub(1);
+    let h_span = (rect.h as i64).saturating_sub(1);
+    let x = if total <= 1 || w_span <= 0 {
+        rect.x + (w_span.max(0) / 2) as i32
+    } else {
+        rect.x + ((idx as i64 * w_span) / ((total - 1) as i64)) as i32
+    };
+    let y = if h_span <= 0 {
+        rect.y
+    } else if min >= max {
+        rect.y + (h_span / 2) as i32
+    } else {
+        let span = max as i64 - min as i64;
+        let clamped = (sample as i64).clamp(min as i64, max as i64);
+        let num = (max as i64 - clamped) * h_span + span / 2;
+        rect.y + (num / span) as i32
+    };
+    Point::new(x, y)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_sparkline(
+    target: &mut BandTarget<'_>,
+    rect: Rect,
+    clip: Rect,
+    color: Rgb565,
+    samples: &[i16],
+    min: i16,
+    max: i16,
+    stroke_width: u8,
+) {
+    let eff_clip = clip.intersect(rect);
+    if eff_clip.is_empty() || rect.is_empty() || samples.is_empty() {
+        return;
+    }
+    let band_clip = eff_clip.intersect(target.band_rect());
+    if band_clip.is_empty() {
+        return;
+    }
+    let n = samples.len();
+    if n == 1 {
+        let p = map_sparkline_point(rect, 0, 1, samples[0], min, max);
+        let _ = draw_eg(target, eff_clip, &Pixel(p, color));
+        return;
+    }
+    let style = PrimitiveStyle::with_stroke(color, stroke_width.max(1) as u32);
+    let mut prev = map_sparkline_point(rect, 0, n, samples[0], min, max);
+    for (i, &val) in samples.iter().enumerate().skip(1) {
+        let next = map_sparkline_point(rect, i, n, val, min, max);
+        let seg = Line::new(prev, next).into_styled(style);
+        let _ = draw_eg(target, eff_clip, &seg);
+        prev = next;
+    }
+}
+
+#[inline]
+fn icon_sx(rect: Rect, u: i32) -> i32 {
+    rect.x + (u * (rect.w as i32)) / 14
+}
+
+#[inline]
+fn icon_sy(rect: Rect, v: i32) -> i32 {
+    rect.y + (v * (rect.h as i32)) / 14
+}
+
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn draw_icon_line(
+    target: &mut BandTarget<'_>,
+    rect: Rect,
+    eff_clip: Rect,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    style: PrimitiveStyle<Rgb565>,
+) {
+    let l = Line::new(
+        Point::new(icon_sx(rect, x0), icon_sy(rect, y0)),
+        Point::new(icon_sx(rect, x1), icon_sy(rect, y1)),
+    )
+    .into_styled(style);
+    let _ = draw_eg(target, eff_clip, &l);
+}
+
 fn draw_icon(target: &mut BandTarget<'_>, rect: Rect, clip: Rect, kind: IconKind, color: Rgb565) {
-    let x = rect.x;
-    let y = rect.y;
-    let w = rect.w as i32;
-    let h = rect.h as i32;
-    let stroke = PrimitiveStyle::with_stroke(color, 2);
+    if rect.w < 3 || rect.h < 3 {
+        return;
+    }
+    let eff_clip = clip.intersect(rect);
+    if eff_clip.is_empty() {
+        return;
+    }
+    let sw = |u: i32| ((u * (rect.w as i32)) / 14).max(1) as u32;
+    let stroke =
+        PrimitiveStyle::with_stroke(color, if rect.w >= 10 && rect.h >= 10 { 2 } else { 1 });
     let thin = PrimitiveStyle::with_stroke(color, 1);
+    let fill = PrimitiveStyle::with_fill(color);
 
     match kind {
         IconKind::None => {}
         IconKind::ChevronRight => {
-            let mid_y = y + h / 2;
-            let l1 = Line::new(Point::new(x + 4, y + 3), Point::new(x + w - 4, mid_y))
-                .into_styled(stroke);
-            let l2 = Line::new(Point::new(x + w - 4, mid_y), Point::new(x + 4, y + h - 3))
-                .into_styled(stroke);
-            let _ = draw_eg(target, clip, &l1);
-            let _ = draw_eg(target, clip, &l2);
+            draw_icon_line(target, rect, eff_clip, 4, 3, 10, 7, stroke);
+            draw_icon_line(target, rect, eff_clip, 10, 7, 4, 11, stroke);
         }
         IconKind::Check => {
-            let l1 = Line::new(
-                Point::new(x + 2, y + h / 2),
-                Point::new(x + w / 2 - 1, y + h - 3),
-            )
-            .into_styled(stroke);
-            let l2 = Line::new(
-                Point::new(x + w / 2 - 1, y + h - 3),
-                Point::new(x + w - 2, y + 3),
-            )
-            .into_styled(stroke);
-            let _ = draw_eg(target, clip, &l1);
-            let _ = draw_eg(target, clip, &l2);
+            draw_icon_line(target, rect, eff_clip, 2, 7, 6, 11, stroke);
+            draw_icon_line(target, rect, eff_clip, 6, 11, 12, 3, stroke);
         }
         IconKind::Warning => {
             let tri = Triangle::new(
-                Point::new(x + w / 2, y + 1),
-                Point::new(x + 1, y + h - 2),
-                Point::new(x + w - 2, y + h - 2),
+                Point::new(icon_sx(rect, 7), icon_sy(rect, 1)),
+                Point::new(icon_sx(rect, 1), icon_sy(rect, 12)),
+                Point::new(icon_sx(rect, 12), icon_sy(rect, 12)),
             )
             .into_styled(thin);
-            let _ = draw_eg(target, clip, &tri);
+            let _ = draw_eg(target, eff_clip, &tri);
+            draw_icon_line(target, rect, eff_clip, 7, 5, 7, 8, thin);
+            let _ = draw_eg(
+                target,
+                eff_clip,
+                &Pixel(Point::new(icon_sx(rect, 7), icon_sy(rect, 10)), color),
+            );
         }
         IconKind::Sliders => {
-            let l1 =
-                Line::new(Point::new(x + 1, y + 4), Point::new(x + w - 2, y + 4)).into_styled(thin);
-            let l2 = Line::new(
-                Point::new(x + 1, y + h - 5),
-                Point::new(x + w - 2, y + h - 5),
+            draw_icon_line(target, rect, eff_clip, 1, 4, 12, 4, thin);
+            draw_icon_line(target, rect, eff_clip, 1, 9, 12, 9, thin);
+            let d = sw(4).max(2);
+            let c1 =
+                Circle::new(Point::new(icon_sx(rect, 3), icon_sy(rect, 2)), d).into_styled(fill);
+            let c2 =
+                Circle::new(Point::new(icon_sx(rect, 7), icon_sy(rect, 7)), d).into_styled(fill);
+            let _ = draw_eg(target, eff_clip, &c1);
+            let _ = draw_eg(target, eff_clip, &c2);
+        }
+        IconKind::Bell => {
+            draw_icon_line(target, rect, eff_clip, 5, 2, 9, 2, thin);
+            draw_icon_line(target, rect, eff_clip, 4, 3, 4, 8, thin);
+            draw_icon_line(target, rect, eff_clip, 10, 3, 10, 8, thin);
+            draw_icon_line(target, rect, eff_clip, 4, 3, 5, 2, thin);
+            draw_icon_line(target, rect, eff_clip, 9, 2, 10, 3, thin);
+            draw_icon_line(target, rect, eff_clip, 4, 8, 2, 10, thin);
+            draw_icon_line(target, rect, eff_clip, 10, 8, 12, 10, thin);
+            draw_icon_line(target, rect, eff_clip, 2, 10, 12, 10, thin);
+            draw_icon_line(target, rect, eff_clip, 6, 12, 8, 12, thin);
+        }
+        IconKind::Moon => {
+            draw_icon_line(target, rect, eff_clip, 9, 2, 5, 3, thin);
+            draw_icon_line(target, rect, eff_clip, 5, 3, 3, 6, thin);
+            draw_icon_line(target, rect, eff_clip, 3, 6, 3, 8, thin);
+            draw_icon_line(target, rect, eff_clip, 3, 8, 5, 11, thin);
+            draw_icon_line(target, rect, eff_clip, 5, 11, 9, 12, thin);
+            draw_icon_line(target, rect, eff_clip, 9, 12, 7, 9, thin);
+            draw_icon_line(target, rect, eff_clip, 7, 9, 7, 5, thin);
+            draw_icon_line(target, rect, eff_clip, 7, 5, 9, 2, thin);
+        }
+        IconKind::Thermometer => {
+            draw_icon_line(target, rect, eff_clip, 7, 2, 7, 9, stroke);
+            let d = sw(5).max(3);
+            let bulb =
+                Circle::new(Point::new(icon_sx(rect, 5), icon_sy(rect, 8)), d).into_styled(fill);
+            let _ = draw_eg(target, eff_clip, &bulb);
+            draw_icon_line(target, rect, eff_clip, 10, 3, 12, 3, thin);
+            draw_icon_line(target, rect, eff_clip, 10, 6, 12, 6, thin);
+        }
+        IconKind::Reset => {
+            draw_icon_line(target, rect, eff_clip, 7, 2, 11, 4, thin);
+            draw_icon_line(target, rect, eff_clip, 11, 4, 11, 9, thin);
+            draw_icon_line(target, rect, eff_clip, 11, 9, 7, 11, thin);
+            draw_icon_line(target, rect, eff_clip, 7, 11, 3, 9, thin);
+            draw_icon_line(target, rect, eff_clip, 3, 9, 3, 5, thin);
+            draw_icon_line(target, rect, eff_clip, 3, 5, 6, 2, thin);
+            draw_icon_line(target, rect, eff_clip, 3, 2, 3, 5, thin);
+            draw_icon_line(target, rect, eff_clip, 3, 5, 6, 5, thin);
+        }
+        IconKind::Gauge => {
+            draw_icon_line(target, rect, eff_clip, 2, 10, 3, 6, thin);
+            draw_icon_line(target, rect, eff_clip, 3, 6, 7, 3, thin);
+            draw_icon_line(target, rect, eff_clip, 7, 3, 11, 6, thin);
+            draw_icon_line(target, rect, eff_clip, 11, 6, 12, 10, thin);
+            draw_icon_line(target, rect, eff_clip, 7, 10, 11, 5, thin);
+            let d = sw(3).max(2);
+            let hub =
+                Circle::new(Point::new(icon_sx(rect, 6), icon_sy(rect, 9)), d).into_styled(fill);
+            let _ = draw_eg(target, eff_clip, &hub);
+        }
+        IconKind::Waveform => {
+            draw_icon_line(target, rect, eff_clip, 1, 7, 4, 7, thin);
+            draw_icon_line(target, rect, eff_clip, 4, 7, 5, 3, thin);
+            draw_icon_line(target, rect, eff_clip, 5, 3, 7, 11, thin);
+            draw_icon_line(target, rect, eff_clip, 7, 11, 9, 4, thin);
+            draw_icon_line(target, rect, eff_clip, 9, 4, 10, 7, thin);
+            draw_icon_line(target, rect, eff_clip, 10, 7, 13, 7, thin);
+        }
+        IconKind::Diagnostics => {
+            let box_rect = Rectangle::new(
+                Point::new(icon_sx(rect, 1), icon_sy(rect, 2)),
+                Size::new(
+                    (icon_sx(rect, 13) - icon_sx(rect, 1)).max(1) as u32,
+                    (icon_sy(rect, 12) - icon_sy(rect, 2)).max(1) as u32,
+                ),
             )
             .into_styled(thin);
-            let c1 = Circle::new(Point::new(x + 4, y + 2), 5)
-                .into_styled(PrimitiveStyle::with_fill(color));
-            let c2 = Circle::new(Point::new(x + w - 9, y + h - 7), 5)
-                .into_styled(PrimitiveStyle::with_fill(color));
-            let _ = draw_eg(target, clip, &l1);
-            let _ = draw_eg(target, clip, &l2);
-            let _ = draw_eg(target, clip, &c1);
-            let _ = draw_eg(target, clip, &c2);
-        }
-        IconKind::Bell | IconKind::Moon | IconKind::Thermometer | IconKind::Reset => {
-            let c = Circle::new(Point::new(x + 2, y + 2), (w.min(h) - 4).max(4) as u32)
-                .into_styled(thin);
-            let _ = draw_eg(target, clip, &c);
+            let _ = draw_eg(target, eff_clip, &box_rect);
+            draw_icon_line(target, rect, eff_clip, 4, 10, 4, 7, stroke);
+            draw_icon_line(target, rect, eff_clip, 7, 10, 7, 4, stroke);
+            draw_icon_line(target, rect, eff_clip, 10, 10, 10, 6, stroke);
         }
     }
 }

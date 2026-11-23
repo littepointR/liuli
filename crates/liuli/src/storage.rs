@@ -1,5 +1,5 @@
 use liuli_core::damage::DamageSet;
-use liuli_core::focus::{FocusState, PointerState};
+use liuli_core::focus::{FocusState, PointerState, RepeatState};
 use liuli_core::node::RetainedTree;
 use liuli_core::paint::CommandList;
 use liuli_core::time::{AnimPool, ClockTracker};
@@ -14,26 +14,32 @@ pub struct Storage {
     pub damage: DamageSet,
     pub cand_damage: DamageSet,
     pub anims: AnimPool,
+    pub(crate) cand_anims: AnimPool,
     pub focus: FocusState,
     pub pointer: PointerState,
+    pub repeat: RepeatState,
     pub clock: ClockTracker,
 }
 
 impl Storage {
+    pub const ZERO: Self = Self {
+        trees: [RetainedTree::ZERO, RetainedTree::ZERO],
+        active_tree_idx: 0,
+        cmds: [CommandList::ZERO, CommandList::ZERO],
+        active_cmd_idx: 0,
+        draft: ViewDraft::ZERO,
+        damage: DamageSet::new(),
+        cand_damage: DamageSet::new(),
+        anims: AnimPool::ZERO,
+        cand_anims: AnimPool::ZERO,
+        focus: FocusState::ZERO,
+        pointer: PointerState::ZERO,
+        repeat: RepeatState::ZERO,
+        clock: ClockTracker::ZERO,
+    };
+
     pub const fn new() -> Self {
-        Self {
-            trees: [RetainedTree::new(), RetainedTree::new()],
-            active_tree_idx: 0,
-            cmds: [CommandList::new(), CommandList::new()],
-            active_cmd_idx: 0,
-            draft: ViewDraft::new(),
-            damage: DamageSet::new(),
-            cand_damage: DamageSet::new(),
-            anims: AnimPool::new(),
-            focus: FocusState::new(),
-            pointer: PointerState::new(),
-            clock: ClockTracker::new(),
-        }
+        Self::ZERO
     }
 
     pub fn init_in_place(&mut self) {
@@ -49,9 +55,11 @@ impl Storage {
         self.damage.clear();
         self.cand_damage.clear();
         self.anims.reset();
+        self.cand_anims.reset();
         self.focus.reset();
-        self.pointer = PointerState::new();
-        self.clock = ClockTracker::new();
+        self.pointer = PointerState::ZERO;
+        self.repeat = RepeatState::ZERO;
+        self.clock = ClockTracker::ZERO;
     }
 
     #[inline]
@@ -70,3 +78,17 @@ impl Default for Storage {
         Self::new()
     }
 }
+
+#[cfg(target_pointer_width = "32")]
+const _: () = {
+    assert!(core::mem::size_of::<liuli_core::paint::PaintCmd>() <= 48);
+    assert!(core::mem::size_of::<liuli_core::node::RetainedNode>() <= 224);
+    assert!(core::mem::size_of::<Storage>() <= 67_456);
+};
+
+#[cfg(target_pointer_width = "64")]
+const _: () = {
+    assert!(core::mem::size_of::<liuli_core::paint::PaintCmd>() <= 48);
+    assert!(core::mem::size_of::<liuli_core::node::RetainedNode>() <= 232);
+    assert!(core::mem::size_of::<Storage>() <= 73_120);
+};

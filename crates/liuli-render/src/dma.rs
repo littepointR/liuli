@@ -1,11 +1,145 @@
 use liuli_core::capacity::{FrameMetrics, MAX_DAMAGE, PresentError, PresentStatus};
 use liuli_core::damage::DamageSet;
 use liuli_core::geometry::Rect;
-use liuli_core::paint::{CommandList, TextLookup};
-use liuli_text::Lf4Font;
+use liuli_core::paint::{CommandList, SceneResources};
+use liuli_core::time::InstantMs;
+use liuli_text::FontSet;
 
 use crate::band::BandTarget;
 use crate::raster::render_band;
+
+pub const CACHE_LINE_BYTES: usize = 32;
+
+/// Cache-line-aligned DMA pixel band storage (32-byte aligned).
+#[repr(C, align(32))]
+pub struct AlignedBand<const N: usize>(pub [u16; N]);
+
+impl<const N: usize> AlignedBand<N> {
+    pub const fn zeroed() -> Self {
+        Self([0u16; N])
+    }
+
+    #[inline]
+    pub fn as_slice(&self) -> &[u16] {
+        &self.0
+    }
+
+    #[inline]
+    pub fn as_mut_slice(&mut self) -> &mut [u16] {
+        &mut self.0
+    }
+}
+
+pub trait DmaCacheOps {
+    fn clean_dcache_range(&mut self, addr: usize, len_bytes: usize);
+    fn data_sync_barrier(&mut self);
+}
+
+#[derive(Copy, Clone, Default, Debug)]
+pub struct NoCacheOps;
+
+impl DmaCacheOps for NoCacheOps {
+    #[inline]
+    fn clean_dcache_range(&mut self, _addr: usize, _len_bytes: usize) {}
+
+    #[inline]
+    fn data_sync_barrier(&mut self) {}
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub enum TeMode {
+    Immediate,
+    WaitForTe { timeout_ms: u32 },
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub enum TeWait {
+    Ready,
+    Waiting,
+    TimedOut,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub enum TeError<E> {
+    TimedOut,
+    Driver(E),
+}
+
+/// Tear-effect (TE) synchronization gate evaluated before starting the first band of a frame.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub struct TeGate {
+    mode: TeMode,
+    armed_frame: Option<u32>,
+    wait_start: Option<InstantMs>,
+    edge_seen: bool,
+}
+
+impl TeGate {
+    pub const fn new(mode: TeMode) -> Self {
+        Self {
+            mode,
+            armed_frame: None,
+            wait_start: None,
+            edge_seen: false,
+        }
+    }
+
+    #[inline]
+    pub const fn mode(&self) -> TeMode {
+        self.mode
+    }
+
+    pub fn set_mode(&mut self, mode: TeMode) {
+        self.mode = mode;
+        self.reset();
+    }
+
+    pub fn reset(&mut self) {
+        self.armed_frame = None;
+        self.wait_start = None;
+        self.edge_seen = false;
+    }
+
+    /// Records a TE pulse; ignored unless currently waiting for a frame's initial TE edge.
+    pub fn on_te_edge(&mut self) {
+        if self.wait_start.is_some() {
+            self.edge_seen = true;
+        }
+    }
+
+    /// Evaluates whether `(frame, seq)` may start at `now`.
+    ///
+    /// Subsequent bands (`seq > 0`) pipeline immediately without re-waiting for TE.
+    pub fn check_band(&mut self, frame: u32, seq: u32, now: InstantMs) -> TeWait {
+        let timeout_ms = match self.mode {
+            TeMode::Immediate => return TeWait::Ready,
+            TeMode::WaitForTe { timeout_ms } => timeout_ms,
+        };
+        if seq > 0 {
+            return TeWait::Ready;
+        }
+        if self.armed_frame != Some(frame) {
+            self.armed_frame = Some(frame);
+            self.wait_start = Some(now);
+            self.edge_seen = false;
+            return TeWait::Waiting;
+        }
+        if self.edge_seen {
+            self.wait_start = None;
+            self.edge_seen = false;
+            return TeWait::Ready;
+        }
+        if let Some(start) = self.wait_start
+            && now.saturating_sub(start) >= timeout_ms as u64
+        {
+            self.armed_frame = None;
+            self.wait_start = None;
+            self.edge_seen = false;
+            return TeWait::TimedOut;
+        }
+        TeWait::Waiting
+    }
+}
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum BandSlot {
@@ -163,6 +297,11 @@ impl<'a> ReadyBand<'a> {
         &self.buf[..self.valid_len]
     }
 
+    #[inline]
+    pub const fn valid_bytes(&self) -> usize {
+        self.valid_len * 2
+    }
+
     /// Transfers ownership into a driver-owned `InFlightBand`.
     #[inline]
     pub fn into_in_flight(self) -> InFlightBand<'a> {
@@ -200,6 +339,11 @@ impl<'a> InFlightBand<'a> {
     #[inline]
     pub fn pixels(&self) -> &[u16] {
         &self.buf[..self.valid_len]
+    }
+
+    #[inline]
+    pub const fn valid_bytes(&self) -> usize {
+        self.valid_len * 2
     }
 
     /// Restores mutable ownership only after hardware has definitively stopped accessing the buffer.
@@ -304,6 +448,7 @@ pub struct DmaCoordinator<'a> {
     in_flight: Option<(u32, u32, BandSlot)>,
     faulted: bool,
     active_frame: bool,
+    session_token: u32,
     frame_id: u32,
     next_seq: u32,
     rects: [Rect; MAX_DAMAGE],
@@ -326,6 +471,7 @@ impl<'a> DmaCoordinator<'a> {
             in_flight: None,
             faulted: false,
             active_frame: false,
+            session_token: 0,
             frame_id: 0,
             next_seq: 0,
             rects: [Rect::ZERO; MAX_DAMAGE],
@@ -353,6 +499,21 @@ impl<'a> DmaCoordinator<'a> {
         self.in_flight.is_some()
     }
 
+    #[inline]
+    pub const fn has_queued(&self) -> bool {
+        self.queued.is_some()
+    }
+
+    #[inline]
+    pub const fn frame_id(&self) -> u32 {
+        self.frame_id
+    }
+
+    #[inline]
+    pub const fn session_token(&self) -> u32 {
+        self.session_token
+    }
+
     pub fn slot_capacity_ok(&self, screen: Rect) -> bool {
         let min_words = screen.w as usize;
         self.slots
@@ -366,6 +527,16 @@ impl<'a> DmaCoordinator<'a> {
         damage: &DamageSet,
         screen: Rect,
         configured_band_h: u32,
+    ) -> Result<(), PresentError<E>> {
+        self.begin_frame_with_session(damage, screen, configured_band_h, 0)
+    }
+
+    pub fn begin_frame_with_session<E>(
+        &mut self,
+        damage: &DamageSet,
+        screen: Rect,
+        configured_band_h: u32,
+        session_token: u32,
     ) -> Result<(), PresentError<E>> {
         if self.faulted {
             return Err(PresentError::DmaFaulted);
@@ -399,31 +570,42 @@ impl<'a> DmaCoordinator<'a> {
         self.screen = screen;
         self.frame_id = self.frame_id.wrapping_add(1).max(1);
         self.next_seq = 0;
+        self.session_token = session_token;
         self.active_frame = true;
         self.metrics = FrameMetrics::default();
         Ok(())
     }
 
-    pub fn recover_from_fault(&mut self, buf_a: &'a mut [u16], buf_b: &'a mut [u16]) {
+    /// Re-arms DMA slots only after the coordinator is faulted and idle (no active/in-flight transfer).
+    pub fn recover_from_fault<E>(
+        &mut self,
+        buf_a: &'a mut [u16],
+        buf_b: &'a mut [u16],
+    ) -> Result<(), PresentError<E>> {
+        if !self.faulted || self.active_frame || self.in_flight.is_some() {
+            return Err(PresentError::DmaBusy);
+        }
         self.slots[0] = Some(FreeBand::new(buf_a, BandSlot::A));
         self.slots[1] = Some(FreeBand::new(buf_b, BandSlot::B));
         self.queued = None;
         self.in_flight = None;
         self.active_frame = false;
+        self.session_token = 0;
         self.faulted = false;
+        Ok(())
     }
 
-    pub fn step<S, L>(
+    pub fn step<S, R>(
         &mut self,
         sink: &mut S,
         cmds: &CommandList,
         live_damage: &mut DamageSet,
-        text_lookup: &L,
-        font: &Lf4Font<'_>,
+        resources: &R,
+        fonts: &FontSet<'_>,
     ) -> Result<(PresentStatus, FrameMetrics), PresentError<S::Error>>
     where
         S: DmaSink<'a>,
-        L: TextLookup + ?Sized,
+        R: SceneResources + ?Sized,
     {
         if self.faulted {
             return Err(PresentError::DmaFaulted);
@@ -440,9 +622,14 @@ impl<'a> DmaCoordinator<'a> {
                     band,
                 } => {
                     if frame == exp_frame && seq == exp_seq && slot == exp_slot {
+                        if band.slot() != exp_slot {
+                            self.in_flight = None;
+                            self.abort_keep_damage(live_damage);
+                            self.faulted = true;
+                            return Err(PresentError::DmaFaulted);
+                        }
                         self.in_flight = None;
-                        let band_idx = band.slot() as usize;
-                        self.slots[band_idx] = Some(band);
+                        self.slots[exp_slot as usize] = Some(band);
                     } else {
                         // Stale or mismatched completion: ignore and keep waiting for expected slot
                     }
@@ -456,17 +643,14 @@ impl<'a> DmaCoordinator<'a> {
                 } => {
                     if frame == exp_frame && seq == exp_seq && slot == exp_slot {
                         self.in_flight = None;
-                        if let Some(q) = self.queued.take() {
-                            let free = q.reclaim_unstarted();
-                            let s = free.slot() as usize;
-                            self.slots[s] = Some(free);
-                        }
-                        self.active_frame = false;
-                        live_damage.mark_full_screen(self.screen);
+                        self.abort_keep_damage(live_damage);
 
                         if let Some(free) = band {
-                            let s = free.slot() as usize;
-                            self.slots[s] = Some(free);
+                            if free.slot() != exp_slot {
+                                self.faulted = true;
+                                return Err(PresentError::DmaFaulted);
+                            }
+                            self.slots[exp_slot as usize] = Some(free);
                             return Err(PresentError::Target(error));
                         } else {
                             self.faulted = true;
@@ -502,8 +686,7 @@ impl<'a> DmaCoordinator<'a> {
                     let free = returned.reclaim_unstarted();
                     let s = free.slot() as usize;
                     self.slots[s] = Some(free);
-                    self.active_frame = false;
-                    live_damage.mark_full_screen(self.screen);
+                    self.abort_keep_damage(live_damage);
                     return Err(PresentError::Target(err));
                 }
             }
@@ -535,7 +718,7 @@ impl<'a> DmaCoordinator<'a> {
                 self.metrics.commands_replayed = self
                     .metrics
                     .commands_replayed
-                    .saturating_add(render_band(&mut target, cmds, text_lookup, font));
+                    .saturating_add(render_band(&mut target, cmds, resources, fonts));
             }
             let seq = self.next_seq;
             self.next_seq += 1;
@@ -566,8 +749,7 @@ impl<'a> DmaCoordinator<'a> {
                         let free = returned.reclaim_unstarted();
                         let s = free.slot() as usize;
                         self.slots[s] = Some(free);
-                        self.active_frame = false;
-                        live_damage.mark_full_screen(self.screen);
+                        self.abort_keep_damage(live_damage);
                         return Err(PresentError::Target(err));
                     }
                 }
@@ -581,6 +763,7 @@ impl<'a> DmaCoordinator<'a> {
         if self.in_flight.is_none() && self.queued.is_none() && !self.has_more_bands() {
             live_damage.clear();
             self.active_frame = false;
+            self.session_token = 0;
             return Ok((PresentStatus::Presented, self.metrics));
         }
 
@@ -640,6 +823,7 @@ impl<'a> DmaCoordinator<'a> {
             self.slots[s] = Some(free);
         }
         self.active_frame = false;
+        self.session_token = 0;
         live_damage.mark_full_screen(self.screen);
     }
 }

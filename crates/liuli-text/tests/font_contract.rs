@@ -1,5 +1,6 @@
 use liuli_core::geometry::Rgb565;
 use liuli_core::layout::TextMeasurer;
+use liuli_core::view::{FontId, TextAlign};
 use liuli_text::{
     FontError, Lf4Font, TextLayoutOptions, a4_pixel, blend_rgb565_a4, visit_layout_glyphs,
 };
@@ -106,20 +107,20 @@ fn layout_wrap_newlines_negative_bearing_ellipsis_and_fallback() {
     let font = Lf4Font::from_bytes(&bytes).unwrap();
 
     // Empty text => 0 lines
-    let empty = font.measure_text("", 100, 0, true);
+    let empty = font.measure_text(FontId::Body16, "", 100, 0, true, TextAlign::Start);
     assert_eq!(empty.lines, 0);
     assert_eq!(empty.size.height, 0);
 
     // Zero max_width => 0 lines, no drawing
-    let zero_w = font.measure_text("AB", 0, 0, true);
+    let zero_w = font.measure_text(FontId::Body16, "AB", 0, 0, true, TextAlign::Start);
     assert_eq!(zero_w.lines, 0);
 
     // Negative bearing extends ink left of 0
-    let neg_b = font.measure_text("BA", 100, 1, false);
+    let neg_b = font.measure_text(FontId::Body16, "BA", 100, 1, false, TextAlign::Start);
     assert_eq!(neg_b.ink.x, -2);
 
     // Explicit \r\n + trailing \n
-    let nl = font.measure_text("A\r\nB\n", 100, 0, false);
+    let nl = font.measure_text(FontId::Body16, "A\r\nB\n", 100, 0, false, TextAlign::Start);
     assert_eq!(nl.lines, 3);
 
     // Over-wide single glyph (fallback '□' adv=12 > max_width=6): still advances 1 scalar
@@ -131,6 +132,7 @@ fn layout_wrap_newlines_negative_bearing_ellipsis_and_fallback() {
             max_width: 6,
             max_lines: 0,
             ellipsis: false,
+            align: TextAlign::Start,
         },
         |g| {
             assert_eq!(g.glyph.metrics.unicode, '□' as u32);
@@ -149,6 +151,7 @@ fn layout_wrap_newlines_negative_bearing_ellipsis_and_fallback() {
             max_width: 16,
             max_lines: 1,
             ellipsis: true,
+            align: TextAlign::Start,
         },
         |g| chars.push(char::from_u32(g.glyph.metrics.unicode).unwrap()),
     );
@@ -164,9 +167,162 @@ fn layout_wrap_newlines_negative_bearing_ellipsis_and_fallback() {
             max_width: 4,
             max_lines: 1,
             ellipsis: true,
+            align: TextAlign::Start,
         },
         |g| chars2.push(char::from_u32(g.glyph.metrics.unicode).unwrap()),
     );
     assert!(chars2.is_empty());
     assert!(ell2.ink.is_empty());
+}
+
+#[test]
+fn text_align_center_end_crlf_negative_bearing_ellipsis_overwide_and_font_set() {
+    use liuli_core::geometry::Rect;
+    use liuli_text::FontSet;
+
+    let bmp1 = &[0xFF]; // 1x1
+    let bmp2 = &[0xFF]; // 2x1 packed A4 = 1 row byte
+    let bytes16 = build_synthetic_lf4(&[
+        ('A', 8, 0, 10, 1, 1, bmp1),
+        ('B', 8, -2, 10, 2, 1, bmp2), // negative bearing_x = -2
+        ('…', 8, 0, 10, 1, 1, bmp1),
+        ('□', 12, 0, 10, 1, 1, bmp1),
+    ]);
+    // Distinct small header (ascent=10, descent=2, line_gap=2 -> line_height=14)
+    let mut bytes12 = bytes16.clone();
+    bytes12[8..10].copy_from_slice(&10i16.to_le_bytes());
+
+    let f16 = Lf4Font::from_bytes(&bytes16).unwrap();
+    let f12 = Lf4Font::from_bytes(&bytes12).unwrap();
+    let font_set = FontSet::new(f16, f12);
+    assert_eq!(font_set.line_height(FontId::Body16), 18);
+    assert_eq!(font_set.line_height(FontId::Small12), 14);
+    assert_eq!(
+        font_set
+            .measure_text(FontId::Small12, "AA", 100, 1, false, TextAlign::Center)
+            .size
+            .height,
+        14
+    );
+
+    // 1. Multi-line different widths "AAAA\nBB" under Start, Center, End in max_width=40
+    let collect = |align| {
+        let mut pts = Vec::new();
+        let out = visit_layout_glyphs(
+            &f16,
+            "AAAA\nBB",
+            TextLayoutOptions {
+                max_width: 40,
+                max_lines: 0,
+                ellipsis: false,
+                align,
+            },
+            |pg| {
+                pts.push((
+                    char::from_u32(pg.glyph.metrics.unicode).unwrap(),
+                    pg.x,
+                    pg.y,
+                    pg.line,
+                ));
+            },
+        );
+        (pts, out)
+    };
+
+    let (pts_start, out_start) = collect(TextAlign::Start);
+    assert_eq!(out_start.size.width, 32);
+    assert_eq!(pts_start[0], ('A', 0, 4, 0));
+    assert_eq!(pts_start[4], ('B', -2, 22, 1));
+    assert_eq!(out_start.ink, Rect::new(-2, 4, 27, 19));
+
+    let (pts_center, out_center) = collect(TextAlign::Center);
+    // Line 0 adv=32 -> slack=8 -> align_x=4; Line 1 adv=16 -> slack=24 -> align_x=12 (with bearing_x=-2 => 10)
+    assert_eq!(
+        pts_center,
+        vec![
+            ('A', 4, 4, 0),
+            ('A', 12, 4, 0),
+            ('A', 20, 4, 0),
+            ('A', 28, 4, 0),
+            ('B', 10, 22, 1),
+            ('B', 18, 22, 1),
+        ]
+    );
+    assert_eq!(out_center.ink, Rect::new(4, 4, 25, 19));
+
+    let (pts_end, out_end) = collect(TextAlign::End);
+    // Line 0 slack=8 -> align_x=8; Line 1 slack=24 -> align_x=24 (with bearing_x=-2 => 22)
+    assert_eq!(
+        pts_end,
+        vec![
+            ('A', 8, 4, 0),
+            ('A', 16, 4, 0),
+            ('A', 24, 4, 0),
+            ('A', 32, 4, 0),
+            ('B', 22, 22, 1),
+            ('B', 30, 22, 1),
+        ]
+    );
+    assert_eq!(out_end.ink, Rect::new(8, 4, 25, 19));
+
+    // 2. CRLF + trailing empty line under End
+    let mut crlf_pts = Vec::new();
+    let crlf_out = visit_layout_glyphs(
+        &f16,
+        "AA\r\nB\n",
+        TextLayoutOptions {
+            max_width: 40,
+            max_lines: 0,
+            ellipsis: false,
+            align: TextAlign::End,
+        },
+        |pg| crlf_pts.push((pg.x, pg.y, pg.line)),
+    );
+    assert_eq!(crlf_out.lines, 3);
+    assert_eq!(crlf_out.size.height, 54);
+    assert_eq!(crlf_pts, vec![(24, 4, 0), (32, 4, 0), (30, 22, 1)]);
+
+    // 3. Ellipsis rollback under Center/End: "AAA" in max_width=20 => "A…" (adv=16, slack=4)
+    let mut ell_center = Vec::new();
+    let _ = visit_layout_glyphs(
+        &f16,
+        "AAA",
+        TextLayoutOptions {
+            max_width: 20,
+            max_lines: 1,
+            ellipsis: true,
+            align: TextAlign::Center,
+        },
+        |pg| ell_center.push((char::from_u32(pg.glyph.metrics.unicode).unwrap(), pg.x)),
+    );
+    assert_eq!(ell_center, vec![('A', 2), ('…', 10)]);
+
+    let mut ell_end = Vec::new();
+    let _ = visit_layout_glyphs(
+        &f16,
+        "AAA",
+        TextLayoutOptions {
+            max_width: 20,
+            max_lines: 1,
+            ellipsis: true,
+            align: TextAlign::End,
+        },
+        |pg| ell_end.push((char::from_u32(pg.glyph.metrics.unicode).unwrap(), pg.x)),
+    );
+    assert_eq!(ell_end, vec![('A', 4), ('…', 12)]);
+
+    // 4. Over-wide first glyph '□' (adv=12 > max_width=6): align_x clamps cleanly to 0
+    let mut wide_end = Vec::new();
+    let _ = visit_layout_glyphs(
+        &f16,
+        "□",
+        TextLayoutOptions {
+            max_width: 6,
+            max_lines: 1,
+            ellipsis: false,
+            align: TextAlign::End,
+        },
+        |pg| wide_end.push(pg.x),
+    );
+    assert_eq!(wide_end, vec![0]);
 }

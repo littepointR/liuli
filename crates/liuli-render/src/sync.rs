@@ -3,25 +3,25 @@ use embedded_graphics::pixelcolor::Rgb565;
 use liuli_core::capacity::{FrameMetrics, PresentError, PresentStatus};
 use liuli_core::damage::DamageSet;
 use liuli_core::geometry::{Rect, u16_to_rgb565};
-use liuli_core::paint::{CommandList, TextLookup};
-use liuli_text::Lf4Font;
+use liuli_core::paint::{CommandList, SceneResources};
+use liuli_text::FontSet;
 
 use crate::band::{BandIter, BandTarget};
 use crate::raster::render_band;
 
-pub fn present_sync<T, L>(
+pub fn present_sync<T, R>(
     target: &mut T,
     scratch: &mut [u16],
     screen: Rect,
     configured_band_h: u32,
     cmds: &CommandList,
     damage: &mut DamageSet,
-    text_lookup: &L,
-    font: &Lf4Font<'_>,
+    resources: &R,
+    fonts: &FontSet<'_>,
 ) -> Result<(PresentStatus, FrameMetrics), PresentError<T::Error>>
 where
     T: DrawTarget<Color = Rgb565>,
-    L: TextLookup + ?Sized,
+    R: SceneResources + ?Sized,
 {
     present_sync_with(
         target,
@@ -30,27 +30,27 @@ where
         configured_band_h,
         cmds,
         damage,
-        text_lookup,
-        font,
+        resources,
+        fonts,
         |_| Ok(()),
     )
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn present_sync_with<T, L, Fin>(
+pub fn present_sync_with<T, R, Fin>(
     target: &mut T,
     scratch: &mut [u16],
     screen: Rect,
     configured_band_h: u32,
     cmds: &CommandList,
     damage: &mut DamageSet,
-    text_lookup: &L,
-    font: &Lf4Font<'_>,
+    resources: &R,
+    fonts: &FontSet<'_>,
     mut finish: Fin,
 ) -> Result<(PresentStatus, FrameMetrics), PresentError<T::Error>>
 where
     T: DrawTarget<Color = Rgb565>,
-    L: TextLookup + ?Sized,
+    R: SceneResources + ?Sized,
     Fin: FnMut(&mut T) -> Result<(), T::Error>,
 {
     if damage.is_empty() {
@@ -70,8 +70,8 @@ where
         metrics.commands_replayed = metrics.commands_replayed.saturating_add(render_band(
             &mut band_target,
             cmds,
-            text_lookup,
-            font,
+            resources,
+            fonts,
         ));
 
         let phys_rect = band_rect.translate(target_bb.x, target_bb.y);

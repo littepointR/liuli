@@ -8,12 +8,11 @@ fn sim_path(rel: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel)
 }
 
-#[test]
-fn settings_replay_matches_five_golden_ppms_and_png_roundtrip() {
-    let fixture = sim_path("tests/fixtures/settings.events");
-    let report = run_replay_file(&fixture, None, ImageFormat::Ppm).expect("settings replay failed");
+fn verify_replay_matches_goldens(fixture_rel: &str, expected_names: &[&str]) {
+    let fixture = sim_path(fixture_rel);
+    let report = run_replay_file(&fixture, None, ImageFormat::Ppm)
+        .unwrap_or_else(|e| panic!("{fixture_rel} replay failed: {e}"));
 
-    let expected_names = ["initial", "dark", "scroll", "updated", "modal"];
     let got_names: Vec<&str> = report.shots.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(got_names, expected_names);
 
@@ -63,4 +62,28 @@ fn settings_replay_matches_five_golden_ppms_and_png_roundtrip() {
             shot.name
         );
     }
+}
+
+#[test]
+fn settings_replay_matches_five_golden_ppms_and_png_roundtrip() {
+    verify_replay_matches_goldens(
+        "tests/fixtures/settings.events",
+        &["initial", "dark", "scroll", "updated", "modal"],
+    );
+}
+
+#[test]
+fn terminal_replay_matches_seven_golden_ppms_and_png_roundtrip() {
+    verify_replay_matches_goldens(
+        "tests/fixtures/terminal.events",
+        &[
+            "dashboard-initial",
+            "dashboard-wave",
+            "settings-restored",
+            "diagnostics-small12",
+            "reset-confirm",
+            "toast-visible",
+            "toast-expired",
+        ],
+    );
 }

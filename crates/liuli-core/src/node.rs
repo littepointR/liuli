@@ -1,16 +1,20 @@
 use crate::capacity::{MAX_NODES, MAX_TEXT_BYTES};
 use crate::geometry::{Rect, Size};
-use crate::view::{Key, NONE_IDX, NodeKind, NodeProps, TextRef};
+use crate::view::{
+    FontId, Key, NodeKind, SlotLink, SparklinePool, StoredProps, TextAlign, TextRef,
+};
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub struct NodeId {
     slot: u16,
-    generation: u16,
+    generation: u32,
 }
 
 impl NodeId {
+    pub const ZERO: Self = Self::new(0, 0);
+
     #[inline]
-    pub(crate) const fn new(slot: u16, generation: u16) -> Self {
+    pub const fn new(slot: u16, generation: u32) -> Self {
         Self { slot, generation }
     }
 
@@ -20,29 +24,55 @@ impl NodeId {
     }
 
     #[inline]
-    pub const fn generation(self) -> u16 {
+    pub const fn generation(self) -> u32 {
         self.generation
     }
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub struct TextCache {
+    pub wrap_width: u32,
+    pub size: Size,
+    pub rel_ink: Rect,
+    pub lines: u16,
+    pub valid: bool,
+    pub font: FontId,
+    pub align: TextAlign,
+    pub max_lines: u8,
+    pub ellipsis: bool,
+}
+
+impl TextCache {
+    pub const ZERO: Self = Self {
+        wrap_width: 0,
+        size: Size::new(0, 0),
+        rel_ink: Rect::ZERO,
+        lines: 0,
+        valid: false,
+        font: FontId::Body16,
+        align: TextAlign::Start,
+        max_lines: 0,
+        ellipsis: false,
+    };
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct RetainedNode {
     pub occupied: bool,
-    pub generation: u16,
+    pub generation: u32,
     pub key: Key,
     pub kind: NodeKind,
-    pub props: NodeProps,
-    pub parent: u16,
-    pub first_child: u16,
-    pub last_child: u16,
-    pub next_sibling: u16,
+    pub props: StoredProps,
+    pub parent: SlotLink,
+    pub first_child: SlotLink,
+    pub last_child: SlotLink,
+    pub next_sibling: SlotLink,
     pub measured_size: Size,
     pub layout_rect: Rect,
     pub ink_rect: Rect,
     pub clip_rect: Rect,
     pub visible_rect: Rect,
-    pub old_visible_rect: Rect,
-    pub text_cache: Option<(u32, Size, Rect, u16)>, // (wrap_width, layout_size, rel_ink, lines)
+    pub text_cache: TextCache,
     pub dirty_measure: bool,
     pub dirty_paint: bool,
     pub scroll_y: i32,
@@ -56,18 +86,17 @@ impl RetainedNode {
         generation: 0,
         key: Key(0),
         kind: NodeKind::Label,
-        props: NodeProps::new(),
-        parent: NONE_IDX,
-        first_child: NONE_IDX,
-        last_child: NONE_IDX,
-        next_sibling: NONE_IDX,
+        props: StoredProps::ZERO,
+        parent: SlotLink::NONE,
+        first_child: SlotLink::NONE,
+        last_child: SlotLink::NONE,
+        next_sibling: SlotLink::NONE,
         measured_size: Size::new(0, 0),
         layout_rect: Rect::ZERO,
         ink_rect: Rect::ZERO,
         clip_rect: Rect::ZERO,
         visible_rect: Rect::ZERO,
-        old_visible_rect: Rect::ZERO,
-        text_cache: None,
+        text_cache: TextCache::ZERO,
         dirty_measure: false,
         dirty_paint: false,
         scroll_y: 0,
@@ -75,13 +104,40 @@ impl RetainedNode {
         pressed: false,
     };
 
+    pub fn clear_fresh(&mut self, generation: u32) {
+        self.occupied = true;
+        self.generation = generation;
+        self.key = Key(0);
+        self.kind = NodeKind::Label;
+        self.props = StoredProps::ZERO;
+        self.parent = SlotLink::NONE;
+        self.first_child = SlotLink::NONE;
+        self.last_child = SlotLink::NONE;
+        self.next_sibling = SlotLink::NONE;
+        self.measured_size = Size::new(0, 0);
+        self.layout_rect = Rect::ZERO;
+        self.ink_rect = Rect::ZERO;
+        self.clip_rect = Rect::ZERO;
+        self.visible_rect = Rect::ZERO;
+        self.text_cache = TextCache::ZERO;
+        self.dirty_measure = true;
+        self.dirty_paint = true;
+        self.scroll_y = 0;
+        self.content_height = 0;
+        self.pressed = false;
+    }
+
+    pub fn copy_from(&mut self, src: &Self) {
+        *self = *src;
+    }
+
     #[inline]
     pub fn id(&self, slot: u16) -> NodeId {
         NodeId::new(slot, self.generation)
     }
 
     pub fn is_effectively_visible(&self) -> bool {
-        self.occupied && self.props.visible && !self.visible_rect.is_empty()
+        self.occupied && self.props.visible() && !self.visible_rect.is_empty()
     }
 }
 
@@ -89,41 +145,45 @@ pub struct RetainedTree {
     pub nodes: [RetainedNode; MAX_NODES],
     pub text_buf: [u8; MAX_TEXT_BYTES],
     pub text_len: u16,
-    pub root: u16,
-    pub modal: u16,
+    pub sparklines: SparklinePool,
+    pub root: SlotLink,
+    pub modal: SlotLink,
     pub active_count: u16,
-    pub generation_hwm: [u16; MAX_NODES],
+    pub generation_hwm: [u32; MAX_NODES],
 }
 
 impl RetainedTree {
+    pub const ZERO: Self = Self {
+        nodes: [RetainedNode::EMPTY; MAX_NODES],
+        text_buf: [0; MAX_TEXT_BYTES],
+        text_len: 0,
+        sparklines: SparklinePool::ZERO,
+        root: SlotLink::NONE,
+        modal: SlotLink::NONE,
+        active_count: 0,
+        generation_hwm: [0; MAX_NODES],
+    };
+
     pub const fn new() -> Self {
-        Self {
-            nodes: [RetainedNode::EMPTY; MAX_NODES],
-            text_buf: [0; MAX_TEXT_BYTES],
-            text_len: 0,
-            root: NONE_IDX,
-            modal: NONE_IDX,
-            active_count: 0,
-            generation_hwm: [0; MAX_NODES],
-        }
+        Self::ZERO
     }
 
     pub fn reset(&mut self) {
         for slot in &mut self.nodes {
             slot.occupied = false;
-            slot.parent = NONE_IDX;
-            slot.first_child = NONE_IDX;
-            slot.last_child = NONE_IDX;
-            slot.next_sibling = NONE_IDX;
-            slot.old_visible_rect = Rect::ZERO;
+            slot.parent = SlotLink::NONE;
+            slot.first_child = SlotLink::NONE;
+            slot.last_child = SlotLink::NONE;
+            slot.next_sibling = SlotLink::NONE;
             slot.visible_rect = Rect::ZERO;
             slot.dirty_measure = false;
             slot.dirty_paint = false;
             slot.pressed = false;
         }
         self.text_len = 0;
-        self.root = NONE_IDX;
-        self.modal = NONE_IDX;
+        self.sparklines.reset();
+        self.root = SlotLink::NONE;
+        self.modal = SlotLink::NONE;
         self.active_count = 0;
     }
 
@@ -177,23 +237,29 @@ impl RetainedTree {
         self.find_slot_by_key(key).map(|s| &self.nodes[s as usize])
     }
 
-    pub fn is_descendant_of(&self, mut slot: u16, ancestor: u16) -> bool {
-        while slot != NONE_IDX {
-            if slot == ancestor {
+    pub fn is_descendant_of(&self, slot: u16, ancestor: u16) -> bool {
+        let mut cur = SlotLink::from_slot_u16(slot);
+        while let Some(link) = cur
+            && let Some(idx) = link.get_u16()
+        {
+            if idx == ancestor {
                 return true;
             }
-            slot = self.nodes[slot as usize].parent;
+            cur = Some(self.nodes[idx as usize].parent);
         }
         false
     }
 
-    pub fn is_effectively_enabled_and_visible(&self, mut slot: u16) -> bool {
-        while slot != NONE_IDX {
-            let n = &self.nodes[slot as usize];
-            if !n.occupied || !n.props.visible || !n.props.enabled {
+    pub fn is_effectively_enabled_and_visible(&self, slot: u16) -> bool {
+        let mut cur = SlotLink::from_slot_u16(slot);
+        while let Some(link) = cur
+            && let Some(idx) = link.get()
+        {
+            let n = &self.nodes[idx];
+            if !n.occupied || !n.props.visible() || !n.props.enabled() {
                 return false;
             }
-            slot = n.parent;
+            cur = Some(n.parent);
         }
         true
     }

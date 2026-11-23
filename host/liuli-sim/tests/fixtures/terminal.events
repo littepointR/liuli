@@ -1,0 +1,104 @@
+# Wave 5 TerminalApp deterministic 3-page showcase (7 golden scenes)
+scenario terminal
+
+# 1. Initial Dashboard
+0 expect page dashboard
+0 expect focus dash_pause
+0 expect samples 1
+0 expect temp 22.6
+0 expect load 44
+0 shot dashboard-initial
+
+# 2. Waveform sampling across bands + bounded partial transfer + long-press repeat
+1000 advance
+2000 advance
+3000 advance
+4000 advance
+5000 advance
+6000 advance
+7000 advance
+8000 advance
+9000 advance
+10000 advance
+11000 advance
+12000 advance
+13000 advance
+13000 expect measured 0
+13000 expect pixels_le 30000
+13000 expect samples 14
+13000 expect temp 24.2
+13000 expect load 68
+
+13010 next
+13020 next
+13020 expect focus dash_inc
+13030 key_down activate
+13030 expect load 73
+13429 advance
+13429 expect load 73
+13430 advance
+13430 expect load 78
+13510 advance
+13510 expect load 83
+13520 key_up activate
+13520 expect load 83
+13520 shot dashboard-wave
+
+# 3. Settings page: toggle dark theme (EaseOutCubic), scroll to Reset, leave & restore
+13600 page settings
+13600 expect page settings
+13610 next
+13620 next
+13630 next
+13630 expect focus sound
+13640 next
+13640 expect focus theme
+13650 activate
+13650 expect theme dark
+13820 advance
+13830 next
+13840 next
+13840 expect focus reset
+13850 page dashboard
+13850 expect page dashboard
+13850 expect focus dash_inc
+13860 page settings
+13860 expect page settings
+13860 expect focus reset
+13860 expect theme dark
+13860 shot settings-restored
+
+# 4. Diagnostics page with Small12 metrics
+13900 page diagnostics
+13900 expect page diagnostics
+13900 shot diagnostics-small12
+
+# 5. Back to Settings, open Reset confirm modal
+13950 page settings
+13950 expect page settings
+13950 expect focus reset
+13960 activate
+13960 expect modal open
+13960 expect focus cancel
+13960 shot reset-confirm
+
+# 6. Confirm Reset -> defaults restored + Toast overlay visible (1500 ms)
+14000 next
+14000 expect focus confirm
+14010 activate
+14010 expect modal closed
+14010 expect toast 已恢复默认
+14010 expect brightness 60
+14010 expect sound on
+14010 expect theme light
+14010 expect monitoring on
+14010 expect focus reset
+14180 advance
+14180 expect toast 已恢复默认
+14180 shot toast-visible
+
+# 7. Toast expired after 1500 ms -> background cleanly restored
+15510 advance
+15510 expect toast none
+15510 expect focus reset
+15510 shot toast-expired
