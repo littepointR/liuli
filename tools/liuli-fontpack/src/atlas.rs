@@ -150,7 +150,8 @@ impl Atlas {
     }
 }
 
-fn parse_pbm(bytes: &[u8]) -> Result<(usize, usize, Vec<bool>), String> {
+pub(crate) fn parse_pbm(bytes: &[u8]) -> Result<(usize, usize, Vec<bool>), String> {
+    const MAX_PBM_PIXELS: usize = 64 * 1024 * 1024;
     if bytes.len() < 3 {
         return Err("PBM file too short".to_string());
     }
@@ -171,6 +172,14 @@ fn parse_pbm(bytes: &[u8]) -> Result<(usize, usize, Vec<bool>), String> {
     if width == 0 || height == 0 {
         return Err("PBM dimensions must be non-zero".to_string());
     }
+    let total_pixels = width
+        .checked_mul(height)
+        .ok_or_else(|| "PBM pixel count overflow".to_string())?;
+    if total_pixels > MAX_PBM_PIXELS {
+        return Err(format!(
+            "PBM pixel count {total_pixels} exceeds limit {MAX_PBM_PIXELS}"
+        ));
+    }
 
     if is_p4 {
         // After height token there is exactly one whitespace byte
@@ -189,7 +198,7 @@ fn parse_pbm(bytes: &[u8]) -> Result<(usize, usize, Vec<bool>), String> {
             ));
         }
         let data = &bytes[pos..pos + expected_len];
-        let mut pixels = vec![false; width * height];
+        let mut pixels = vec![false; total_pixels];
         for y in 0..height {
             let row = &data[y * row_bytes..(y + 1) * row_bytes];
             for x in 0..width {
@@ -199,8 +208,8 @@ fn parse_pbm(bytes: &[u8]) -> Result<(usize, usize, Vec<bool>), String> {
         }
         Ok((width, height, pixels))
     } else {
-        let mut pixels = Vec::with_capacity(width * height);
-        while pos < bytes.len() && pixels.len() < width * height {
+        let mut pixels = Vec::with_capacity(total_pixels);
+        while pos < bytes.len() && pixels.len() < total_pixels {
             match bytes[pos] {
                 b'#' => {
                     while pos < bytes.len() && bytes[pos] != b'\n' {
@@ -219,10 +228,9 @@ fn parse_pbm(bytes: &[u8]) -> Result<(usize, usize, Vec<bool>), String> {
                 other => return Err(format!("unexpected byte 0x{other:02X} in P1 PBM")),
             }
         }
-        if pixels.len() != width * height {
+        if pixels.len() != total_pixels {
             return Err(format!(
-                "P1 PBM truncated: expected {} pixels, got {}",
-                width * height,
+                "P1 PBM truncated: expected {total_pixels} pixels, got {}",
                 pixels.len()
             ));
         }
