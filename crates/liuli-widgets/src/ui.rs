@@ -3,7 +3,7 @@ use liuli::prelude::*;
 
 use crate::style::{ButtonVariant, Elevation, SurfaceSpec};
 use crate::theme::{Style, Theme};
-use crate::tokens::{Density, EffectsConfig, Shape};
+use crate::tokens::{ComponentParts, Density, EffectsConfig, Shape};
 use crate::{centered_confirm_dialog, confirm_dialog, number_editor, selector, tabs, toast};
 
 /// Stack-scoped UI builder pairing `Children` with a `Theme` for consistent styling,
@@ -84,6 +84,17 @@ impl<'a, 'b, 'p> ThemedUi<'a, 'b, 'p> {
     }
 
     #[inline]
+    #[track_caller]
+    pub fn with_parts<R>(
+        &mut self,
+        parts: ComponentParts,
+        f: impl FnOnce(&mut ThemedUi<'a, '_, '_>) -> R,
+    ) -> R {
+        let next = self.theme.with_parts(parts);
+        self.with_theme(next, f)
+    }
+
+    #[inline]
     pub fn row<F>(&mut self, key: Key, props: NodeProps, f: F) -> Result<(), BuildError>
     where
         F: FnOnce(&mut ThemedUi<'a, '_, '_>) -> Result<(), BuildError>,
@@ -117,7 +128,32 @@ impl<'a, 'b, 'p> ThemedUi<'a, 'b, 'p> {
     {
         let t = self.theme;
         self.ui
-            .scroll_y(key, props, |c| f(&mut ThemedUi::new(c, t)))
+            .scroll_y(key, props, |c| f(&mut ThemedUi::new(c, t)))?;
+        self.apply_part_if_needed(key, t.parts.scrollbar, None)
+    }
+
+    #[inline]
+    pub fn wrap<F>(&mut self, key: Key, props: NodeProps, f: F) -> Result<(), BuildError>
+    where
+        F: FnOnce(&mut ThemedUi<'a, '_, '_>) -> Result<(), BuildError>,
+    {
+        let t = self.theme;
+        self.ui.wrap(key, props, |c| f(&mut ThemedUi::new(c, t)))
+    }
+
+    #[inline]
+    pub fn custom_container<F>(
+        &mut self,
+        key: Key,
+        props: NodeProps,
+        f: F,
+    ) -> Result<(), BuildError>
+    where
+        F: FnOnce(&mut ThemedUi<'a, '_, '_>) -> Result<(), BuildError>,
+    {
+        let t = self.theme;
+        self.ui
+            .custom_container(key, props, |c| f(&mut ThemedUi::new(c, t)))
     }
 
     /// Declare a themed column container with resolved `SurfaceSpec` props & effects.
@@ -202,7 +238,8 @@ impl<'a, 'b, 'p> ThemedUi<'a, 'b, 'p> {
                 icon,
                 ..self.theme.button(variant)
             },
-        )
+        )?;
+        self.apply_part_if_needed(key, self.theme.parts.button, None)
     }
 
     #[track_caller]
@@ -221,7 +258,8 @@ impl<'a, 'b, 'p> ThemedUi<'a, 'b, 'p> {
                 icon,
                 ..self.theme.button_state(variant, enabled)
             },
-        )
+        )?;
+        self.apply_part_if_needed(key, self.theme.parts.button, None)
     }
 
     #[track_caller]
@@ -238,7 +276,21 @@ impl<'a, 'b, 'p> ThemedUi<'a, 'b, 'p> {
                 style_source: base.style_source,
                 ..overrides
             },
-        )
+        )?;
+        self.apply_part_if_needed(key, self.theme.parts.button, None)
+    }
+
+    #[track_caller]
+    pub fn button_styled(
+        &mut self,
+        key: Key,
+        label: &'static str,
+        icon: IconKind,
+        variant: ButtonVariant,
+        part: WidgetPartStyle,
+    ) -> Result<(), BuildError> {
+        self.button(key, label, icon, variant)?;
+        self.apply_part_if_needed(key, WidgetPartStyle::ZERO, Some(part))
     }
 
     #[track_caller]
@@ -305,7 +357,19 @@ impl<'a, 'b, 'p> ThemedUi<'a, 'b, 'p> {
 
     #[track_caller]
     pub fn toggle(&mut self, key: Key, checked: bool) -> Result<(), BuildError> {
-        self.ui.toggle(key, self.theme.toggle(checked))
+        self.ui.toggle(key, self.theme.toggle(checked))?;
+        self.apply_part_if_needed(key, self.theme.parts.toggle, None)
+    }
+
+    #[track_caller]
+    pub fn toggle_styled(
+        &mut self,
+        key: Key,
+        checked: bool,
+        part: WidgetPartStyle,
+    ) -> Result<(), BuildError> {
+        self.toggle(key, checked)?;
+        self.apply_part_if_needed(key, WidgetPartStyle::ZERO, Some(part))
     }
 
     /// Standard labeled card row with a stretched text label and a trailing `Toggle`.
@@ -344,13 +408,18 @@ impl<'a, 'b, 'p> ThemedUi<'a, 'b, 'p> {
                     ..NodeProps::new()
                 },
             )?;
-            r.toggle(toggle_key, t.toggle(checked))
+            r.toggle(toggle_key, t.toggle(checked))?;
+            if !t.parts.toggle.is_empty() {
+                r.style_parts(toggle_key, t.parts.toggle)?;
+            }
+            Ok(())
         })
     }
 
     #[track_caller]
     pub fn slider(&mut self, key: Key, value: i16) -> Result<(), BuildError> {
-        self.ui.slider(key, self.theme.slider(value))
+        self.ui.slider(key, self.theme.slider(value))?;
+        self.apply_part_if_needed(key, self.theme.parts.slider, None)
     }
 
     #[track_caller]
@@ -370,17 +439,42 @@ impl<'a, 'b, 'p> ThemedUi<'a, 'b, 'p> {
                 step,
                 ..self.theme.slider(value.clamp(min, max))
             },
-        )
+        )?;
+        self.apply_part_if_needed(key, self.theme.parts.slider, None)
+    }
+
+    #[track_caller]
+    pub fn slider_styled(
+        &mut self,
+        key: Key,
+        value: i16,
+        part: WidgetPartStyle,
+    ) -> Result<(), BuildError> {
+        self.slider(key, value)?;
+        self.apply_part_if_needed(key, WidgetPartStyle::ZERO, Some(part))
     }
 
     #[track_caller]
     pub fn progress_bar(&mut self, key: Key, value: i16) -> Result<(), BuildError> {
-        self.ui.progress_bar(key, self.theme.progress_bar(value))
+        self.ui.progress_bar(key, self.theme.progress_bar(value))?;
+        self.apply_part_if_needed(key, self.theme.parts.progress, None)
+    }
+
+    #[track_caller]
+    pub fn progress_bar_styled(
+        &mut self,
+        key: Key,
+        value: i16,
+        part: WidgetPartStyle,
+    ) -> Result<(), BuildError> {
+        self.progress_bar(key, value)?;
+        self.apply_part_if_needed(key, WidgetPartStyle::ZERO, Some(part))
     }
 
     #[track_caller]
     pub fn sparkline(&mut self, key: Key, samples: &[i16]) -> Result<(), BuildError> {
-        self.ui.sparkline(key, samples, self.theme.sparkline())
+        self.ui.sparkline(key, samples, self.theme.sparkline())?;
+        self.apply_part_if_needed(key, self.theme.parts.sparkline, None)
     }
 
     #[track_caller]
@@ -389,7 +483,8 @@ impl<'a, 'b, 'p> ThemedUi<'a, 'b, 'p> {
         key: Key,
         ring: &SampleRing<N>,
     ) -> Result<(), BuildError> {
-        self.ui.sparkline_ring(key, ring, self.theme.sparkline())
+        self.ui.sparkline_ring(key, ring, self.theme.sparkline())?;
+        self.apply_part_if_needed(key, self.theme.parts.sparkline, None)
     }
 
     #[inline]
@@ -454,6 +549,38 @@ impl<'a, 'b, 'p> ThemedUi<'a, 'b, 'p> {
     #[inline]
     pub fn decorate(&mut self, key: Key, style: SurfaceStyle) -> Result<(), BuildError> {
         self.ui.decorate(key, style)
+    }
+
+    #[inline]
+    pub fn style_parts(&mut self, key: Key, style: WidgetPartStyle) -> Result<(), BuildError> {
+        self.ui.style_parts(key, style)
+    }
+
+    #[inline]
+    pub fn set_offset(&mut self, key: Key, dx: i16, dy: i16) -> Result<(), BuildError> {
+        self.ui.set_offset(key, dx, dy)
+    }
+
+    #[inline]
+    pub fn set_custom_rev(&mut self, key: Key, rev: u32) -> Result<(), BuildError> {
+        self.ui.set_custom_rev(key, rev)
+    }
+
+    #[inline]
+    fn apply_part_if_needed(
+        &mut self,
+        key: Key,
+        base: WidgetPartStyle,
+        extra: Option<WidgetPartStyle>,
+    ) -> Result<(), BuildError> {
+        let merged = match extra {
+            Some(ext) => base.merge(ext),
+            None => base,
+        };
+        if !merged.is_empty() {
+            self.ui.style_parts(key, merged)?;
+        }
+        Ok(())
     }
 
     #[inline]

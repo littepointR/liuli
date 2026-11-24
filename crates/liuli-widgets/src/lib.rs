@@ -1,6 +1,7 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+pub mod controls;
 pub mod style;
 pub mod theme;
 pub mod tokens;
@@ -8,11 +9,15 @@ pub mod ui;
 
 use liuli::prelude::*;
 
+pub use controls::{
+    arc_knob, arc_knob_from_pointer, badge_button, paint_arc_knob, paint_ticked_slider,
+};
 pub use style::{ButtonVariant, Compositor, Elevation, Material, ResolvedSurface, SurfaceSpec};
 pub use theme::{Style, Theme, ThemePreset};
 pub use tokens::{
-    ColorScheme, Density, EffectTier, EffectsConfig, ElevationLevel, ElevationScale, GlassStyle,
-    InteractionStyle, Motion, Shape, Typography, contrast_ratio_x10, rgb8,
+    ColorScheme, ComponentParts, Density, EffectTier, EffectsConfig, ElevationLevel,
+    ElevationScale, GlassStyle, InteractionStyle, Motion, Shape, Typography, contrast_ratio_x10,
+    rgb8,
 };
 pub use ui::ThemedUi;
 
@@ -391,7 +396,308 @@ pub fn toast(
 
 #[cfg(test)]
 mod tests {
+    use core::sync::atomic::{AtomicI16, Ordering};
+
+    use liuli_sim::screen::MemoryScreen;
+
     use super::*;
+
+    const TEST_LF4: &[u8] = include_bytes!("../../../apps/liuli-settings/assets/settings.lf4");
+
+    #[test]
+    fn component_parts_propagate_via_themed_ui_without_wasting_default_slots() {
+        let mut draft = liuli::core::view::ViewDraft::new();
+        let mut vb = ViewBuilder::new(&mut draft);
+        vb.root(Key(1), NodeProps::new(), |root| {
+            let mut ui = ThemedUi::new(root, Theme::DARK);
+            ui.slider(Key(2), 40)?;
+            let custom_parts = ComponentParts::DEFAULT
+                .with_slider(
+                    WidgetPartStyle::new()
+                        .with_track_color(rgb8(30, 40, 50))
+                        .with_knob_radius(7),
+                )
+                .with_button(WidgetPartStyle::new().with_pressed_bg(rgb8(200, 20, 20)));
+            ui.with_parts(custom_parts, |scoped| {
+                scoped.slider(Key(3), 75)?;
+                scoped.button(Key(4), "Apply", IconKind::Check, ButtonVariant::Primary)
+            })
+        })
+        .unwrap();
+        vb.finish().unwrap();
+
+        assert!(draft.part_styles.get(Key(2)).is_empty());
+        assert_eq!(draft.part_styles.get(Key(3)).knob_radius(), Some(7));
+        assert_eq!(
+            draft.part_styles.get(Key(3)).track_color(),
+            Some(rgb8(30, 40, 50))
+        );
+        assert_eq!(
+            draft.part_styles.get(Key(4)).pressed_bg(),
+            Some(rgb8(200, 20, 20))
+        );
+    }
+
+    #[test]
+    fn arc_knob_pointer_mapping_handles_angles_deadzone_and_steps() {
+        let sz = Size::new(100, 100);
+        let ev = |x, y| PointerEvent {
+            phase: PointerPhase::Move,
+            local: Point::new(x, y),
+            delta: Point::zero(),
+            size: sz,
+        };
+        assert_eq!(arc_knob_from_pointer(ev(15, 85), 0, 100, 1), 0);
+        assert_eq!(arc_knob_from_pointer(ev(50, 10), 0, 100, 1), 50);
+        assert_eq!(arc_knob_from_pointer(ev(85, 85), 0, 100, 1), 100);
+        assert_eq!(arc_knob_from_pointer(ev(45, 95), 0, 100, 1), 0);
+        assert_eq!(arc_knob_from_pointer(ev(55, 95), 0, 100, 1), 100);
+        assert_eq!(arc_knob_from_pointer(ev(50, 10), 0, 100, 25), 50);
+        assert_eq!(arc_knob_from_pointer(ev(90, 50), 0, 100, 25), 75);
+    }
+
+    #[derive(Clone, Copy)]
+    struct ControlsDemoModel {
+        knob: i16,
+        slider: i16,
+        clicks: u16,
+    }
+
+    #[derive(Clone, Copy)]
+    enum ControlsDemoMsg {
+        SetKnob(i16),
+        SetSlider(i16),
+        ClickBadge,
+    }
+
+    static LAST_BADGE_HITS: AtomicI16 = AtomicI16::new(0);
+
+    struct ControlsDemoApp;
+
+    impl App for ControlsDemoApp {
+        type Model = ControlsDemoModel;
+        type Msg = ControlsDemoMsg;
+
+        fn update(model: &mut Self::Model, msg: Self::Msg, _now: InstantMs) -> Change {
+            match msg {
+                ControlsDemoMsg::SetKnob(v) => model.knob = v.clamp(0, 100),
+                ControlsDemoMsg::SetSlider(v) => model.slider = v.clamp(0, 100),
+                ControlsDemoMsg::ClickBadge => {
+                    model.clicks += 1;
+                    LAST_BADGE_HITS.store(model.clicks as i16, Ordering::Relaxed);
+                }
+            }
+            Change::View
+        }
+
+        fn view(model: &Self::Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildError> {
+            let theme = Theme::DARK;
+            out.root(
+                Key(1),
+                NodeProps {
+                    bg: Some(theme.background),
+                    width: Length::Fill(1),
+                    height: Length::Fill(1),
+                    padding: EdgeInsets::all(8),
+                    gap: 8,
+                    ..NodeProps::new()
+                },
+                |ui| {
+                    ui.column(
+                        Key(2),
+                        NodeProps {
+                            width: Length::Fill(1),
+                            height: Length::Content,
+                            gap: 8,
+                            ..NodeProps::new()
+                        },
+                        |col| {
+                            arc_knob(
+                                col,
+                                Key(10),
+                                64,
+                                0..=100,
+                                model.knob,
+                                5,
+                                TextRef::Static("Vol"),
+                                theme,
+                            )?;
+                            col.slider(
+                                Key(11),
+                                NodeProps {
+                                    paint_mode: PaintMode::Override,
+                                    ..theme.slider(model.slider)
+                                },
+                            )?;
+                            badge_button(
+                                col,
+                                [Key(12), Key(13), Key(14)],
+                                TextRef::Static("Alerts"),
+                                TextRef::Static("3"),
+                                theme.danger,
+                                theme,
+                            )
+                        },
+                    )
+                },
+            )
+        }
+
+        fn paint_custom(
+            key: Key,
+            props: &StoredProps,
+            canvas: &mut WidgetCanvas<'_>,
+        ) -> Result<(), BuildError> {
+            if key == Key(10) {
+                return paint_arc_knob(
+                    props,
+                    PaintState {
+                        pressed: canvas.pressed,
+                        focused: false,
+                        editing: false,
+                        checked: props.checked(),
+                        enabled: props.enabled(),
+                        anim_progress: 0,
+                    },
+                    canvas,
+                );
+            }
+            Ok(())
+        }
+
+        fn paint_override(
+            _model: &Self::Model,
+            key: Key,
+            _kind: NodeKind,
+            props: &StoredProps,
+            state: PaintState,
+            canvas: &mut WidgetCanvas<'_>,
+        ) -> Result<PaintOverride, BuildError> {
+            if key == Key(11) {
+                return paint_ticked_slider(props, state, 5, canvas);
+            }
+            Ok(PaintOverride::Default)
+        }
+
+        fn on_pointer(_model: &Self::Model, key: Key, event: PointerEvent) -> Option<Self::Msg> {
+            if key == Key(10) && matches!(event.phase, PointerPhase::Down | PointerPhase::Move) {
+                return Some(ControlsDemoMsg::SetKnob(arc_knob_from_pointer(
+                    event, 0, 100, 5,
+                )));
+            }
+            None
+        }
+
+        fn on_action(_model: &Self::Model, event: UiAction) -> Option<Self::Msg> {
+            match (event.key, event.kind) {
+                (Key(11), ActionKind::SetValue(v)) => Some(ControlsDemoMsg::SetSlider(v)),
+                (Key(13), ActionKind::Activate) => Some(ControlsDemoMsg::ClickBadge),
+                _ => None,
+            }
+        }
+    }
+
+    #[test]
+    fn arc_knob_ticked_slider_and_badge_button_render_and_interact() {
+        LAST_BADGE_HITS.store(0, Ordering::Relaxed);
+        let font = Lf4Font::from_bytes(TEST_LF4).unwrap();
+        let screen_rect = Rect::new(0, 0, 240, 200);
+        let mut storage = Storage::new();
+        let mut engine = Engine::<ControlsDemoApp>::new_in_place(
+            &mut storage,
+            ControlsDemoModel {
+                knob: 25,
+                slider: 50,
+                clicks: 0,
+            },
+            font,
+            screen_rect,
+            InstantMs(0),
+        )
+        .unwrap();
+
+        let mut mem = MemoryScreen::new(240, 200);
+        let mut scratch = [0u16; 240 * 8];
+        engine.present_sync(&mut mem, &mut scratch).unwrap();
+
+        let knob_rect = engine
+            .active_tree()
+            .node_by_key(Key(10))
+            .unwrap()
+            .layout_rect;
+        let badge_btn_rect = engine
+            .active_tree()
+            .node_by_key(Key(13))
+            .unwrap()
+            .layout_rect;
+        let badge_lbl_rect = engine
+            .active_tree()
+            .node_by_key(Key(14))
+            .unwrap()
+            .layout_rect;
+
+        assert!(badge_lbl_rect.y < badge_btn_rect.y);
+        assert!(badge_lbl_rect.x > badge_btn_rect.x);
+
+        let top_x = knob_rect.x + (knob_rect.w as i32 / 2);
+        let top_y = knob_rect.y + 4;
+        engine
+            .dispatch(
+                RawInput::PointerDown {
+                    id: PointerId(1),
+                    pos: Point::new(top_x, top_y),
+                },
+                InstantMs(10),
+                false,
+            )
+            .unwrap();
+        engine
+            .dispatch(
+                RawInput::PointerUp {
+                    id: PointerId(1),
+                    pos: Point::new(top_x, top_y),
+                },
+                InstantMs(20),
+                false,
+            )
+            .unwrap();
+        assert_eq!(engine.model().knob, 50);
+
+        let bx = badge_btn_rect.x + 20;
+        let by = badge_btn_rect.y + (badge_btn_rect.h as i32 / 2);
+        engine
+            .dispatch(
+                RawInput::PointerDown {
+                    id: PointerId(2),
+                    pos: Point::new(bx, by),
+                },
+                InstantMs(30),
+                false,
+            )
+            .unwrap();
+        engine
+            .dispatch(
+                RawInput::PointerUp {
+                    id: PointerId(2),
+                    pos: Point::new(bx, by),
+                },
+                InstantMs(40),
+                false,
+            )
+            .unwrap();
+        assert_eq!(LAST_BADGE_HITS.load(Ordering::Relaxed), 1);
+
+        engine.present_sync(&mut mem, &mut scratch).unwrap();
+        let non_bg = (knob_rect.y..knob_rect.y + knob_rect.h as i32)
+            .flat_map(|y| {
+                (knob_rect.x..knob_rect.x + knob_rect.w as i32).map(move |x| (x as u32, y as u32))
+            })
+            .filter(|&(x, y)| {
+                mem.pixel(x, y) != liuli::core::geometry::rgb565_to_u16(Theme::DARK.background)
+            })
+            .count();
+        assert!(non_bg > 50);
+    }
 
     #[test]
     fn all_preset_color_schemes_meet_readability_contrast() {

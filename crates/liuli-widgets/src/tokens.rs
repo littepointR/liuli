@@ -1098,3 +1098,67 @@ impl Default for EffectsConfig {
         Self::GLASS
     }
 }
+
+/// Default part-level and state-aware style overrides applied per widget kind by `ThemedUi`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ComponentParts {
+    pub button: WidgetPartStyle,
+    pub toggle: WidgetPartStyle,
+    pub slider: WidgetPartStyle,
+    pub progress: WidgetPartStyle,
+    pub scrollbar: WidgetPartStyle,
+    pub sparkline: WidgetPartStyle,
+}
+
+impl ComponentParts {
+    pub const DEFAULT: Self = Self {
+        button: WidgetPartStyle::ZERO,
+        toggle: WidgetPartStyle::ZERO,
+        slider: WidgetPartStyle::ZERO,
+        progress: WidgetPartStyle::ZERO,
+        scrollbar: WidgetPartStyle::ZERO,
+        sparkline: WidgetPartStyle::ZERO,
+    };
+
+    #[inline]
+    pub const fn with_button(mut self, style: WidgetPartStyle) -> Self {
+        self.button = style;
+        self
+    }
+
+    #[inline]
+    pub const fn with_toggle(mut self, style: WidgetPartStyle) -> Self {
+        self.toggle = style;
+        self
+    }
+
+    #[inline]
+    pub const fn with_slider(mut self, style: WidgetPartStyle) -> Self {
+        self.slider = style;
+        self
+    }
+
+    #[inline]
+    pub const fn with_progress(mut self, style: WidgetPartStyle) -> Self {
+        self.progress = style;
+        self
+    }
+
+    #[inline]
+    pub const fn with_scrollbar(mut self, style: WidgetPartStyle) -> Self {
+        self.scrollbar = style;
+        self
+    }
+
+    #[inline]
+    pub const fn with_sparkline(mut self, style: WidgetPartStyle) -> Self {
+        self.sparkline = style;
+        self
+    }
+}
+
+impl Default for ComponentParts {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}

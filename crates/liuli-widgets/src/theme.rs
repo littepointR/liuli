@@ -3,8 +3,8 @@ use liuli::prelude::*;
 
 use crate::style::{ButtonVariant, Elevation, Material, ResolvedSurface, SurfaceSpec};
 use crate::tokens::{
-    ColorScheme, Density, EffectTier, EffectsConfig, ElevationLevel, ElevationScale, GlassStyle,
-    InteractionStyle, Motion, Shape, Typography,
+    ColorScheme, ComponentParts, Density, EffectTier, EffectsConfig, ElevationLevel,
+    ElevationScale, GlassStyle, InteractionStyle, Motion, Shape, Typography,
 };
 
 /// Built-in aesthetic presets combining color palette, shape language, and glass defaults.
@@ -123,6 +123,7 @@ pub struct Theme {
     pub interaction: InteractionStyle,
     pub motion: Motion,
     pub effects: EffectsConfig,
+    pub parts: ComponentParts,
 }
 
 impl Default for Theme {
@@ -234,6 +235,7 @@ impl Theme {
             interaction,
             motion,
             effects,
+            parts: ComponentParts::DEFAULT,
         }
     }
 
@@ -403,6 +405,21 @@ impl Theme {
     #[track_caller]
     pub fn with_effect_tier(self, tier: EffectTier) -> Self {
         self.with_effects(EffectsConfig::from_tier(tier))
+    }
+
+    #[track_caller]
+    pub fn with_parts(mut self, parts: ComponentParts) -> Self {
+        if parts != self.parts {
+            self.source = self.source.scoped_index(10);
+        }
+        self.parts = parts;
+        self
+    }
+
+    #[track_caller]
+    pub fn map_parts(self, f: impl FnOnce(ComponentParts) -> ComponentParts) -> Self {
+        let next = f(self.parts);
+        self.with_parts(next)
     }
 
     #[track_caller]
@@ -1022,6 +1039,7 @@ pub struct Style {
     pub interaction: Option<InteractionStyle>,
     pub motion: Option<Motion>,
     pub effects: Option<EffectsConfig>,
+    pub parts: Option<ComponentParts>,
 }
 
 impl Theme {
@@ -1072,6 +1090,7 @@ impl Theme {
         let interaction = style.interaction.unwrap_or(self.interaction);
         let motion = style.motion.unwrap_or(self.motion);
         let effects = style.effects.unwrap_or(self.effects);
+        let parts = style.parts.unwrap_or(self.parts);
 
         let mut next = self;
         next.source = next.source.scoped_tokens([
@@ -1090,7 +1109,7 @@ impl Theme {
             style.interaction.is_some(),
             style.font.is_some() || style.typography.is_some(),
             style.spacing.is_some() || style.control_height.is_some() || style.density.is_some(),
-            style.radius.is_some() || style.shape.is_some(),
+            style.radius.is_some() || style.shape.is_some() || style.parts.is_some(),
             style.elevations.is_some(),
             style.glass.is_some(),
             style.motion.is_some() || style.effects.is_some(),
@@ -1104,6 +1123,7 @@ impl Theme {
         next.interaction = interaction;
         next.motion = motion;
         next.effects = effects;
+        next.parts = parts;
         next.sync_flat()
     }
 }
