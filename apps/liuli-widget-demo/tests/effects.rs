@@ -414,3 +414,185 @@ fn depth_page_granular_theme_and_effect_controls_verify_pixel_exact() {
     tap_key(&mut app, &mut clock, 322);
     assert!(app.engine().model().rounded_focus);
 }
+
+#[cfg(feature = "enhanced")]
+#[test]
+fn rounded_glass_and_outline_button_have_no_square_or_black_corners() {
+    use liuli::core::{geometry::rgb565_to_u16, paint::PaintCmd};
+    use liuli_widgets::{ButtonVariant, Elevation, Material, SurfaceSpec, Theme, ThemedUi};
+
+    struct GlassAndOutline;
+    impl App for GlassAndOutline {
+        type Model = ();
+        type Msg = ();
+        fn update(_: &mut (), _: (), _: InstantMs) -> Change {
+            Change::Unchanged
+        }
+        fn on_action(_: &(), _: UiAction) -> Option<()> {
+            None
+        }
+        fn view(_: &(), out: &mut ViewBuilder<'_>) -> Result<(), BuildError> {
+            let t = Theme::DARK;
+            let full = NodeProps {
+                width: Length::Fill(1),
+                height: Length::Fill(1),
+                ..NodeProps::new()
+            };
+            out.root(
+                Key(0),
+                NodeProps {
+                    bg: Some(t.background),
+                    ..full
+                },
+                |root| {
+                    let mut tui = ThemedUi::new(root, t.with_rounded_focus(true));
+                    tui.column(Key(10), full, |col| {
+                        col.stack(
+                            Key(1),
+                            NodeProps {
+                                width: Length::Fill(1),
+                                height: Length::Px(140),
+                                ..NodeProps::new()
+                            },
+                            |stack| {
+                                // Bright blue backdrop behind the glass card
+                                stack.raw().button(
+                                    Key(2),
+                                    NodeProps {
+                                        width: Length::Fill(1),
+                                        height: Length::Fill(1),
+                                        bg: Some(Rgb565::new(8, 36, 30)),
+                                        ..NodeProps::new()
+                                    },
+                                )?;
+                                stack.column(
+                                    Key(3),
+                                    NodeProps {
+                                        padding: EdgeInsets::all(18),
+                                        width: Length::Fill(1),
+                                        height: Length::Fill(1),
+                                        ..NodeProps::new()
+                                    },
+                                    |inset| {
+                                        inset.card(
+                                            Key(4),
+                                            SurfaceSpec::CARD
+                                                .with_material(Material::GLASS)
+                                                .with_elevation(Elevation::Floating),
+                                            |card| {
+                                                card.button(
+                                                    Key(5),
+                                                    "OK",
+                                                    IconKind::None,
+                                                    ButtonVariant::Primary,
+                                                )
+                                            },
+                                        )
+                                    },
+                                )
+                            },
+                        )?;
+                        col.button(Key(6), "Outline", IconKind::None, ButtonVariant::Outline)
+                    })
+                },
+            )
+        }
+    }
+
+    let mut storage = Storage::new();
+    let mut app = AppSession::<GlassAndOutline>::new(
+        &mut storage,
+        (),
+        fonts(),
+        Size::new(200, 220),
+        InstantMs(0),
+        true,
+    )
+    .unwrap();
+
+    // 1. Both the glass card (Key 4) and outline button (Key 6) must emit StrokeRoundedRect, not StrokeRect.
+    let cmds = app.engine().active_commands().as_slice();
+    let rounded_strokes = cmds
+        .iter()
+        .filter(|c| matches!(c, PaintCmd::StrokeRoundedRect { .. }))
+        .count();
+    let square_strokes = cmds
+        .iter()
+        .filter(|c| matches!(c, PaintCmd::StrokeRect { .. }))
+        .count();
+    assert!(
+        rounded_strokes >= 2,
+        "expected rounded borders, cmds={cmds:?}"
+    );
+    assert_eq!(
+        square_strokes, 0,
+        "unexpected square StrokeRect, cmds={cmds:?}"
+    );
+
+    // 2. Card outer bounding-box corners must NOT contain the card border color (526984 -> bright border),
+    //    and pixels diagonally adjacent inside the bounding box but outside radius=12 must NOT reveal
+    //    un-tinted dark shadow core inside a sharp corner.
+    let card_rect = app
+        .engine()
+        .active_tree()
+        .node_by_key(Key(4))
+        .unwrap()
+        .layout_rect;
+    let border_col = rgb565_to_u16(
+        app.engine()
+            .active_tree()
+            .node_by_key(Key(4))
+            .unwrap()
+            .props
+            .border_color()
+            .unwrap(),
+    );
+    let corners = [
+        (card_rect.x, card_rect.y),
+        (card_rect.right64() as i32 - 1, card_rect.y),
+        (card_rect.x, card_rect.bottom64() as i32 - 1),
+        (
+            card_rect.right64() as i32 - 1,
+            card_rect.bottom64() as i32 - 1,
+        ),
+    ];
+    for (cx, cy) in corners {
+        assert_ne!(
+            app.screen().pixel(cx as u32, cy as u32),
+            border_col,
+            "outer corner ({cx},{cy}) must be outside rounded border"
+        );
+    }
+
+    // 3. Pressing Outline button must keep contrast (fill != fg/accent) and verify against reference.
+    let out_node = app.engine().active_tree().node_by_key(Key(6)).unwrap();
+    let out_rect = out_node.layout_rect;
+    let accent = rgb565_to_u16(out_node.props.accent);
+    let root_bg = rgb565_to_u16(Theme::DARK.background);
+    assert_ne!(
+        app.screen().pixel(out_rect.x as u32, out_rect.y as u32),
+        accent,
+        "outline button outer corner must be rounded"
+    );
+    let center = Point::new(
+        out_rect.x + (out_rect.w / 2) as i32,
+        out_rect.y + (out_rect.h / 2) as i32,
+    );
+    app.step(
+        InstantMs(16),
+        Some(RawInput::PointerDown {
+            id: PointerId(0),
+            pos: center,
+        }),
+        true,
+    )
+    .unwrap();
+    let pressed_bg = app
+        .screen()
+        .pixel((out_rect.x + 12) as u32, (out_rect.y + 4) as u32);
+    assert_ne!(
+        pressed_bg, accent,
+        "pressed outline bg must not turn solid accent"
+    );
+    assert_ne!(pressed_bg, root_bg, "pressed outline bg must tint visibly");
+}

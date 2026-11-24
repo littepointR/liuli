@@ -822,6 +822,7 @@ impl Theme {
             bg: Some(self.surface_alt),
             border_color: Some(self.border),
             border_width: self.shape.border_width,
+            radius: self.shape.radius_md,
             accent: self.accent,
             fg: self.colors.knob,
             focus_color: self.focus,
@@ -841,6 +842,7 @@ impl Theme {
         NodeProps {
             style_source: self.source.declared(),
             bg: Some(self.surface_alt),
+            radius: self.shape.radius_md,
             accent: self.accent,
             fg: self.colors.knob,
             focus_color: self.focus,

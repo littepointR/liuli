@@ -70,22 +70,38 @@ impl BlendA4Pre {
     }
 }
 
-/// Exact rounded-box containment and squared-distance evaluator using 32-bit math
-/// for display-range coordinates and falling back to `i64` for extreme logical rects.
+/// Exact 2x threshold matching `embedded_graphics::primitives::circle::diameter_to_threshold(2 * r)`.
+#[inline(always)]
+fn rounded_rect_threshold(r: u32) -> i32 {
+    match r {
+        0 => 1,
+        1 => 3,
+        2 => 14,
+        _ => ((r * 2) as i32).pow(2),
+    }
+}
+
+/// Exact rounded-box containment and 2x squared-distance evaluator matching
+/// `embedded_graphics::primitives::RoundedRectangle`, using 32-bit math for display-range
+/// coordinates and falling back to `i64` for extreme logical rects.
 #[derive(Clone, Copy)]
 struct RoundedBox {
     rect: Rect,
     r: u32,
-    r_sq: i32,
+    thresh: i32,
     fast: bool,
     x0: i32,
     x1: i32,
     y0: i32,
     y1: i32,
-    il: i32,
-    ir: i32,
-    it: i32,
-    ib: i32,
+    core_l: i32,
+    core_r: i32,
+    core_t: i32,
+    core_b: i32,
+    il2: i32,
+    ir2: i32,
+    it2: i32,
+    ib2: i32,
 }
 
 impl RoundedBox {
@@ -93,10 +109,10 @@ impl RoundedBox {
     fn new(rect: Rect, radius: u32) -> Self {
         let r_i32 = radius as i32;
         let fast = !rect.is_empty()
-            && rect.x >= -1_000_000
-            && rect.y >= -1_000_000
-            && rect.right64() <= 1_000_000
-            && rect.bottom64() <= 1_000_000;
+            && rect.x >= -500_000
+            && rect.y >= -500_000
+            && rect.right64() <= 500_000
+            && rect.bottom64() <= 500_000;
         let (x0, x1, y0, y1) = if fast {
             (
                 rect.x,
@@ -107,33 +123,37 @@ impl RoundedBox {
         } else {
             (0, -1, 0, -1)
         };
+        let r2 = if radius == 0 { 0 } else { 2 * r_i32 - 1 };
         Self {
             rect,
             r: radius,
-            r_sq: r_i32 * r_i32,
+            thresh: rounded_rect_threshold(radius),
             fast,
             x0,
             x1,
             y0,
             y1,
-            il: x0 + r_i32,
-            ir: x1 - r_i32,
-            it: y0 + r_i32,
-            ib: y1 - r_i32,
+            core_l: x0 + r_i32,
+            core_r: x1 - r_i32,
+            core_t: y0 + r_i32,
+            core_b: y1 - r_i32,
+            il2: x0 * 2 + r2,
+            ir2: x1 * 2 - r2,
+            it2: y0 * 2 + r2,
+            ib2: y1 * 2 - r2,
         }
     }
 
     #[inline(always)]
     fn distance2_fast(self, x: i32, y: i32) -> i32 {
-        if self.fast
-            && (-1_000_000..=1_000_000).contains(&x)
-            && (-1_000_000..=1_000_000).contains(&y)
-        {
-            let dx = (self.il - x).max(x - self.ir).clamp(0, 511);
-            let dy = (self.it - y).max(y - self.ib).clamp(0, 511);
-            dx * dx + dy * dy
+        if self.fast && (-500_000..=500_000).contains(&x) && (-500_000..=500_000).contains(&y) {
+            let x2 = x * 2;
+            let y2 = y * 2;
+            let dx2 = (self.il2 - x2).max(x2 - self.ir2).clamp(0, 1023);
+            let dy2 = (self.it2 - y2).max(y2 - self.ib2).clamp(0, 1023);
+            dx2 * dx2 + dy2 * dy2
         } else {
-            distance2(self.rect, self.r, x, y)
+            distance2_2x(self.rect, self.r, x, y)
         }
     }
 
@@ -143,41 +163,37 @@ impl RoundedBox {
             if x < self.x0 || x > self.x1 || y < self.y0 || y > self.y1 {
                 return false;
             }
-            if (x >= self.il && x <= self.ir) || (y >= self.it && y <= self.ib) {
+            if (x >= self.core_l && x <= self.core_r) || (y >= self.core_t && y <= self.core_b) {
                 return true;
             }
-            let dx = if x < self.il {
-                self.il - x
-            } else {
-                x - self.ir
-            }
-            .min(511);
-            let dy = if y < self.it {
-                self.it - y
-            } else {
-                y - self.ib
-            }
-            .min(511);
-            dx * dx + dy * dy <= self.r_sq
+            let x2 = x * 2;
+            let y2 = y * 2;
+            let dx2 = (self.il2 - x2).max(x2 - self.ir2).clamp(0, 1023);
+            let dy2 = (self.it2 - y2).max(y2 - self.ib2).clamp(0, 1023);
+            dx2 * dx2 + dy2 * dy2 < self.thresh
         } else {
-            distance2(self.rect, self.r, x, y) <= self.r_sq
+            distance2_2x(self.rect, self.r, x, y) < self.thresh
         }
     }
 }
 
-/// Distance to the central rectangle of a rounded box. Used by both the horizontal
-/// edges and the four corners, independently of the current band or damage window.
+/// 2x squared distance to the rounded-corner core of `rect`, aligned with `embedded_graphics`.
 #[inline(always)]
-fn distance2(rect: Rect, r: u32, x: i32, y: i32) -> i32 {
-    let r = i64::from(r);
-    let dx = (rect.left64() + r - i64::from(x))
-        .max(i64::from(x) - (rect.right64() - 1 - r))
-        .clamp(0, 511) as i32;
-    let dy = (rect.top64() + r - i64::from(y))
-        .max(i64::from(y) - (rect.bottom64() - 1 - r))
-        .clamp(0, 511) as i32;
+fn distance2_2x(rect: Rect, r: u32, x: i32, y: i32) -> i32 {
+    if rect.is_empty() {
+        return 1023 * 1023 * 2;
+    }
+    let r2 = if r == 0 { 0 } else { 2 * i64::from(r) - 1 };
+    let x2 = 2 * i64::from(x);
+    let y2 = 2 * i64::from(y);
+    let dx2 = (2 * rect.left64() + r2 - x2)
+        .max(x2 - (2 * (rect.right64() - 1) - r2))
+        .clamp(0, 1023) as i32;
+    let dy2 = (2 * rect.top64() + r2 - y2)
+        .max(y2 - (2 * (rect.bottom64() - 1) - r2))
+        .clamp(0, 1023) as i32;
     // Radius and falloff are bytes. Beyond 510 pixels all shadow coverage is zero.
-    dx * dx + dy * dy
+    dx2 * dx2 + dy2 * dy2
 }
 
 /// Fixed-point reciprocal for shadow radial falloff `((outer - d) * opacity) / (outer - inner)`.
@@ -186,8 +202,8 @@ enum FalloffRecip {
     None,
     /// Q32 reciprocal exact for `denom in 2..=16_384` (widening 32×32->64 multiply).
     Q32(u32),
-    /// Q42 reciprocal exact for `denom > 16_384`.
-    Q42(u64),
+    /// Q46 reciprocal exact for `denom in 16_385..=1_040_400`.
+    Q46(u64),
 }
 
 impl FalloffRecip {
@@ -200,7 +216,7 @@ impl FalloffRecip {
             Self::Q32((((1u64 << 32) + d - 1) / d) as u32)
         } else {
             let d = denom as u64;
-            Self::Q42(((1u64 << 42) + d - 1) / d)
+            Self::Q46(((1u64 << 46) + d - 1) / d)
         }
     }
 
@@ -212,9 +228,9 @@ impl FalloffRecip {
                 let num = diff * u32::from(opacity);
                 ((u64::from(num) * u64::from(recip)) >> 32) as u8
             }
-            Self::Q42(recip) => {
+            Self::Q46(recip) => {
                 let num = u64::from(diff) * u64::from(opacity);
-                ((num * recip) >> 42) as u8
+                ((num * recip) >> 46) as u8
             }
         }
     }
@@ -228,7 +244,7 @@ fn eval_shadow_alpha(
     outer_x1: i32,
     outer_y0: i32,
     outer_y1: i32,
-    inner: i32,
+    inner_thresh: i32,
     outer: i32,
     opacity: u8,
     recip: FalloffRecip,
@@ -239,7 +255,7 @@ fn eval_shadow_alpha(
         return 0;
     }
     let d = shifted_box.distance2_fast(x, y);
-    if d <= inner {
+    if d < inner_thresh {
         opacity
     } else if d >= outer {
         0
@@ -266,9 +282,7 @@ pub fn draw_shadow(
     if area.is_empty() {
         return;
     }
-    let radius = u32::from(radius)
-        .min(rect.w.saturating_sub(1) / 2)
-        .min(rect.h.saturating_sub(1) / 2);
+    let radius = u32::from(radius).min(rect.w / 2).min(rect.h / 2);
     let caster_box = RoundedBox::new(rect, radius);
     let shifted_box = RoundedBox::new(shifted, radius);
     let blur_i32 = i32::from(s.blur);
@@ -276,9 +290,14 @@ pub fn draw_shadow(
     let outer_x1 = shifted_box.x1 + blur_i32;
     let outer_y0 = shifted_box.y0 - blur_i32;
     let outer_y1 = shifted_box.y1 + blur_i32;
-    let inner = caster_box.r_sq;
-    let outer = ((radius + u32::from(s.blur)) as i32).pow(2);
-    let recip = FalloffRecip::new(outer - inner);
+    let inner_thresh = caster_box.thresh;
+    let inner_falloff = if radius == 0 { 0 } else { inner_thresh };
+    let outer = if s.blur == 0 {
+        inner_thresh
+    } else {
+        ((2 * (radius + u32::from(s.blur))) as i32).pow(2)
+    };
+    let recip = FalloffRecip::new(outer - inner_falloff);
     let shadow_raw = rgb565_to_u16(s.color);
     let full_blend = BlendA4Pre::new(s.color, s.opacity);
     let band_w = band.w as usize;
@@ -323,7 +342,7 @@ pub fn draw_shadow(
                         outer_x1,
                         outer_y0,
                         outer_y1,
-                        inner,
+                        inner_thresh,
                         outer,
                         s.opacity,
                         recip,
@@ -365,7 +384,8 @@ pub fn draw_shadow(
             let cast_col = projection.column(rect, x);
             cast_cols[lx] = cast_col;
             cast_in_core[lx] = caster_box.fast
-                && cast_col.is_some_and(|c| c.x() >= caster_box.il && c.x() <= caster_box.ir);
+                && cast_col
+                    .is_some_and(|c| c.x() >= caster_box.core_l && c.x() <= caster_box.core_r);
             any_foot |= foot_cols[lx].is_some();
         }
         if !any_foot {
@@ -402,7 +422,7 @@ pub fn draw_shadow(
                     outer_x1,
                     outer_y0,
                     outer_y1,
-                    inner,
+                    inner_thresh,
                     outer,
                     s.opacity,
                     recip,
@@ -633,9 +653,7 @@ mod layers {
         if area.is_empty() {
             return;
         }
-        let radius = u32::from(cache.radius)
-            .min(rect.w.saturating_sub(1) / 2)
-            .min(rect.h.saturating_sub(1) / 2);
+        let radius = u32::from(cache.radius).min(rect.w / 2).min(rect.h / 2);
         let card_box = RoundedBox::new(rect, radius);
         let has_backdrop = cache.style.backdrop_radius > 0;
         let tint_blend = BlendA4Pre::new(cache.style.tint_color, cache.style.tint_alpha);
@@ -722,7 +740,8 @@ mod layers {
                     .filter(|c| c.x() >= src_x0 && c.x() < src_x1);
                 cols[lx] = col;
                 if let Some(c) = col {
-                    col_in_core[lx] = card_box.fast && c.x() >= card_box.il && c.x() <= card_box.ir;
+                    col_in_core[lx] =
+                        card_box.fast && c.x() >= card_box.core_l && c.x() <= card_box.core_r;
                     col_x_off[lx] = (c.x() - src_x0) as usize;
                     any_col = true;
                 }
@@ -816,7 +835,7 @@ mod tests {
 
     #[test]
     fn fast_falloff_matches_reference_division() {
-        for denom in [1i32, 2, 15, 64, 128, 1024, 16_384, 260_100] {
+        for denom in [1i32, 2, 15, 64, 128, 1024, 16_384, 260_100, 1_040_400] {
             let recip = FalloffRecip::new(denom);
             for opacity in [1u8, 7, 15] {
                 for diff in [0, 1, denom / 2, denom - 1, denom] {
@@ -934,26 +953,45 @@ mod tests {
             }
         }
 
-        for r in [0u32, 1, 8, 16, 30] {
-            let rect = Rect::new(20, 40, 200, 140);
-            let r_clamped = r
-                .min(rect.w.saturating_sub(1) / 2)
-                .min(rect.h.saturating_sub(1) / 2);
-            let box_fast = RoundedBox::new(rect, r_clamped);
-            let r_sq = (r_clamped as i32).pow(2);
-            for y in (rect.y - 12)..=(rect.bottom64() as i32 + 12) {
-                for x in (rect.x - 12)..=(rect.right64() as i32 + 12) {
-                    let expected_d2 = distance2(rect, r_clamped, x, y);
-                    assert_eq!(
-                        box_fast.distance2_fast(x, y),
-                        expected_d2,
-                        "r={r} x={x} y={y}"
-                    );
-                    assert_eq!(
-                        box_fast.contains(x, y),
-                        expected_d2 <= r_sq,
-                        "contains r={r} x={x} y={y}"
-                    );
+        use embedded_graphics::{
+            geometry::Size,
+            primitives::{ContainsPoint, RoundedRectangle},
+        };
+        for (w, h) in [
+            (200u32, 140u32),
+            (24, 24),
+            (25, 25),
+            (20, 10),
+            (1, 1),
+            (2, 2),
+            (5, 4),
+        ] {
+            let rect = Rect::new(20, 40, w, h);
+            for r in 0..=16u32 {
+                let r_clamped = r.min(rect.w / 2).min(rect.h / 2);
+                let box_fast = RoundedBox::new(rect, r_clamped);
+                let eg_rr = RoundedRectangle::with_equal_corners(rect.to_eg(), Size::new(r, r));
+                let thresh = rounded_rect_threshold(r_clamped);
+                for y in (rect.y - 4)..=(rect.bottom64() as i32 + 3) {
+                    for x in (rect.x - 4)..=(rect.right64() as i32 + 3) {
+                        let expected_d2 = distance2_2x(rect, r_clamped, x, y);
+                        assert_eq!(
+                            box_fast.distance2_fast(x, y),
+                            expected_d2,
+                            "w={w} h={h} r={r} x={x} y={y}"
+                        );
+                        let contains = box_fast.contains(x, y);
+                        assert_eq!(
+                            contains,
+                            expected_d2 < thresh,
+                            "thresh w={w} h={h} r={r} x={x} y={y}"
+                        );
+                        assert_eq!(
+                            contains,
+                            eg_rr.contains(embedded_graphics::geometry::Point::new(x, y)),
+                            "eg_rr parity w={w} h={h} r={r} x={x} y={y}"
+                        );
+                    }
                 }
             }
         }

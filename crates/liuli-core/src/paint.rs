@@ -616,11 +616,15 @@ pub fn emit_commands_with(
                     }
                     NodeKind::Button => {
                         let bg = if node.pressed {
-                            Some(apply_press_feedback(
-                                node.props.bg().unwrap_or(node.props.accent),
-                                node.props.accent,
-                                node.props.press_feedback(),
-                            ))
+                            match (node.props.bg(), node.props.press_feedback()) {
+                                (Some(c), fb) => {
+                                    Some(apply_press_feedback(c, node.props.accent, fb))
+                                }
+                                (None, crate::view::PressFeedback::None) => None,
+                                (None, fb) => {
+                                    Some(apply_press_feedback(out.root_bg, node.props.accent, fb))
+                                }
+                            }
                         } else {
                             node.props.bg()
                         };
@@ -644,12 +648,22 @@ pub fn emit_commands_with(
                         } else if let Some(bc) = node.props.border_color()
                             && node.props.border_width > 0
                         {
-                            out.push(PaintCmd::StrokeRect {
-                                rect,
-                                clip,
-                                color: bc,
-                                width: node.props.border_width,
-                            })?;
+                            if node.props.radius > 0 {
+                                out.push(PaintCmd::StrokeRoundedRect {
+                                    rect,
+                                    clip,
+                                    color: bc,
+                                    width: node.props.border_width,
+                                    radius: node.props.radius,
+                                })?;
+                            } else {
+                                out.push(PaintCmd::StrokeRect {
+                                    rect,
+                                    clip,
+                                    color: bc,
+                                    width: node.props.border_width,
+                                })?;
+                            }
                         }
 
                         let inner = rect.inset(
@@ -1141,12 +1155,22 @@ fn emit_box_bg_and_border(
     } else if let Some(bc) = node.props.border_color()
         && node.props.border_width > 0
     {
-        out.push(PaintCmd::StrokeRect {
-            rect,
-            clip,
-            color: bc,
-            width: node.props.border_width,
-        })?;
+        if node.props.radius > 0 {
+            out.push(PaintCmd::StrokeRoundedRect {
+                rect,
+                clip,
+                color: bc,
+                width: node.props.border_width,
+                radius: node.props.radius,
+            })?;
+        } else {
+            out.push(PaintCmd::StrokeRect {
+                rect,
+                clip,
+                color: bc,
+                width: node.props.border_width,
+            })?;
+        }
     }
     Ok(())
 }

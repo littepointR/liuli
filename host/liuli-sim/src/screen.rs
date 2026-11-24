@@ -256,29 +256,33 @@ fn reference_range_with_alpha(
                 let shape = rect.translate(shadow.x.into(), shadow.y.into());
                 let bounds = shadow.bounds(rect);
                 let area = bounds.intersect(clip).intersect(full);
-                let r = u32::from(radius)
-                    .min(rect.w.saturating_sub(1) / 2)
-                    .min(rect.h.saturating_sub(1) / 2);
+                let r = u32::from(radius).min(rect.w / 2).min(rect.h / 2);
+                let inner_thresh = i64::from(rounded_rect_threshold(r));
+                let inner_falloff = if r == 0 { 0 } else { inner_thresh };
+                let outer = if shadow.blur == 0 {
+                    inner_thresh
+                } else {
+                    i64::from(2 * (r + u32::from(shadow.blur))).pow(2)
+                };
                 let shadow_raw = shadow.color.into_storage();
                 for y in area.y..area.bottom64() as i32 {
                     for x in area.x..area.right64() as i32 {
                         let pos = Point::new(x, y);
                         if projection
                             .unproject(rect, pos)
-                            .is_some_and(|p| corner_distance(rect, r, p) <= i64::from(r).pow(2))
+                            .is_some_and(|p| corner_distance_2x(rect, r, p) < inner_thresh)
                         {
                             continue;
                         }
                         if let Some(p) = projection.unproject(bounds, pos) {
-                            let d = corner_distance(shape, r, p);
-                            let near = i64::from(r).pow(2);
-                            let far = i64::from(r + u32::from(shadow.blur)).pow(2);
-                            let a = if d <= near {
+                            let d = corner_distance_2x(shape, r, p);
+                            let a = if d < inner_thresh {
                                 shadow.opacity
-                            } else if d >= far {
+                            } else if d >= outer {
                                 0
                             } else {
-                                ((far - d) * i64::from(shadow.opacity) / (far - near)) as u8
+                                ((outer - d) * i64::from(shadow.opacity) / (outer - inner_falloff))
+                                    as u8
                             };
                             let i = y as usize * stride + x as usize;
                             screen.blend_pixel_a4(i, shadow_raw, a);
@@ -329,9 +333,8 @@ fn reference_range_with_alpha(
                 }
                 let group_alpha = group.alpha.as_ref().expect("group alpha");
                 let area = rect.intersect(clip).intersect(full);
-                let radius = u32::from(radius)
-                    .min(rect.w.saturating_sub(1) / 2)
-                    .min(rect.h.saturating_sub(1) / 2);
+                let radius = u32::from(radius).min(rect.w / 2).min(rect.h / 2);
+                let radius_thresh = i64::from(rounded_rect_threshold(radius));
                 for y in area.y..area.bottom64() as i32 {
                     for x in area.x..area.right64() as i32 {
                         let Some(p) = style.projection.unproject(rect, Point::new(x, y)) else {
@@ -347,8 +350,7 @@ fn reference_range_with_alpha(
                         let color = if a == 15 {
                             group.pixels[g_idx]
                         } else {
-                            let inside =
-                                corner_distance(rect, radius, p) <= i64::from(radius).pow(2);
+                            let inside = corner_distance_2x(rect, radius, p) < radius_thresh;
                             let bg = if inside {
                                 if let Some(ref b) = blurred {
                                     b.pixels[i]
@@ -758,12 +760,29 @@ fn reference_range_with_alpha(
     screen
 }
 
-fn corner_distance(rect: Rect, r: u32, p: Point) -> i64 {
-    let r = i64::from(r);
-    let x = i64::from(p.x);
-    let y = i64::from(p.y);
-    (x - x.clamp(rect.left64() + r, rect.right64() - 1 - r)).pow(2)
-        + (y - y.clamp(rect.top64() + r, rect.bottom64() - 1 - r)).pow(2)
+fn rounded_rect_threshold(r: u32) -> i32 {
+    match r {
+        0 => 1,
+        1 => 3,
+        2 => 14,
+        _ => ((r * 2) as i32).pow(2),
+    }
+}
+
+fn corner_distance_2x(rect: Rect, r: u32, p: Point) -> i64 {
+    if rect.is_empty() {
+        return i64::from(1023 * 1023 * 2);
+    }
+    let r2 = if r == 0 { 0 } else { 2 * i64::from(r) - 1 };
+    let x2 = 2 * i64::from(p.x);
+    let y2 = 2 * i64::from(p.y);
+    let dx2 = (2 * rect.left64() + r2 - x2)
+        .max(x2 - (2 * (rect.right64() - 1) - r2))
+        .clamp(0, 1023);
+    let dy2 = (2 * rect.top64() + r2 - y2)
+        .max(y2 - (2 * (rect.bottom64() - 1) - r2))
+        .clamp(0, 1023);
+    dx2 * dx2 + dy2 * dy2
 }
 
 // Independent direct convolution over the full framebuffer (no sampling halo or running sums).
