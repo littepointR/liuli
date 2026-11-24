@@ -82,6 +82,17 @@ fn font_io_failure_preserves_damage_for_retry() {
         app.present_sync_with_pixels(&mut screen, &mut band, |_| Ok(()), &mut FailsAfter(20)),
         Err(FrameError::Font(9))
     ));
+    struct Truncated;
+    impl GlyphPixels for Truncated {
+        type Error = ();
+        fn pixels<'a>(&'a mut self, _: FontId, _: GlyphBitmap<'a>) -> Result<&'a [u8], ()> {
+            Ok(&[])
+        }
+    }
+    assert!(
+        matches!(app.present_sync_with_pixels(&mut screen,&mut band,|_|Ok(()),&mut Truncated),
+        Err(FrameError::ShortGlyph{needed,actual:0}) if needed>0)
+    );
     assert!(!app.damage().is_empty());
     app.present_sync(&mut screen, &mut band).unwrap();
     assert!(app.damage().is_empty());

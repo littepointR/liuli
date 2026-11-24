@@ -74,3 +74,20 @@ cargo run --offline --manifest-path device-ui/Cargo.toml --example preview -- --
 try_message、try_dispatch 和 try_advance 提供事务结果。Busy 会交还尚待处理的消息或输入，在 DMA 完成后重试。WentBackwards 要求宿主修正时间。Build 表示提交失败，活动树和之前完成的帧仍可使用；模型可能已更新。读取 build_failure，按其中的页面、可用的控件键和资源类别修正模型，再调用 commit_view。重复业务消息可能重复执行它的副作用。AppSession::recover 可在桌面执行同样的修复和像素校验。
 
 导航示例在 liuli-alarms/src/lib.rs。Navigator 以 const 容量保存携带参数的页面枚举。确认框关闭后才处理页面返回。离开列表前保存条目键、偏移和焦点，返回时通过 page_restore 提供这些值。运行 workflow 测试可检查整条路径。
+
+
+## 版本与兼容性
+
+0.3.0-dev.1 是开发版本。应用、控件、模拟器、资源工具和参考板使用同一个 SDK 版本。升级时先保留原 LF4 和应用回放，再在新 SDK 的供应目录中构建并核对它们。安装包自带 liuli-sim 命令，可在空目录内重放两个 v0.2 应用。打包验收会把 12 幅输出和原始 PPM 逐字节比较。
+
+~~~
+tools/bin/liuli-sim replay vendor/liuli-sim-0.3.0-dev.1/tests/fixtures/settings.events --out shots/settings --format ppm
+tools/bin/liuli-sim replay vendor/liuli-sim-0.3.0-dev.1/tests/fixtures/terminal.events --out shots/terminal --format ppm
+~~~
+
+| 接口或数据 | 1.0 兼容约定 |
+|---|---|
+| 应用 SDK 与正式控件 API | 1.x 中保持已有公开调用和事务行为。破坏已有调用的变更随新主版本发布，并给出迁移示例。 |
+| 字体与图片 | LF4 v1、L565 v1 按各自文件头选取解码器。格式变更引入新的版本头。保留旧字库与像素对照。 |
+| 操作回放 | 旧 .events 使用原入口。新预览事件在首行声明 liuli-trace 1，时间单位为毫秒。未知版本会返回错误。 |
+| 平台后端 | 基础档保持有界存储和零堆。增强特性单独启用。每个支持平台用相同的逻辑坐标与裁剪规则验证。 |

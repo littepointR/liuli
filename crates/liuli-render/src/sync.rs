@@ -13,6 +13,7 @@ use liuli_text::storage::{GlyphPixels, InlinePixels};
 pub enum FrameError<D, F> {
     Display(PresentError<D>),
     Font(F),
+    ShortGlyph { needed: usize, actual: usize },
 }
 impl<D, F> From<PresentError<D>> for FrameError<D, F> {
     fn from(e: PresentError<D>) -> Self {
@@ -23,6 +24,7 @@ impl<D> FrameError<D, core::convert::Infallible> {
     pub fn into_display(self) -> PresentError<D> {
         match self {
             Self::Display(e) => e,
+            Self::ShortGlyph { needed, actual } => PresentError::ShortGlyph { needed, actual },
             Self::Font(never) => match never {},
         }
     }
@@ -155,7 +157,12 @@ where
         let mut band_target = BandTarget::new(scratch, band_rect)?;
         metrics.commands_replayed = metrics.commands_replayed.saturating_add(
             render_band_with_pixels(&mut band_target, cmds, resources, fonts, blend, glyphs)
-                .map_err(|err| FrameError::Font(err))?,
+                .map_err(|err| match err {
+                    crate::raster::GlyphReadError::Source(e) => FrameError::Font(e),
+                    crate::raster::GlyphReadError::Short { needed, actual } => {
+                        FrameError::ShortGlyph { needed, actual }
+                    }
+                })?,
         );
 
         let phys_rect = band_rect.translate(target_bb.x, target_bb.y);

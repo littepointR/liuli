@@ -80,7 +80,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        profile: [basic, enhanced, benchmark]
+        profile: [basic, enhanced, benchmark, sleep-benchmark]
     steps:
       - uses: actions/checkout@v4
       - uses: esp-rs/xtensa-toolchain@v1.5

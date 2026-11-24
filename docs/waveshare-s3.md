@@ -42,4 +42,12 @@ python -m esptool --chip esp32s3 -p PORT write_flash 0x0 bootloader/bootloader.b
 
 只更新应用时可只写 0x10000。更新字库只写 0x310000，分区容量为 1 MiB；应用分区容量为 3 MiB。以 115200 波特率读取运行日志。在同一块未启用加密或安全启动的参考板上，完整备份可用 esptool write_flash 0 original.bin 恢复。本机此次按用户选择跳过原固件备份。
 
-sleep-benchmark 配置另行启用 MCU 轻睡测试。轻睡会挂起 USB Serial/JTAG。基准配置在定时唤醒并重新绘制后将结果存入 RTC 内存，通过软件复位重新输出。若主机未重新枚举，重连后核对端口。[乐鑫 USB Serial/JTAG 休眠说明](https://docs.espressif.com/projects/esp-idf/en/v5.5.1/esp32s3/api-guides/usb-serial-jtag-console.html)
+sleep-benchmark 配置另行启用 MCU 轻睡测试。轻睡会挂起 USB Serial/JTAG。轻睡配置在入睡前将该 ELF 的标识和测试状态保存到已有 NVS 分区的 liuli_qa 命名空间。只有验证定时器唤醒、重新绘制并完成传输后，才写入完成状态和耗时。下一次正常启动会读出结果；若只读到入睡前标记，会报告未完成并进入普通告警界面。同一个镜像在断电后仍保留该次记录。回到日常使用时刷入 enhanced.bin。[乐鑫 USB Serial/JTAG 休眠说明](https://docs.espressif.com/projects/esp-idf/en/v5.5.1/esp32s3/api-guides/usb-serial-jtag-console.html)
+
+## 生成固件分发包
+
+在离线 SDK 根目录分别构建 basic、enhanced、benchmark 和 device-ui 模板，将各自的 IDF 输出目录传给随包脚本。脚本核对目标芯片、版本、分区表及各文件校验和，把日常固件、基准固件、字体、配置和许可证一起打包。解压后的 README.md 给出空白板安装和仅恢复日常程序的命令。
+
+~~~
+python package-firmware.py --sdk . --basic target/basic/idf --enhanced target/enhanced/idf --benchmark target/benchmark/idf --starter target/starter/idf --out liuli-waveshare-s3.zip
+~~~

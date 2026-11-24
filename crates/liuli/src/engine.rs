@@ -304,7 +304,36 @@ impl<'s, 'f, A: App> Engine<'s, 'f, A> {
         self.last_build_error
             .map(|error| (A::page_id(&self.model), self.build_key, error))
     }
+    #[inline]
     fn commit_view_inner(&mut self, now: InstantMs) -> Result<(), BuildError> {
+        #[cfg(feature = "enhanced")]
+        let previous = self.pair.owner().and_then(|id| {
+            let tree = self.storage.active_tree();
+            tree.is_id_valid(id)
+                .then(|| (id, tree.nodes[id.slot() as usize].key, self.active_page))
+        });
+        self.commit_view_once(now)?;
+        #[cfg(feature = "enhanced")]
+        if let Some((id, key, page)) = previous {
+            let tree = self.storage.active_tree();
+            let still_eligible = self.active_page == page
+                && tree.is_id_valid(id)
+                && tree.is_effectively_enabled_and_visible(id.slot())
+                && A::accepts_transform(&self.model, key)
+                && liuli_core::focus::active_scope_root(tree)
+                    .is_some_and(|root| tree.is_descendant_of(id.slot(), root));
+            if !still_eligible
+                && let liuli_enhanced::gestures::Delivery::Gesture(_, cancel) = self.pair.cancel()
+                && let Some(msg) = A::on_transform(&self.model, key, cancel)
+                && A::update(&mut self.model, msg, now) == Change::View
+            {
+                // Cancellation already released the pair. A corrective view cannot cancel it twice.
+                self.commit_view_once(now)?;
+            }
+        }
+        Ok(())
+    }
+    fn commit_view_once(&mut self, now: InstantMs) -> Result<(), BuildError> {
         self.build_key = None;
         let old_page = self.active_page;
         let new_page = A::page_id(&self.model);
@@ -669,14 +698,6 @@ impl<'s, 'f, A: App> Engine<'s, 'f, A> {
         {
             use liuli_enhanced::gestures::Delivery;
             let tree = self.storage.active_tree();
-            if self.pair.owner().is_some_and(|id| {
-                !tree.is_id_valid(id)
-                    || !tree.is_effectively_enabled_and_visible(id.slot())
-                    || liuli_core::focus::active_scope_root(tree)
-                        .is_none_or(|root| !tree.is_descendant_of(id.slot(), root))
-            }) {
-                self.pair.reset();
-            }
             let owner = match input {
                 RawInput::PointerDown { pos, .. } => liuli_core::focus::active_scope_root(tree)
                     .and_then(|scope| {

@@ -78,6 +78,9 @@ pub(super) fn run(
     complex_text(target)?;
     #[cfg(feature = "sleep-benchmark")]
     {
+        if unsafe { board_arm_sleep() } != 0 {
+            return Err(());
+        }
         let start = unsafe {
             board_begin_sample();
             board_now_us()
@@ -96,6 +99,8 @@ pub(super) fn run(
 }
 
 unsafe extern "C" {
+    #[cfg(feature = "sleep-benchmark")]
+    fn board_arm_sleep() -> i32;
     #[cfg(feature = "sleep-benchmark")]
     fn board_sleep_cycle() -> i32;
     fn board_font_frame(requests: u32, repeated: u32, reads: u32, bytes: u32);

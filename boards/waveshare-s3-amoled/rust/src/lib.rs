@@ -20,13 +20,14 @@ static mut SCRATCH: [u16; WORDS] = [0; WORDS];
 static mut WIRE: [u16; WORDS] = [0; WORDS];
 
 unsafe extern "C" {
-    #[cfg(feature = "benchmark")]
+    #[cfg(feature = "sleep-benchmark")]
     fn board_take_wake_report() -> i32;
     fn board_pixels(x: i32, y: i32, w: u32, h: u32, bytes: *const u16) -> i32;
     fn board_now_us() -> i64;
     fn board_touch(points: *mut Contact) -> i32;
     fn board_wait();
     fn board_frame(pixels: u32, elapsed_us: i64);
+    #[cfg(feature = "enhanced")]
     fn board_blend(p: *mut u16, len: usize, fg: u16, a: u32);
     fn abort() -> !;
 }
@@ -164,10 +165,12 @@ pub unsafe extern "C" fn liuli_run(ptr: *const u8, len: usize) -> i32 {
     engine.set_sync_blend(|row, fg, a| unsafe {
         board_blend(row.as_mut_ptr(), row.len(), fg.into_storage(), u32::from(a))
     });
+    #[cfg(feature = "sleep-benchmark")]
+    let run_benchmark = unsafe { board_take_wake_report() } == 0;
+    #[cfg(all(feature = "benchmark", not(feature = "sleep-benchmark")))]
+    let run_benchmark = true;
     #[cfg(feature = "benchmark")]
-    if unsafe { board_take_wake_report() } == 0
-        && benchmark::run(&mut engine, &mut display, scratch, &mut glyphs).is_err()
-    {
+    if run_benchmark && benchmark::run(&mut engine, &mut display, scratch, &mut glyphs).is_err() {
         return -7;
     }
     let mut previous = [Contact::default(); 2];

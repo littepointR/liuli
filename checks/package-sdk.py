@@ -74,6 +74,7 @@ def package(output, fetch=False):
         shutil.copytree(ROOT / "docs", stage / "docs")
         shutil.copyfile(ROOT / "LICENSE", stage / "LICENSE")
         shutil.copyfile(ROOT / "README.md", stage / "README.md")
+        shutil.copyfile(ROOT / "checks/package-firmware.py", stage / "package-firmware.py")
         board = stage / "boards/waveshare-s3-amoled"
         shutil.copytree(ROOT / "boards/waveshare-s3-amoled", board, ignore=shutil.ignore_patterns("target", "build", "sdkconfig"))
         shutil.copytree(ROOT / "crates/liuli-enhanced/tests/fonts", board / "bench-fonts")
@@ -105,19 +106,42 @@ def package(output, fetch=False):
         env = dict(os.environ, CARGO_HOME=str(Path(scratch)/"cargo-home"), CARGO_NET_OFFLINE="true",
                    CARGO_TARGET_DIR=str(Path(scratch)/"build"))
         cargo("run", "--offline", "--example", "preview", "--", "--headless", cwd=app, env=env)
-        cargo("test", "--offline", "--tests", "--release", cwd=product, env=env)
+        cargo("test", "--offline", "--tests", "--release", "--all-features", cwd=product, env=env)
         cargo("run", "--offline", "--example", "editor", "--features", "enhanced", "--",
               str(board/"bench-fonts/Arabic.ttf"), str(board/"bench-fonts/Devanagari.ttf"), "--headless", cwd=product, env=env)
         cargo("generate-lockfile", "--offline", cwd=starter_board/"rust", env=env)
         cargo("run", "--offline", "--example", "catalog", "--", str(app/"assets/body.lf4"), "--headless", cwd=widgets, env=env)
-        for name, binary in (("liuli-fontpack","liuli-fontpack"),("liuli-sim","liuli-image")):
+        for name, binaries in (("liuli-fontpack",["--bin","liuli-fontpack"]),("liuli-sim",["--bins"])):
             cargo("install","--offline","--root",str(stage/"tools"),"--path",str(vendor/f"{name}-{VERSION}"),
-                  "--bin",binary,cwd=stage,env=env)
+                  *binaries,cwd=stage,env=env)
         (stage/"tools/.crates2.json").unlink(missing_ok=True)
         (stage/"tools/.crates.toml").unlink(missing_ok=True)
         exe_suffix = ".exe" if os.name == "nt" else ""
         subprocess.run([str(stage/"tools"/"bin"/("liuli-fontpack"+exe_suffix)),
                         "verify","--project",str(app/"assets/fonts.toml")],cwd=stage,env=env,check=True)
+        packaged_sim = vendor / f"liuli-sim-{VERSION}"
+        replay_output = Path(scratch) / "migrated-app-screenshots"
+        for scenario in ("settings", "terminal"):
+            subprocess.run([str(stage/"tools/bin"/("liuli-sim"+exe_suffix)), "replay",
+                            str(packaged_sim/f"tests/fixtures/{scenario}.events"), "--format", "ppm",
+                            "--out", str(replay_output)], cwd=stage, env=env, check=True)
+        expected = sorted((packaged_sim/"tests/golden").glob("*.ppm"))
+        if not expected or any((replay_output/p.name).read_bytes()!=p.read_bytes() for p in expected):
+            raise ValueError("packaged v0.2 sample diverged from the reference screenshots")
+        digits = Path(scratch)/"numeric-font"
+        digits.mkdir()
+        shutil.copyfile(app/"assets/example.ttf",digits/"source.ttf")
+        (digits/"digits.txt").write_text("0123456789",encoding="utf8")
+        (digits/"fonts.toml").write_text(
+            'budget=4096\n[[font]]\nsource="source.ttf"\ncharset="digits.txt"\n'
+            'output="digits.lf4"\npx=19\nfallback="0"\n',encoding="utf8")
+        fontpack = str(stage/"tools/bin"/("liuli-fontpack"+exe_suffix))
+        for op in ("pack","verify"):
+            subprocess.run([fontpack,op,"--project","fonts.toml"],cwd=digits,env=env,check=True)
+        (digits/"digits.txt").write_text("0"+chr(0x10ffff),encoding="utf8")
+        missing = subprocess.run([fontpack,"pack","--project","fonts.toml"],cwd=digits,env=env,capture_output=True)
+        if missing.returncode==0 or b"U+10FFFF" not in missing.stderr:
+            raise ValueError("missing-glyph diagnostic for numeric project")
         cargo("test", "--offline", cwd=widgets, env=env)
         cargo("generate-lockfile", "--offline", cwd=board / "rust", env=env)
         cargo("doc", "--offline", "--no-deps", "--features", "enhanced", "-p", "liuli-alarms",

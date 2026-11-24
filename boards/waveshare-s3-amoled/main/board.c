@@ -40,31 +40,10 @@ void board_font_frame(unsigned requests, unsigned repeated, unsigned reads,
   font_bytes = bytes;
 }
 void board_begin_sample(void) { transfer_us = 0; }
-// USB Serial/JTAG may disconnect in light sleep. Retain the result across one
-// software reset.
-static RTC_NOINIT_ATTR struct {
-  uint32_t magic, pixels;
-  int64_t elapsed, transfer;
-} wake_report;
-int board_take_wake_report(void) {
-  if (esp_reset_reason() != ESP_RST_SW || wake_report.magic != 0x4c575231) {
-    wake_report.magic = 0;
-    return 0;
-  }
-  wake_report.magic = 0;
-  ESP_LOGI(
-      "liuli",
-      "sample=4 index=0 elapsed_us=%lld pixels=%u transfer_us=%lld wake=timer",
-      (long long)wake_report.elapsed, wake_report.pixels,
-      (long long)wake_report.transfer);
-  return 1;
-}
+int board_save_wake(unsigned pixels, int64_t elapsed, int64_t transfer);
 void board_sample(unsigned kind, unsigned n, int64_t elapsed, unsigned pixels) {
   if (kind == 4) {
-    wake_report.elapsed = elapsed;
-    wake_report.transfer = transfer_us;
-    wake_report.pixels = pixels;
-    wake_report.magic = 0x4c575231;
+    ESP_ERROR_CHECK(board_save_wake(pixels, elapsed, transfer_us));
     esp_restart();
   }
   ESP_LOGI("liuli",

@@ -15,7 +15,7 @@ pub struct TouchPair {
     owner: Option<NodeId>,
     first: Option<Contact>,
     second: Option<Contact>,
-    draining: Option<PointerId>,
+    draining: [Option<PointerId>; 2],
 }
 pub enum Delivery {
     Pass,
@@ -29,16 +29,28 @@ impl TouchPair {
     pub fn owner(&self) -> Option<NodeId> {
         self.owner
     }
+    /// Cancel the winning recognizer and consume releases from its old contacts.
+    pub fn cancel(&mut self) -> Delivery {
+        let last = self.event(GesturePhase::Cancel);
+        self.draining = [
+            self.first.take().map(|p| p.id),
+            self.second.take().map(|p| p.id),
+        ];
+        self.owner = None;
+        last
+    }
     pub fn feed(&mut self, input: RawInput, hit: Option<NodeId>) -> Delivery {
-        if let Some(id) = self.draining {
+        if self.draining.iter().any(Option::is_some) {
             match input {
-                RawInput::PointerCancel { id: i } | RawInput::PointerUp { id: i, .. }
-                    if i == id =>
-                {
-                    self.draining = None;
+                RawInput::PointerCancel { id } | RawInput::PointerUp { id, .. } => {
+                    if let Some(slot) = self.draining.iter_mut().find(|p| **p == Some(id)) {
+                        *slot = None;
+                        return Delivery::Consume;
+                    }
+                }
+                RawInput::PointerMove { id, .. } if self.draining.contains(&Some(id)) => {
                     return Delivery::Consume;
                 }
-                RawInput::PointerMove { id: i, .. } if i == id => return Delivery::Consume,
                 RawInput::PointerDown { .. } => return Delivery::Consume,
                 _ => {}
             }
@@ -101,7 +113,7 @@ impl TouchPair {
                         None
                     };
                     self.reset();
-                    self.draining = remaining;
+                    self.draining = [remaining, None];
                     return delivery;
                 }
             }

@@ -1,0 +1,5 @@
+I (861) app_init: App version:      0.3.0-dev.1
+I (861) app_init: ELF file SHA256:  aedf2383c...
+I (875) liuli: ui_task_stack_reserved=49152 ui_static_with_bands=70712
+I (1155) liuli: font_probe reads=5 bytes=2560 hits=111 psram_cache=4096
+I (1235) liuli: timestamp_us=376836 pixels=128640 frame_us=81043 transfer_us=16745 free_internal=257987 free_psram=8380180

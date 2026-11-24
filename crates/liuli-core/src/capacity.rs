@@ -82,6 +82,7 @@ pub enum PresentStatus {
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum PresentError<E> {
+    ShortGlyph { needed: usize, actual: usize },
     BufferTooSmall,
     Target(E),
     DmaFaulted,

@@ -63,7 +63,7 @@ pub fn render_band_with_blend<'f, R>(
 where
     R: SceneResources + ?Sized,
 {
-    match render_band_with_pixels(
+    match render_band_inner(
         target,
         cmds,
         resources,
@@ -76,7 +76,56 @@ where
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum GlyphReadError<E> {
+    Source(E),
+    Short { needed: usize, actual: usize },
+}
+
+struct CheckedGlyphs<'p, G>(&'p mut G);
+impl<G: liuli_text::storage::GlyphPixels> liuli_text::storage::GlyphPixels
+    for CheckedGlyphs<'_, G>
+{
+    type Error = GlyphReadError<G::Error>;
+    fn begin_band(&mut self, band: Rect) {
+        self.0.begin_band(band);
+    }
+    fn pixels<'a>(
+        &'a mut self,
+        font: liuli_core::view::FontId,
+        glyph: liuli_text::GlyphBitmap<'a>,
+    ) -> Result<&'a [u8], Self::Error> {
+        let needed =
+            usize::from(glyph.metrics.width).div_ceil(2) * usize::from(glyph.metrics.height);
+        let bytes = self.0.pixels(font, glyph).map_err(GlyphReadError::Source)?;
+        bytes.get(..needed).ok_or(GlyphReadError::Short {
+            needed,
+            actual: bytes.len(),
+        })
+    }
+}
 pub fn render_band_with_pixels<'f, R, G: liuli_text::storage::GlyphPixels>(
+    target: &mut BandTarget<'_>,
+    cmds: &CommandList,
+    resources: &R,
+    fonts: &FontSet<'f>,
+    blend: impl Fn(&mut [u16], Rgb565, u8) + Copy,
+    glyphs: &mut G,
+) -> Result<u32, GlyphReadError<G::Error>>
+where
+    R: SceneResources + ?Sized,
+{
+    render_band_inner(
+        target,
+        cmds,
+        resources,
+        fonts,
+        blend,
+        &mut CheckedGlyphs(glyphs),
+    )
+}
+
+fn render_band_inner<'f, R, G: liuli_text::storage::GlyphPixels>(
     target: &mut BandTarget<'_>,
     cmds: &CommandList,
     resources: &R,
