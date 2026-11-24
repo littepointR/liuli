@@ -1055,6 +1055,9 @@ fn update_slider_from_pos(
         return (true, None);
     }
     let rect = n.layout_rect;
+    let Some(pos) = tree.local_point(slot, pos) else {
+        return (true, None);
+    };
     let knob_w = (rect.w as i32).min(12);
     let usable = (rect.w as i32 - knob_w).max(1);
     let rel_x = (pos.x - (rect.x + knob_w / 2)).clamp(0, usable);
@@ -1136,7 +1139,9 @@ fn pointer_hits_slot(tree: &RetainedTree, slot: u16, pos: Point) -> bool {
     let n = &tree.nodes[slot as usize];
     n.occupied
         && tree.is_effectively_enabled_and_visible(slot)
-        && n.layout_rect.intersect(n.clip_rect).contains_point(pos)
+        && tree
+            .local_point(slot, pos)
+            .is_some_and(|p| n.layout_rect.intersect(n.clip_rect).contains_point(p))
 }
 
 fn find_scroll_ancestor(tree: &RetainedTree, slot: u16, scope_root: u16) -> Option<u16> {
@@ -1208,7 +1213,10 @@ pub fn hit_test_in_scope(tree: &RetainedTree, scope_root: u16, pos: Point) -> Op
             continue;
         }
         let hit_box = n.layout_rect.intersect(n.clip_rect);
-        if hit_box.is_empty() || !hit_box.contains_point(pos) {
+        if !tree
+            .local_point(slot as u16, pos)
+            .is_some_and(|p| hit_box.contains_point(p))
+        {
             continue;
         }
         if is_interactive_leaf_or_row(n) || n.kind == NodeKind::ScrollY || n.kind == NodeKind::Modal

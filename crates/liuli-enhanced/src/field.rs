@@ -72,6 +72,21 @@ impl<'a> TextField<'a> {
     pub fn revision(&self) -> u16 {
         self.revision
     }
+    pub fn set_colors(&mut self, foreground: Rgb565, background: Rgb565) -> Result<(), FieldError> {
+        if self.style.foreground == foreground && self.style.background == background {
+            return Ok(());
+        }
+        let next_style = FieldStyle {
+            foreground,
+            background,
+            ..self.style
+        };
+        let image = render(&self.editor, &self.fonts, next_style)?;
+        self.style = next_style;
+        self.image = image;
+        self.revision = self.revision.wrapping_add(1);
+        Ok(())
+    }
     pub fn paint(&self, canvas: &mut WidgetCanvas<'_>) -> Result<(), BuildError> {
         canvas.surface(
             Rect::new(0, 0, self.style.width.into(), self.style.height.into()),

@@ -6,9 +6,12 @@ extern crate alloc;
 pub mod bitmap;
 pub mod capacity;
 pub mod damage;
+pub mod effects;
 pub mod focus;
 pub mod geometry;
 pub mod input;
+#[cfg(feature = "layers")]
+pub mod layers;
 pub mod layout;
 pub mod node;
 pub mod paint;

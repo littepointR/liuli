@@ -27,6 +27,7 @@ pub mod prelude {
         TimeError, TransactionError,
     };
     pub use liuli_core::damage::DamageSet;
+    pub use liuli_core::effects::{Layer, PressDepth, Projection, Shadow, SurfaceStyle};
     pub use liuli_core::geometry::Rect;
     pub use liuli_core::input::TextInput;
     pub use liuli_core::input::{
@@ -39,8 +40,9 @@ pub mod prelude {
     };
     pub use liuli_core::view::StoredProps;
     pub use liuli_core::view::{
-        Align, App, Change, Children, EdgeInsets, FontId, IconKind, Key, Length, NodeKind,
-        NodeProps, PageRestore, SampleRing, TextAlign, TextRef, ViewBuilder,
+        Align, App, Change, Children, EdgeInsets, FocusRingStyle, FontId, IconKind, Key, Length,
+        NodeKind, NodeProps, PageRestore, PressFeedback, SampleRing, TextAlign, TextRef,
+        ViewBuilder,
     };
     pub use liuli_render::{
         AlignedBand, BandSlot, BufferTooSmall, ByteOrder, CACHE_LINE_BYTES, DmaCacheOps,

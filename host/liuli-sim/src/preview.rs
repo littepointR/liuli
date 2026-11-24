@@ -368,7 +368,10 @@ fn pick_visible(tree: &RetainedTree, slot: u16, point: Point) -> Option<u16> {
     if !node.occupied || !node.props.visible() {
         return None;
     }
-    let mut hit = node.visible_rect.contains_point(point).then_some(slot);
+    let mut hit = tree
+        .local_point(slot, point)
+        .is_some_and(|p| node.visible_rect.contains_point(p))
+        .then_some(slot);
     let mut child = node.first_child.get_u16();
     while let Some(slot) = child {
         hit = pick_visible(tree, slot, point).or(hit);
@@ -453,14 +456,28 @@ fn handle_connection(
             while let Some(slot) = current {
                 let node = &tree.nodes[slot as usize];
                 chain.push(format!("key={} {:?} width={:?} height={:?} measured={:?} layout={:?} clip={:?} visible={:?} font={:?} fg={:?} bg={:?}",node.key.0,node.kind,node.props.width,node.props.height,node.measured_size,node.layout_rect,node.clip_rect,node.visible_rect,node.props.font(),node.props.fg,node.props.bg()));
-                if let Some(source) = session.source(node.key) {
+                let effect = tree.effects.get(node.key);
+                if effect != liuli::prelude::SurfaceStyle::FLAT {
                     chain.push(format!(
+                        "  surface={effect:?} local_pointer={:?}",
+                        tree.local_point(slot, point)
+                    ));
+                }
+                if let Some(source) = session.source(node.key) {
+                    let mut line = format!(
                         "  style={} declaration={}",
                         source.theme,
                         source
                             .declaration
                             .map_or_else(|| "unknown".into(), |l| l.to_string())
-                    ));
+                    );
+                    if let Some(v) = source.variant {
+                        line.push_str(&format!(" variant={v}"));
+                    }
+                    if let Some(m) = source.material {
+                        line.push_str(&format!(" material={m}"));
+                    }
+                    chain.push(line);
                     for (token, location) in liuli::core::style_source::StyleSource::TOKENS
                         .iter()
                         .zip(source.overrides)

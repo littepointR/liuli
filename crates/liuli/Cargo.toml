@@ -14,6 +14,6 @@ liuli-enhanced = { version = "=1.0.0", path = "../liuli-enhanced", optional = tr
 
 [features]
 default = []
-enhanced = ["dep:liuli-enhanced"]
+enhanced = ["dep:liuli-enhanced", "liuli-render/layers"]
 platform-blend = []
 inspector=["liuli-core/inspector"]

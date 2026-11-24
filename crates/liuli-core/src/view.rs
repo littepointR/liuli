@@ -329,6 +329,113 @@ impl NodeKind {
     }
 }
 
+/// Visual press feedback applied to a button or container background when `pressed`.
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
+pub enum PressFeedback {
+    /// Legacy 3-step RGB565 darken (preserved for baseline goldens).
+    #[default]
+    Default,
+    /// Disable pressed fill color change.
+    None,
+    /// Blend towards black by `amount` out of 15.
+    Darken(u8),
+    /// Blend towards white by `amount` out of 15.
+    Lighten(u8),
+    /// Blend towards `accent` by `amount` out of 15.
+    AccentTint(u8),
+}
+
+impl PressFeedback {
+    #[inline]
+    pub const fn to_raw(self) -> u8 {
+        match self {
+            Self::Default => 0,
+            Self::None => 1,
+            Self::Darken(a) => (1 << 4) | (if a > 15 { 15 } else { a }),
+            Self::Lighten(a) => (2 << 4) | (if a > 15 { 15 } else { a }),
+            Self::AccentTint(a) => (3 << 4) | (if a > 15 { 15 } else { a }),
+        }
+    }
+
+    #[inline]
+    pub const fn from_raw(raw: u8) -> Self {
+        let mode = raw >> 4;
+        let amount = raw & 0x0F;
+        match mode {
+            0 => {
+                if raw == 1 {
+                    Self::None
+                } else {
+                    Self::Default
+                }
+            }
+            1 => Self::Darken(amount),
+            2 => Self::Lighten(amount),
+            3 => Self::AccentTint(amount),
+            _ => Self::Default,
+        }
+    }
+}
+
+/// Configurable focus outline geometry. `DEFAULT` (`0x00` encoded) emits a 2 px sharp outward outline.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub struct FocusRingStyle {
+    pub enabled: bool,
+    pub width: u8,
+    pub offset: u8,
+    pub rounded: bool,
+}
+
+impl FocusRingStyle {
+    pub const DEFAULT: Self = Self {
+        enabled: true,
+        width: 2,
+        offset: 2,
+        rounded: false,
+    };
+    pub const OFF: Self = Self {
+        enabled: false,
+        width: 2,
+        offset: 2,
+        rounded: false,
+    };
+
+    #[inline]
+    pub const fn to_raw(self) -> u8 {
+        if self.enabled && self.width == 2 && self.offset == 2 && !self.rounded {
+            return 0;
+        }
+        let w = if self.width < 1 {
+            1
+        } else if self.width > 3 {
+            3
+        } else {
+            self.width
+        };
+        let o = if self.offset > 3 { 3 } else { self.offset };
+        0x80 | (self.enabled as u8) | (w << 1) | (o << 3) | ((self.rounded as u8) << 5)
+    }
+
+    #[inline]
+    pub const fn from_raw(raw: u8) -> Self {
+        if raw == 0 {
+            return Self::DEFAULT;
+        }
+        Self {
+            enabled: (raw & 0x01) != 0,
+            width: (raw >> 1) & 0x03,
+            offset: (raw >> 3) & 0x03,
+            rounded: (raw & 0x20) != 0,
+        }
+    }
+}
+
+impl Default for FocusRingStyle {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct NodeProps {
     pub style_source: crate::style_source::StyleSource,
@@ -344,6 +451,8 @@ pub struct NodeProps {
     pub fg: Rgb565,
     pub accent: Rgb565,
     pub focus_color: Rgb565,
+    pub focus_ring: FocusRingStyle,
+    pub press_feedback: PressFeedback,
     pub overlay_color: Rgb565,
     pub overlay_alpha: u8,
     pub text: TextRef,
@@ -392,6 +501,8 @@ impl NodeProps {
             fg: Rgb565::new(31, 63, 31),
             accent: Rgb565::new(4, 34, 29),
             focus_color: Rgb565::new(31, 48, 0),
+            focus_ring: FocusRingStyle::DEFAULT,
+            press_feedback: PressFeedback::Default,
             overlay_color: Rgb565::new(0, 0, 0),
             overlay_alpha: 0,
             text: TextRef::Static(""),
@@ -446,6 +557,8 @@ pub struct StoredProps {
     pub align_cross: Align,
     pub border_width: u8,
     pub radius: u8,
+    pub focus_ring_raw: u8,
+    pub press_feedback_raw: u8,
     pub bg_raw: Rgb565,
     pub border_raw: Rgb565,
     pub fg: Rgb565,
@@ -475,6 +588,8 @@ impl StoredProps {
         align_cross: Align::Start,
         border_width: 0,
         radius: 0,
+        focus_ring_raw: 0,
+        press_feedback_raw: 0,
         bg_raw: Rgb565::new(0, 0, 0),
         border_raw: Rgb565::new(0, 0, 0),
         fg: Rgb565::new(0, 0, 0),
@@ -563,6 +678,8 @@ impl StoredProps {
             align_cross: p.align_cross,
             border_width: p.border_width,
             radius: p.radius,
+            focus_ring_raw: p.focus_ring.to_raw(),
+            press_feedback_raw: p.press_feedback.to_raw(),
             bg_raw,
             border_raw,
             fg: p.fg,
@@ -679,6 +796,16 @@ impl StoredProps {
     }
     pub const fn repeatable(&self) -> bool {
         (self.flags & FLAG_REPEATABLE) != 0
+    }
+
+    #[inline]
+    pub const fn focus_ring(&self) -> FocusRingStyle {
+        FocusRingStyle::from_raw(self.focus_ring_raw)
+    }
+
+    #[inline]
+    pub const fn press_feedback(&self) -> PressFeedback {
+        PressFeedback::from_raw(self.press_feedback_raw)
     }
 }
 
@@ -856,6 +983,7 @@ impl DraftNode {
 }
 
 pub struct ViewDraft {
+    pub effects: crate::effects::Effects,
     #[cfg(feature = "inspector")]
     pub inspection: Option<alloc::boxed::Box<crate::style_source::StyleInspection>>,
     pub nodes: [DraftNode; MAX_NODES],
@@ -869,6 +997,7 @@ pub struct ViewDraft {
 
 impl ViewDraft {
     pub const ZERO: Self = Self {
+        effects: crate::effects::Effects::EMPTY,
         #[cfg(feature = "inspector")]
         inspection: None,
         nodes: [DraftNode::EMPTY; MAX_NODES],
@@ -892,6 +1021,7 @@ impl ViewDraft {
         self.count = 0;
         self.text_len = 0;
         self.sparklines.reset();
+        self.effects = crate::effects::Effects::EMPTY;
         self.root = SlotLink::NONE;
         self.modal = SlotLink::NONE;
     }
@@ -988,6 +1118,23 @@ pub struct Children<'a, 'b> {
 }
 
 impl<'a, 'b> Children<'a, 'b> {
+    /// Decorate an already declared node without changing its layout or order.
+    pub fn decorate(
+        &mut self,
+        key: Key,
+        style: crate::effects::SurfaceStyle,
+    ) -> Result<(), BuildError> {
+        let b = &mut self.builder;
+        b.operation_key = Some(key);
+        if !b.draft.nodes[..usize::from(b.draft.count)]
+            .iter()
+            .any(|n| n.key == key)
+        {
+            return Err(b.fail(BuildError::InvalidRange));
+        }
+        b.draft.effects.add(key, style).map_err(|err| b.fail(err))
+    }
+
     #[inline]
     pub fn row<F>(&mut self, key: Key, props: NodeProps, f: F) -> Result<(), BuildError>
     where

@@ -10,4 +10,5 @@ embedded-graphics-core.workspace = true
 
 [features]
 owned-images=[]
+layers=["owned-images"]
 inspector=[]

@@ -5,6 +5,9 @@ rust-version.workspace = true
 version.workspace = true
 license.workspace = true
 
+[features]
+layers=["liuli-core/layers"]
+
 [dependencies]
 liuli-core.workspace = true
 liuli-text.workspace = true

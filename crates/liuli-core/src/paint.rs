@@ -29,6 +29,19 @@ pub enum PaintCmd {
         angle: u8,
         alpha: u8,
     } = 9,
+    Shadow {
+        rect: Rect,
+        clip: Rect,
+        shadow: crate::effects::Shadow,
+        projection: crate::effects::Projection,
+        radius: u8,
+    } = 10,
+    Group {
+        rect: Rect,
+        clip: Rect,
+        index: u8,
+        end: u16,
+    } = 11,
     FillRect {
         rect: Rect,
         clip: Rect,
@@ -40,6 +53,13 @@ pub enum PaintCmd {
         color: Rgb565,
         width: u8,
     } = 2,
+    StrokeRoundedRect {
+        rect: Rect,
+        clip: Rect,
+        color: Rgb565,
+        width: u8,
+        radius: u8,
+    } = 12,
     FillRoundedRect {
         rect: Rect,
         clip: Rect,
@@ -116,10 +136,15 @@ impl PaintCmd {
     pub fn bounds(&self) -> Rect {
         match *self {
             Self::Empty => Rect::ZERO,
-            Self::Surface { rect, clip, .. }
+            Self::Shadow {
+                rect, clip, shadow, ..
+            } => shadow.bounds(rect).intersect(clip),
+            Self::Group { rect, clip, .. }
+            | Self::Surface { rect, clip, .. }
             | Self::Bitmap { rect, clip, .. }
             | Self::FillRect { rect, clip, .. }
             | Self::StrokeRect { rect, clip, .. }
+            | Self::StrokeRoundedRect { rect, clip, .. }
             | Self::FillRoundedRect { rect, clip, .. }
             | Self::Overlay { rect, clip, .. }
             | Self::Icon { rect, clip, .. }
@@ -130,6 +155,14 @@ impl PaintCmd {
 }
 
 pub struct CommandList {
+    pub effect_error_key: Option<crate::view::Key>,
+    #[cfg(feature = "layers")]
+    pub layers: Option<alloc::vec::Vec<crate::layers::LayerCache>>,
+    #[cfg(feature = "layers")]
+    pub layer_budget: Option<usize>,
+    #[cfg(feature = "layers")]
+    pub(crate) used_layers: u8,
+
     #[cfg(feature = "owned-images")]
     surfaces: Option<alloc::vec::Vec<alloc::sync::Arc<crate::bitmap::OwnedBitmap>>>,
     pub cmds: [PaintCmd; MAX_COMMANDS],
@@ -140,8 +173,15 @@ pub struct CommandList {
 
 impl CommandList {
     pub const ZERO: Self = Self {
+        effect_error_key: None,
         #[cfg(feature = "owned-images")]
         surfaces: None,
+        #[cfg(feature = "layers")]
+        layers: None,
+        #[cfg(feature = "layers")]
+        layer_budget: None,
+        #[cfg(feature = "layers")]
+        used_layers: 0,
         cmds: [PaintCmd::EMPTY; MAX_COMMANDS],
         count: 0,
         root_bg: Rgb565::new(0, 0, 0),
@@ -154,6 +194,11 @@ impl CommandList {
 
     pub fn reset(&mut self) {
         self.count = 0;
+        self.effect_error_key = None;
+        #[cfg(feature = "layers")]
+        {
+            self.used_layers = 0;
+        }
         #[cfg(feature = "owned-images")]
         if let Some(v) = &mut self.surfaces {
             v.clear();
@@ -168,6 +213,55 @@ impl CommandList {
                 Some(self.surfaces.as_ref()?.get(usize::from(index))?.view())
             }
             _ => None,
+        }
+    }
+    /// Number of isolated subtrees that reused an earlier frame's pixel cache.
+    pub fn reused_groups(&self) -> usize {
+        #[cfg(feature = "layers")]
+        {
+            self.layers
+                .iter()
+                .flatten()
+                .filter(|l| l.group.borrow().reused)
+                .count()
+        }
+        #[cfg(not(feature = "layers"))]
+        {
+            0
+        }
+    }
+    pub fn cached_layer_bytes(&self) -> usize {
+        #[cfg(feature = "layers")]
+        {
+            self.layer_bytes()
+        }
+        #[cfg(not(feature = "layers"))]
+        {
+            0
+        }
+    }
+    pub fn group_style(&self, index: u8) -> Option<(crate::effects::Layer, u8)> {
+        #[cfg(feature = "layers")]
+        {
+            let l = self.layers.as_ref()?.get(usize::from(index))?;
+            Some((l.style, l.radius))
+        }
+        #[cfg(not(feature = "layers"))]
+        {
+            let _ = index;
+            None
+        }
+    }
+    pub fn group_backdrop_end(&self, index: u8) -> Option<usize> {
+        #[cfg(feature = "layers")]
+        {
+            let l = self.layers.as_ref()?.get(usize::from(index))?;
+            Some(l.backdrop_end)
+        }
+        #[cfg(not(feature = "layers"))]
+        {
+            let _ = index;
+            None
         }
     }
     pub fn as_slice(&self) -> &[PaintCmd] {
@@ -379,6 +473,8 @@ pub fn emit_commands_with(
     sp += 1;
 
     let mut outline_layer = None;
+    #[cfg(feature = "layers")]
+    let mut group_at = [None; MAX_DEPTH + 2];
     while sp > 0 {
         let top = sp - 1;
         let frame = stack[top];
@@ -393,6 +489,52 @@ pub fn emit_commands_with(
             let rect = node.layout_rect;
             let visible = !rect.intersect(clip).is_empty() && !node.visible_rect.is_empty();
 
+            #[cfg(feature = "layers")]
+            let backdrop_end = out.count;
+            let effect = tree.effects.get(node.key);
+            if let Some(shadow) = effect.shadow {
+                let mut shadow = if effect.press_depth.is_enabled() {
+                    let press = if effect.press_depth.duration_ms() == 0 {
+                        if node.pressed { 15 } else { 0 }
+                    } else {
+                        anims
+                            .cached_value(node.key, AnimProp::PressDepth)
+                            .unwrap_or(if node.pressed { 15 } else { 0 })
+                    };
+                    shadow.pressed_scaled(press as u8, effect.press_depth.scale())
+                } else {
+                    shadow
+                };
+                let projection = effect.layer().map_or(crate::effects::Projection(0), |l| {
+                    shadow.opacity = (u16::from(shadow.opacity) * u16::from(l.opacity) / 15) as u8;
+                    l.projection
+                });
+                if !rect.is_empty() && shadow.bounds(rect).intersects(clip) && shadow.opacity > 0 {
+                    out.push(PaintCmd::Shadow {
+                        rect,
+                        clip,
+                        shadow,
+                        projection,
+                        radius: node.props.radius,
+                    })?;
+                }
+            }
+            #[cfg(feature = "layers")]
+            {
+                group_at[top] = None;
+                if visible && let Some(layer) = effect.layer {
+                    out.effect_error_key = Some(node.key);
+                    group_at[top] = Some(out.begin_layer(
+                        node.key,
+                        rect,
+                        clip,
+                        layer,
+                        node.props.radius,
+                        backdrop_end,
+                    )?);
+                    out.effect_error_key = None;
+                }
+            }
             if visible || node.kind == NodeKind::Modal {
                 match node.kind {
                     NodeKind::Custom => {
@@ -428,13 +570,7 @@ pub fn emit_commands_with(
                         emit_box_bg_and_border(node, rect, clip, out)?;
                     }
                     NodeKind::Label => {
-                        if let Some(bg) = node.props.bg() {
-                            out.push(PaintCmd::FillRect {
-                                rect,
-                                clip,
-                                color: bg,
-                            })?;
-                        }
+                        emit_box_bg_and_border(node, rect, clip, out)?;
                         let inner = rect.inset(
                             node.props.padding.left as u32,
                             node.props.padding.top as u32,
@@ -480,9 +616,10 @@ pub fn emit_commands_with(
                     }
                     NodeKind::Button => {
                         let bg = if node.pressed {
-                            Some(darken_or_mix(
+                            Some(apply_press_feedback(
                                 node.props.bg().unwrap_or(node.props.accent),
-                                3,
+                                node.props.accent,
+                                node.props.press_feedback(),
                             ))
                         } else {
                             node.props.bg()
@@ -871,10 +1008,16 @@ pub fn emit_commands_with(
                 // the next overlay sibling (for example a toast or a modal).
                 let mut layer = frame.slot;
                 while let Some(parent) = tree.nodes[usize::from(layer)].parent.get_u16() {
-                    if matches!(
-                        tree.nodes[usize::from(parent)].kind,
-                        NodeKind::Stack | NodeKind::Root | NodeKind::Modal
-                    ) {
+                    if tree
+                        .effects
+                        .get(tree.nodes[usize::from(layer)].key)
+                        .layer()
+                        .is_some()
+                        || matches!(
+                            tree.nodes[usize::from(parent)].kind,
+                            NodeKind::Stack | NodeKind::Root | NodeKind::Modal
+                        )
+                    {
                         break;
                     }
                     layer = parent;
@@ -888,8 +1031,19 @@ pub fn emit_commands_with(
                 emit_focus_outline(focused, screen, focus.editing, out)?;
                 outline_layer = None;
             }
+            #[cfg(feature = "layers")]
+            if let Some(start) = group_at[top].take() {
+                let end = out.count as u16;
+                if let PaintCmd::Group { end: limit, .. } = &mut out.cmds[start] {
+                    *limit = end;
+                }
+            }
             sp -= 1;
         }
+    }
+    #[cfg(feature = "layers")]
+    if let Some(layers) = out.layers.as_mut() {
+        layers.truncate(usize::from(out.used_layers));
     }
     Ok(())
 }
@@ -900,25 +1054,54 @@ fn emit_focus_outline(
     editing: bool,
     out: &mut CommandList,
 ) -> Result<(), BuildError> {
+    let ring = node.props.focus_ring();
+    if !ring.enabled {
+        return Ok(());
+    }
     let rect = node.layout_rect;
     let ring_clip = node.clip_rect.intersect(screen);
     if !rect.intersect(ring_clip).is_empty() {
         // Fit the outward stroke on sides that reach a container edge. Keeping
         // the widget's full bounds avoids inventing a border at a scroll cut.
-        let ring_rect = rect.union(rect.expand(2).intersect(ring_clip));
-        out.push(PaintCmd::StrokeRect {
-            rect: ring_rect,
-            clip: ring_clip,
-            color: node.props.focus_color,
-            width: 2,
-        })?;
-        if editing {
-            out.push(PaintCmd::StrokeRect {
-                rect: ring_rect.inset(1, 1, 1, 1),
+        let offset = u32::from(ring.offset);
+        let width = ring.width.clamp(1, 3);
+        let ring_rect = rect.union(rect.expand(offset).intersect(ring_clip));
+        let use_rounded = ring.rounded && node.props.radius > 0;
+        let ring_radius = node.props.radius.saturating_add(ring.offset);
+        if use_rounded {
+            out.push(PaintCmd::StrokeRoundedRect {
+                rect: ring_rect,
                 clip: ring_clip,
-                color: node.props.accent,
-                width: 1,
+                color: node.props.focus_color,
+                width,
+                radius: ring_radius,
             })?;
+        } else {
+            out.push(PaintCmd::StrokeRect {
+                rect: ring_rect,
+                clip: ring_clip,
+                color: node.props.focus_color,
+                width,
+            })?;
+        }
+        if editing {
+            let inner_rect = ring_rect.inset(1, 1, 1, 1);
+            if use_rounded {
+                out.push(PaintCmd::StrokeRoundedRect {
+                    rect: inner_rect,
+                    clip: ring_clip,
+                    color: node.props.accent,
+                    width: 1,
+                    radius: ring_radius.saturating_sub(1),
+                })?;
+            } else {
+                out.push(PaintCmd::StrokeRect {
+                    rect: inner_rect,
+                    clip: ring_clip,
+                    color: node.props.accent,
+                    width: 1,
+                })?;
+            }
         }
     }
     Ok(())
@@ -934,7 +1117,9 @@ fn emit_box_bg_and_border(
         return Ok(());
     }
     let bg = if node.pressed {
-        node.props.bg().map(|c| darken_or_mix(c, 3))
+        node.props
+            .bg()
+            .map(|c| apply_press_feedback(c, node.props.accent, node.props.press_feedback()))
     } else {
         node.props.bg()
     };
@@ -964,6 +1149,26 @@ fn emit_box_bg_and_border(
         })?;
     }
     Ok(())
+}
+
+fn apply_press_feedback(
+    color: Rgb565,
+    accent: Rgb565,
+    feedback: crate::view::PressFeedback,
+) -> Rgb565 {
+    match feedback {
+        crate::view::PressFeedback::Default => darken_or_mix(color, 3),
+        crate::view::PressFeedback::None => color,
+        crate::view::PressFeedback::Darken(a) => {
+            blend_rgb565_scale(color, Rgb565::new(0, 0, 0), i32::from(a.min(15)), 15)
+        }
+        crate::view::PressFeedback::Lighten(a) => {
+            blend_rgb565_scale(color, Rgb565::new(31, 63, 31), i32::from(a.min(15)), 15)
+        }
+        crate::view::PressFeedback::AccentTint(a) => {
+            blend_rgb565_scale(color, accent, i32::from(a.min(15)), 15)
+        }
+    }
 }
 
 fn darken_or_mix(color: Rgb565, amount: u16) -> Rgb565 {

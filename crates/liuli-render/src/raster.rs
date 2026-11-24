@@ -9,10 +9,10 @@ use embedded_graphics::primitives::{
     Circle, Line, Primitive, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle, RoundedRectangle,
     StrokeAlignment, Triangle,
 };
-use liuli_core::geometry::{Point, Rect, rgb565_to_u16, u16_to_rgb565};
+use liuli_core::geometry::{Point, Rect, rgb565_to_u16};
 use liuli_core::paint::{CommandList, PaintCmd, SceneResources};
 use liuli_core::view::IconKind;
-use liuli_text::{FontSet, TextLayoutOptions, a4_pixel, blend_rgb565_a4, visit_layout_glyphs};
+use liuli_text::{FontSet, TextLayoutOptions, a4_pixel, visit_layout_glyphs};
 
 use crate::band::BandTarget;
 
@@ -48,8 +48,27 @@ where
 
 /// Scalar RGB565 reference used by hosts and unaccelerated boards.
 pub fn blend_solid(row: &mut [u16], color: Rgb565, alpha: u8) {
+    let a = alpha.min(15);
+    if a == 0 {
+        return;
+    }
+    let fg = rgb565_to_u16(color);
+    if a == 15 {
+        row.fill(fg);
+        return;
+    }
+    let a32 = u32::from(a);
+    let inv = 15 - a32;
+    let fg32 = u32::from(fg);
+    let fg_r_a = (fg32 >> 11) * a32 + 7;
+    let fg_g_a = ((fg32 >> 5) & 63) * a32 + 7;
+    let fg_b_a = (fg32 & 31) * a32 + 7;
     for word in row {
-        *word = rgb565_to_u16(blend_rgb565_a4(color, u16_to_rgb565(*word), alpha));
+        let bg = u32::from(*word);
+        let r = ((fg_r_a + (bg >> 11) * inv) * 4370) >> 16;
+        let g = ((fg_g_a + ((bg >> 5) & 63) * inv) * 4370) >> 16;
+        let b = ((fg_b_a + (bg & 31) * inv) * 4370) >> 16;
+        *word = ((r << 11) | (g << 5) | b) as u16;
     }
 }
 
@@ -136,12 +155,43 @@ fn render_band_inner<'f, R, G: liuli_text::storage::GlyphPixels>(
 where
     R: SceneResources + ?Sized,
 {
-    let _ = target.clear(cmds.root_bg);
+    render_range(
+        target,
+        cmds,
+        resources,
+        fonts,
+        blend,
+        glyphs,
+        0..cmds.count,
+        cmds.root_bg,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_range<'f, R: SceneResources + ?Sized, G: liuli_text::storage::GlyphPixels>(
+    target: &mut BandTarget<'_>,
+    cmds: &CommandList,
+    resources: &R,
+    fonts: &FontSet<'f>,
+    blend: impl Fn(&mut [u16], Rgb565, u8) + Copy,
+    glyphs: &mut G,
+    range: core::ops::Range<usize>,
+    clear: Rgb565,
+) -> Result<u32, G::Error> {
+    let _ = target.clear(clear);
     let band_rect = target.band_rect();
     glyphs.begin_band(band_rect);
     let mut replayed = 0u32;
 
-    for cmd in cmds.as_slice() {
+    let mut cursor = range.start;
+    while cursor < range.end {
+        let index = cursor;
+        let cmd = &cmds.as_slice()[index];
+        cursor += 1;
+        #[cfg(feature = "layers")]
+        if let PaintCmd::Group { end, .. } = *cmd {
+            cursor = usize::from(end).clamp(cursor, range.end);
+        }
         if !cmd.bounds().intersects(band_rect) {
             continue;
         }
@@ -149,6 +199,81 @@ where
 
         match *cmd {
             PaintCmd::Empty => {}
+            PaintCmd::Shadow {
+                rect,
+                clip,
+                shadow,
+                projection,
+                radius,
+            } => {
+                crate::effects::draw_shadow(target, rect, clip, shadow, projection, radius);
+            }
+            PaintCmd::Group { .. } => {
+                #[cfg(feature = "layers")]
+                if let PaintCmd::Group {
+                    rect,
+                    index: layer_id,
+                    ..
+                } = *cmd
+                {
+                    let cache =
+                        &cmds.layers.as_ref().expect("emitted layer")[usize::from(layer_id)];
+                    if cache.style.opacity == 0 || matches!(cache.style.projection.0, 64 | 192) {
+                        continue;
+                    }
+                    let mut group = cache.group.borrow_mut();
+                    if !group.ready {
+                        let local = index + 1..cursor;
+                        let liuli_core::layers::GroupPixels { color, alpha, .. } = &mut *group;
+                        let mut tile = BandTarget::new_with_alpha::<()>(color, alpha, cache.source)
+                            .expect("reserved group");
+                        replayed += render_range(
+                            &mut tile,
+                            cmds,
+                            resources,
+                            fonts,
+                            blend,
+                            glyphs,
+                            local,
+                            Rgb565::new(0, 0, 0),
+                        )?;
+                        group.ready = true;
+                    }
+                    let expected_tint = (cache.style.tint_alpha > 0)
+                        .then_some((cache.style.tint_color, cache.style.tint_alpha));
+                    let mut backdrop = cache.backdrop.borrow_mut();
+                    if cache.style.backdrop_radius > 0
+                        && (backdrop.clear != Some(clear) || backdrop.tint != expected_tint)
+                    {
+                        backdrop.clear = None;
+                        backdrop.tint = None;
+                        let mut tile = BandTarget::new::<()>(&mut backdrop.pixels, cache.capture)
+                            .expect("reserved backdrop");
+                        replayed += render_range(
+                            &mut tile,
+                            cmds,
+                            resources,
+                            fonts,
+                            blend,
+                            glyphs,
+                            range.start..cache.backdrop_end.max(range.start),
+                            clear,
+                        )?;
+                        crate::effects::blur(
+                            &mut backdrop,
+                            cache.capture,
+                            cache.style.backdrop_radius,
+                        );
+                        if let Some((tint_color, tint_alpha)) = expected_tint {
+                            blend(&mut backdrop.pixels, tint_color, tint_alpha);
+                        }
+                        backdrop.clear = Some(clear);
+                        backdrop.tint = expected_tint;
+                    }
+                    glyphs.begin_band(band_rect);
+                    crate::effects::composite(target, rect, cache, &group, &backdrop);
+                }
+            }
             PaintCmd::Bitmap {
                 rect,
                 clip,
@@ -168,7 +293,6 @@ where
                 };
                 let area = rect.intersect(clip).intersect(band_rect);
                 let stride = target.width() as usize;
-                let pixels = target.words_mut();
                 for py in 0..area.h {
                     for px in 0..area.w {
                         let x = area.x as i64 + i64::from(px);
@@ -182,10 +306,7 @@ where
                         ) {
                             let index = (y - i64::from(band_rect.y)) as usize * stride
                                 + (x - i64::from(band_rect.x)) as usize;
-                            let bg = liuli_core::geometry::u16_to_rgb565(pixels[index]);
-                            let fg = liuli_core::geometry::u16_to_rgb565(raw);
-                            pixels[index] =
-                                liuli_core::geometry::rgb565_to_u16(blend_rgb565_a4(fg, bg, alpha));
+                            target.blend_pixel_a4(index, raw, alpha);
                         }
                     }
                 }
@@ -211,6 +332,25 @@ where
                         .stroke_alignment(StrokeAlignment::Inside)
                         .build();
                     let shape = Rectangle::new(rect.top_left(), rect.size()).into_styled(style);
+                    let _ = draw_eg(target, clip, &shape);
+                }
+            }
+            PaintCmd::StrokeRoundedRect {
+                rect,
+                clip,
+                color,
+                width,
+                radius,
+            } => {
+                if width > 0 && !rect.is_empty() {
+                    let r = (radius as u32).min(rect.w / 2).min(rect.h / 2);
+                    let style = PrimitiveStyleBuilder::new()
+                        .stroke_color(color)
+                        .stroke_width(width as u32)
+                        .stroke_alignment(StrokeAlignment::Inside)
+                        .build();
+                    let shape = RoundedRectangle::with_equal_corners(rect.to_eg(), Size::new(r, r))
+                        .into_styled(style);
                     let _ = draw_eg(target, clip, &shape);
                 }
             }
@@ -248,7 +388,6 @@ where
                     continue;
                 }
                 let stride = target.width() as usize;
-                let words = target.words_mut();
                 let x0 = (eff.x - band_rect.x) as usize;
                 let x1 = x0 + eff.w as usize;
                 let y0 = (eff.y - band_rect.y) as usize;
@@ -256,10 +395,24 @@ where
 
                 if alpha >= 15 {
                     let raw = rgb565_to_u16(color);
+                    let has_alpha = target.has_alpha();
                     for ly in y0..y1 {
-                        words[ly * stride + x0..ly * stride + x1].fill(raw);
+                        let row_start = ly * stride;
+                        target.words_mut()[row_start + x0..row_start + x1].fill(raw);
+                        if has_alpha {
+                            target.set_opaque_span(row_start + x0, x1 - x0);
+                        }
+                    }
+                } else if target.has_alpha() {
+                    let raw = rgb565_to_u16(color);
+                    for ly in y0..y1 {
+                        let row_start = ly * stride;
+                        for lx in x0..x1 {
+                            target.blend_pixel_a4(row_start + lx, raw, alpha);
+                        }
                     }
                 } else {
+                    let words = target.words_mut();
                     for ly in y0..y1 {
                         let row = &mut words[ly * stride + x0..ly * stride + x1];
                         blend(row, color, alpha);
@@ -294,7 +447,7 @@ where
                 let s = resources.text(text);
                 let font = fonts.get(font_id);
                 let stride = target.width() as usize;
-                let words = target.words_mut();
+                let fg_raw = rgb565_to_u16(color);
 
                 let mut resource_error = None;
                 visit_layout_glyphs(
@@ -340,9 +493,7 @@ where
                                     continue;
                                 }
                                 let lx = (px - band_rect.x) as usize;
-                                let bg = u16_to_rgb565(words[row_off + lx]);
-                                words[row_off + lx] =
-                                    rgb565_to_u16(blend_rgb565_a4(color, bg, cov));
+                                target.blend_pixel_a4(row_off + lx, fg_raw, cov);
                             }
                         }
                     },

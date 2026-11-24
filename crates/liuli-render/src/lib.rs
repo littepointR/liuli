@@ -1,8 +1,12 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+#[cfg(all(test, feature = "layers"))]
+extern crate alloc;
+
 pub mod band;
 pub mod dma;
+mod effects;
 pub mod raster;
 pub mod spi;
 pub mod sync;

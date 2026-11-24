@@ -64,7 +64,7 @@ impl<'a> BitmapView<'a> {
         }
     }
 }
-fn sine(angle: u8) -> i16 {
+pub(crate) fn sine(angle: u8) -> i16 {
     // round(2^14 * sin(i*pi/128)) for one quadrant.
     const QUARTER: [i16; 65] = [
         0, 402, 804, 1205, 1606, 2006, 2404, 2801, 3196, 3590, 3981, 4370, 4756, 5139, 5520, 5897,

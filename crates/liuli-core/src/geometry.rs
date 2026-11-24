@@ -207,12 +207,12 @@ impl Rect {
     }
 }
 
-#[inline]
+#[inline(always)]
 pub fn rgb565_to_u16(color: Rgb565) -> u16 {
     color.into_storage()
 }
 
-#[inline]
+#[inline(always)]
 pub fn u16_to_rgb565(word: u16) -> Rgb565 {
     Rgb565::from(RawU16::new(word))
 }

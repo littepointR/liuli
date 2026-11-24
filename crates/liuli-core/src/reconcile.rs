@@ -38,6 +38,7 @@ pub fn reconcile_into(
     let has_active = active.root.is_some();
 
     candidate.reset();
+    candidate.effects = draft.effects;
     candidate.generation_hwm = active.generation_hwm;
     let tlen = draft.text_len as usize;
     candidate.text_buf[..tlen].copy_from_slice(&draft.text_buf[..tlen]);
@@ -288,6 +289,9 @@ pub fn reconcile_into(
             || op.enabled() != np.enabled()
             || op.focusable() != np.focusable()
             || op.clickable() != np.clickable()
+            || active.effects.get(node.key) != candidate.effects.get(node.key)
+            || op.focus_ring_raw != np.focus_ring_raw
+            || op.press_feedback_raw != np.press_feedback_raw
             || op.theme_id != np.theme_id
             || sparkline_changed;
 

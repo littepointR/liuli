@@ -80,6 +80,7 @@ impl Default for ClockTracker {
 pub enum AnimProp {
     #[default]
     ToggleKnob = 0,
+    PressDepth = 1,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
@@ -112,7 +113,7 @@ impl Easing {
 }
 
 /// A scalar animation owned by an application or component. Its units are set by the caller.
-/// Sample in App::on_time and expose the next deadline through App::next_deadline.
+/// Sample in App::on_timer and expose the next deadline through App::next_deadline.
 #[derive(Debug, Clone, Copy)]
 pub struct Tween {
     from: i32,
@@ -399,6 +400,14 @@ impl AnimPool {
             }
         }
         None
+    }
+
+    pub(crate) fn target_value(&self, key: Key, prop: AnimProp) -> Option<i32> {
+        self.tracks
+            .iter()
+            .find(|t| t.active && t.key == key && t.prop == prop)
+            .map(|t| t.end_val)
+            .or_else(|| self.cached_value(key, prop))
     }
 
     pub fn update_rect(&mut self, key: Key, prop: AnimProp, rect: Rect) {

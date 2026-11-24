@@ -262,6 +262,18 @@ impl<'s, 'f, A: App> Engine<'s, 'f, A> {
         Ok(())
     }
 
+    /// Pixel-buffer budget for each of the two transactional command lists.
+    #[cfg(feature = "enhanced")]
+    pub fn set_layer_budget(&mut self, bytes: usize) -> Result<(), TransactionError<()>> {
+        if self.is_dma_busy() {
+            return Err(TransactionError::Busy(()));
+        }
+        for list in &mut self.storage.cmds {
+            list.layer_budget = Some(bytes);
+        }
+        Ok(())
+    }
+
     pub fn set_band_height(&mut self, height: u32) {
         self.band_height = height.max(1);
     }
@@ -283,6 +295,8 @@ impl<'s, 'f, A: App> Engine<'s, 'f, A> {
             if let Some(slot) = self.storage.focus.focused_slot(self.storage.active_tree()) {
                 let r = self.storage.active_tree().nodes[slot as usize].visible_rect;
                 self.storage.damage.add(r, self.screen);
+                self.storage.trees[self.storage.active_tree_idx as usize]
+                    .expand_effect_damage(&mut self.storage.damage, self.screen);
             }
         }
         Ok(())
@@ -500,6 +514,7 @@ impl<'s, 'f, A: App> Engine<'s, 'f, A> {
             editing: cand_focus.editing,
         };
 
+        cand_tree.sync_press_depth(&mut self.storage.cand_anims, now);
         if let Err(err) = emit_commands_with(
             cand_tree,
             &self.storage.cand_anims,
@@ -508,6 +523,7 @@ impl<'s, 'f, A: App> Engine<'s, 'f, A> {
             &mut self.storage.cmds[cand_c_idx],
             |key, props, canvas| A::paint_model(&self.model, key, props, canvas),
         ) {
+            self.build_key = self.storage.cmds[cand_c_idx].effect_error_key;
             self.view_pending = true;
             self.last_build_error = Some(err);
             return Err(err);
@@ -517,6 +533,15 @@ impl<'s, 'f, A: App> Engine<'s, 'f, A> {
         if let Some(i) = self.storage.draft.inspection.as_mut() {
             i.commit();
         }
+        active_tree.expand_effect_damage(&mut self.storage.cand_damage, self.screen);
+        cand_tree.expand_effect_damage(&mut self.storage.cand_damage, self.screen);
+        #[cfg(feature = "enhanced")]
+        liuli_core::layers::reuse_groups(
+            &mut self.storage.cmds,
+            active_c_idx,
+            active_tree,
+            cand_tree,
+        );
         // Atomic commit: swap tree & command indices and apply state + damage
         self.storage.active_tree_idx = cand_t_idx as u8;
         self.storage.active_cmd_idx = cand_c_idx as u8;
@@ -579,17 +604,26 @@ impl<'s, 'f, A: App> Engine<'s, 'f, A> {
             ring_visible: self.storage.focus.ring_visible,
             editing: self.storage.focus.editing,
         };
+        self.storage.cand_anims.copy_from(&self.storage.anims);
+        tree.sync_press_depth(
+            &mut self.storage.cand_anims,
+            self.storage.clock.last().unwrap_or_default(),
+        );
         if let Err(err) = emit_commands_with(
             tree,
-            &self.storage.anims,
+            &self.storage.cand_anims,
             focus_info,
             self.screen,
             &mut self.storage.cmds[cand_c_idx],
             |key, props, canvas| A::paint_model(&self.model, key, props, canvas),
         ) {
+            self.build_key = self.storage.cmds[cand_c_idx].effect_error_key;
             self.last_build_error = Some(err);
             return Err(err);
         }
+        #[cfg(feature = "enhanced")]
+        liuli_core::layers::reuse_groups(&mut self.storage.cmds, active_c_idx, tree, tree);
+        self.storage.anims.copy_from(&self.storage.cand_anims);
         self.storage.active_cmd_idx = cand_c_idx as u8;
         self.scene_version = self.scene_version.wrapping_add(1);
         if !self.view_pending {
@@ -609,6 +643,8 @@ impl<'s, 'f, A: App> Engine<'s, 'f, A> {
     }
 
     fn flush_cand_damage(&mut self) {
+        self.storage.trees[self.storage.active_tree_idx as usize]
+            .expand_effect_damage(&mut self.storage.cand_damage, self.screen);
         for &r in self.storage.cand_damage.as_slice() {
             self.storage.damage.add(r, self.screen);
         }
@@ -1113,6 +1149,8 @@ impl<'s, 'f, A: App> Engine<'s, 'f, A> {
                             [self.storage.repeat.target_id.slot() as usize];
                         node.pressed = false;
                         self.storage.damage.add(node.visible_rect, self.screen);
+                        self.storage.trees[active_t_idx]
+                            .expand_effect_damage(&mut self.storage.damage, self.screen);
                         self.storage.pointer.capture = CaptureKind::None;
                         self.storage.repeat.clear();
                         self.reemit_commands_inner()?;
@@ -1162,10 +1200,13 @@ impl<'s, 'f, A: App> Engine<'s, 'f, A> {
                 &mut self.storage.cmds[cand_c_idx],
                 |key, props, canvas| A::paint_model(&self.model, key, props, canvas),
             ) {
+                self.build_key = self.storage.cmds[cand_c_idx].effect_error_key;
                 self.storage.cand_damage.clear();
                 self.last_build_error = Some(err);
                 return Err(TransactionError::Build(err));
             }
+            #[cfg(feature = "enhanced")]
+            liuli_core::layers::reuse_groups(&mut self.storage.cmds, active_c_idx, tree, tree);
             self.storage.active_cmd_idx = cand_c_idx as u8;
             self.scene_version = self.scene_version.wrapping_add(1);
             self.storage.anims.copy_from(&self.storage.cand_anims);

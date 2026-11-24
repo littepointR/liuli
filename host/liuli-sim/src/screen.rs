@@ -10,7 +10,10 @@ use embedded_graphics::primitives::{
 use embedded_graphics::{Drawable, Pixel};
 use liuli::core::paint::{CommandList, PaintCmd, SceneResources};
 use liuli::prelude::{IconKind, Point, Rect};
-use liuli::text::{FontSet, TextLayoutOptions, a4_pixel, blend_rgb565_a4, visit_layout_glyphs};
+use liuli::text::{
+    FontSet, TextLayoutOptions, a4_pixel, blend_over_rgb565_a4, blend_rgb565_a4,
+    blend_rgb565_a4_u16, visit_layout_glyphs,
+};
 
 use crate::image::{encode_png_rgb8, encode_ppm, rgb565_to_rgb8};
 
@@ -19,6 +22,7 @@ pub struct MemoryScreen {
     w: u32,
     h: u32,
     pixels: Vec<u16>,
+    alpha: Option<Vec<u8>>,
 }
 
 impl MemoryScreen {
@@ -27,6 +31,35 @@ impl MemoryScreen {
             w,
             h,
             pixels: vec![0; (w as usize) * (h as usize)],
+            alpha: None,
+        }
+    }
+
+    pub fn new_with_alpha(w: u32, h: u32) -> Self {
+        Self {
+            w,
+            h,
+            pixels: vec![0; (w as usize) * (h as usize)],
+            alpha: Some(vec![0; (w as usize) * (h as usize)]),
+        }
+    }
+
+    #[inline]
+    fn put_opaque(&mut self, idx: usize, raw: u16) {
+        self.pixels[idx] = raw;
+        if let Some(a) = &mut self.alpha {
+            a[idx] = 15;
+        }
+    }
+
+    #[inline]
+    fn blend_pixel_a4(&mut self, idx: usize, fg_raw: u16, cov: u8) {
+        if let Some(a) = &mut self.alpha {
+            let (rgb, out_a) = blend_over_rgb565_a4(self.pixels[idx], a[idx], fg_raw, cov);
+            self.pixels[idx] = rgb;
+            a[idx] = out_a;
+        } else {
+            self.pixels[idx] = blend_rgb565_a4_u16(fg_raw, self.pixels[idx], cov);
         }
     }
 
@@ -107,7 +140,7 @@ impl DrawTarget for MemoryScreen {
         let stride = self.w as usize;
         for Pixel(p, c) in pixels {
             if p.x >= 0 && p.x < w && p.y >= 0 && p.y < h {
-                self.pixels[(p.y as usize) * stride + (p.x as usize)] = c.into_storage();
+                self.put_opaque((p.y as usize) * stride + (p.x as usize), c.into_storage());
             }
         }
         Ok(())
@@ -125,6 +158,9 @@ impl DrawTarget for MemoryScreen {
         let x1 = x0 + inter.w as usize;
         for y in inter.y as usize..(inter.y as usize + inter.h as usize) {
             self.pixels[y * stride + x0..y * stride + x1].fill(raw);
+            if let Some(a) = &mut self.alpha {
+                a[y * stride + x0..y * stride + x1].fill(15);
+            }
         }
         Ok(())
     }
@@ -156,7 +192,7 @@ impl DrawTarget for MemoryScreen {
                 if y_in {
                     let gx = req.x as i64 + rx;
                     if gx >= 0 && gx < self.w as i64 {
-                        self.pixels[(gy as usize) * stride + (gx as usize)] = c.into_storage();
+                        self.put_opaque((gy as usize) * stride + (gx as usize), c.into_storage());
                     }
                 }
             }
@@ -165,6 +201,10 @@ impl DrawTarget for MemoryScreen {
     }
 
     fn clear(&mut self, color: Self::Color) -> Result<(), Self::Error> {
+        if let Some(a) = &mut self.alpha {
+            a.fill(0);
+            return Ok(());
+        }
         self.pixels.fill(color.into_storage());
         Ok(())
     }
@@ -179,14 +219,160 @@ pub fn render_reference_fullscreen(
     resources: &impl SceneResources,
     fonts: &FontSet<'_>,
 ) -> MemoryScreen {
-    let mut screen = MemoryScreen::new(cmds.screen.w, cmds.screen.h);
-    let _ = screen.clear(cmds.root_bg);
+    reference_range_with_alpha(cmds, resources, fonts, 0..cmds.count, cmds.root_bg, false)
+}
+
+fn reference_range_with_alpha(
+    cmds: &CommandList,
+    resources: &impl SceneResources,
+    fonts: &FontSet<'_>,
+    range: std::ops::Range<usize>,
+    clear: Rgb565,
+    with_alpha: bool,
+) -> MemoryScreen {
+    let mut screen = if with_alpha {
+        MemoryScreen::new_with_alpha(cmds.screen.w, cmds.screen.h)
+    } else {
+        MemoryScreen::new(cmds.screen.w, cmds.screen.h)
+    };
+    let _ = screen.clear(clear);
     let full = cmds.screen;
     let stride = screen.w as usize;
 
-    for cmd in cmds.as_slice() {
+    let mut cursor = range.start;
+    while cursor < range.end {
+        let group_cmd_idx = cursor;
+        let cmd = &cmds.as_slice()[cursor];
+        cursor += 1;
         match *cmd {
             PaintCmd::Empty => {}
+            PaintCmd::Shadow {
+                rect,
+                clip,
+                shadow,
+                projection,
+                radius,
+            } => {
+                let shape = rect.translate(shadow.x.into(), shadow.y.into());
+                let bounds = shadow.bounds(rect);
+                let area = bounds.intersect(clip).intersect(full);
+                let r = u32::from(radius)
+                    .min(rect.w.saturating_sub(1) / 2)
+                    .min(rect.h.saturating_sub(1) / 2);
+                let shadow_raw = shadow.color.into_storage();
+                for y in area.y..area.bottom64() as i32 {
+                    for x in area.x..area.right64() as i32 {
+                        let pos = Point::new(x, y);
+                        if projection
+                            .unproject(rect, pos)
+                            .is_some_and(|p| corner_distance(rect, r, p) <= i64::from(r).pow(2))
+                        {
+                            continue;
+                        }
+                        if let Some(p) = projection.unproject(bounds, pos) {
+                            let d = corner_distance(shape, r, p);
+                            let near = i64::from(r).pow(2);
+                            let far = i64::from(r + u32::from(shadow.blur)).pow(2);
+                            let a = if d <= near {
+                                shadow.opacity
+                            } else if d >= far {
+                                0
+                            } else {
+                                ((far - d) * i64::from(shadow.opacity) / (far - near)) as u8
+                            };
+                            let i = y as usize * stride + x as usize;
+                            screen.blend_pixel_a4(i, shadow_raw, a);
+                        }
+                    }
+                }
+            }
+            PaintCmd::Group {
+                rect,
+                clip,
+                index,
+                end,
+            } => {
+                let content = cursor..usize::from(end);
+                cursor = content.end;
+                let (style, radius) = cmds.group_style(index).expect("emitted group");
+                if style.opacity == 0 || matches!(style.projection.0, 64 | 192) {
+                    continue;
+                }
+                let group = reference_range_with_alpha(
+                    cmds,
+                    resources,
+                    fonts,
+                    content,
+                    Rgb565::new(0, 0, 0),
+                    true,
+                );
+                let backdrop_end = cmds.group_backdrop_end(index).unwrap_or(group_cmd_idx);
+                let mut blurred = (style.backdrop_radius > 0).then(|| {
+                    let bg_raw = reference_range_with_alpha(
+                        cmds,
+                        resources,
+                        fonts,
+                        range.start..backdrop_end.max(range.start),
+                        clear,
+                        false,
+                    );
+                    reference_blur(&bg_raw, style.backdrop_radius)
+                });
+                let rgb = liuli::core::geometry::u16_to_rgb565;
+                if let Some(ref mut b) = blurred
+                    && style.tint_alpha > 0
+                {
+                    for word in &mut b.pixels {
+                        *word = blend_rgb565_a4(style.tint_color, rgb(*word), style.tint_alpha)
+                            .into_storage();
+                    }
+                }
+                let group_alpha = group.alpha.as_ref().expect("group alpha");
+                let area = rect.intersect(clip).intersect(full);
+                let radius = u32::from(radius)
+                    .min(rect.w.saturating_sub(1) / 2)
+                    .min(rect.h.saturating_sub(1) / 2);
+                for y in area.y..area.bottom64() as i32 {
+                    for x in area.x..area.right64() as i32 {
+                        let Some(p) = style.projection.unproject(rect, Point::new(x, y)) else {
+                            continue;
+                        };
+                        if !area.contains_point(p) {
+                            continue;
+                        }
+                        let i = y as usize * stride + x as usize;
+                        let g_idx = p.y as usize * stride + p.x as usize;
+                        let original = screen.pixels[i];
+                        let a = group_alpha[g_idx];
+                        let color = if a == 15 {
+                            group.pixels[g_idx]
+                        } else {
+                            let inside =
+                                corner_distance(rect, radius, p) <= i64::from(radius).pow(2);
+                            let bg = if inside {
+                                if let Some(ref b) = blurred {
+                                    b.pixels[i]
+                                } else if style.tint_alpha > 0 {
+                                    blend_rgb565_a4(
+                                        style.tint_color,
+                                        rgb(original),
+                                        style.tint_alpha,
+                                    )
+                                    .into_storage()
+                                } else {
+                                    original
+                                }
+                            } else {
+                                original
+                            };
+                            blend_rgb565_a4_u16(group.pixels[g_idx], bg, a)
+                        };
+                        screen.pixels[i] =
+                            blend_rgb565_a4(rgb(color), rgb(original), style.opacity)
+                                .into_storage();
+                    }
+                }
+            }
             PaintCmd::Bitmap {
                 rect,
                 clip,
@@ -205,7 +391,6 @@ pub fn render_reference_fullscreen(
                     continue;
                 };
                 let area = rect.intersect(clip).intersect(full);
-                let pixels = screen.words_mut();
                 for py in 0..area.h {
                     for px in 0..area.w {
                         let x = area.x as i64 + i64::from(px);
@@ -219,11 +404,7 @@ pub fn render_reference_fullscreen(
                         ) {
                             let index = (y - i64::from(full.y)) as usize * stride
                                 + (x - i64::from(full.x)) as usize;
-                            let bg = liuli::core::geometry::u16_to_rgb565(pixels[index]);
-                            let fg = liuli::core::geometry::u16_to_rgb565(raw);
-                            pixels[index] = liuli::core::geometry::rgb565_to_u16(blend_rgb565_a4(
-                                fg, bg, alpha,
-                            ));
+                            screen.blend_pixel_a4(index, raw, alpha);
                         }
                     }
                 }
@@ -250,6 +431,27 @@ pub fn render_reference_fullscreen(
                         .build();
                     let mut clipped = screen.clipped(&eff_clip.to_eg());
                     let _ = Rectangle::new(rect.top_left(), rect.size())
+                        .into_styled(style)
+                        .draw(&mut clipped);
+                }
+            }
+            PaintCmd::StrokeRoundedRect {
+                rect,
+                clip,
+                color,
+                width,
+                radius,
+            } => {
+                let eff_clip = clip.intersect(full);
+                if width > 0 && !rect.is_empty() && !eff_clip.is_empty() {
+                    let r = (radius as u32).min(rect.w / 2).min(rect.h / 2);
+                    let style = PrimitiveStyleBuilder::new()
+                        .stroke_color(color)
+                        .stroke_width(width as u32)
+                        .stroke_alignment(StrokeAlignment::Inside)
+                        .build();
+                    let mut clipped = screen.clipped(&eff_clip.to_eg());
+                    let _ = RoundedRectangle::with_equal_corners(rect.to_eg(), Size::new(r, r))
                         .into_styled(style)
                         .draw(&mut clipped);
                 }
@@ -290,14 +492,11 @@ pub fn render_reference_fullscreen(
                 if eff.is_empty() || alpha == 0 {
                     continue;
                 }
+                let overlay_raw = color.into_storage();
                 for y in eff.y..(eff.y + eff.h as i32) {
                     let row = (y as usize) * stride;
                     for x in eff.x..(eff.x + eff.w as i32) {
-                        let bg = Rgb565::from(liuli::core::geometry::RawU16::new(
-                            screen.pixels[row + x as usize],
-                        ));
-                        screen.pixels[row + x as usize] =
-                            blend_rgb565_a4(color, bg, alpha).into_storage();
+                        screen.blend_pixel_a4(row + x as usize, overlay_raw, alpha);
                     }
                 }
             }
@@ -328,6 +527,7 @@ pub fn render_reference_fullscreen(
                 }
                 let s = resources.text(text);
                 let font = fonts.get(font_id);
+                let text_raw = color.into_storage();
                 visit_layout_glyphs(
                     font,
                     s,
@@ -356,11 +556,7 @@ pub fn render_reference_fullscreen(
                                 if cov == 0 {
                                     continue;
                                 }
-                                let bg = Rgb565::from(liuli::core::geometry::RawU16::new(
-                                    screen.pixels[row + px as usize],
-                                ));
-                                screen.pixels[row + px as usize] =
-                                    blend_rgb565_a4(color, bg, cov).into_storage();
+                                screen.blend_pixel_a4(row + px as usize, text_raw, cov);
                             }
                         }
                     },
@@ -560,4 +756,41 @@ pub fn render_reference_fullscreen(
     }
 
     screen
+}
+
+fn corner_distance(rect: Rect, r: u32, p: Point) -> i64 {
+    let r = i64::from(r);
+    let x = i64::from(p.x);
+    let y = i64::from(p.y);
+    (x - x.clamp(rect.left64() + r, rect.right64() - 1 - r)).pow(2)
+        + (y - y.clamp(rect.top64() + r, rect.bottom64() - 1 - r)).pow(2)
+}
+
+// Independent direct convolution over the full framebuffer (no sampling halo or running sums).
+fn reference_blur(screen: &MemoryScreen, r: u8) -> MemoryScreen {
+    let mut image = screen.clone();
+    let radius = i32::from(r);
+    let count = (2 * radius + 1) as u32;
+    for vertical in [false, true] {
+        let src = image.clone();
+        for y in 0..screen.h as i32 {
+            for x in 0..screen.w as i32 {
+                let mut red = 0;
+                let mut green = 0;
+                let mut blue = 0;
+                for t in -radius..=radius {
+                    let sx = (if vertical { x } else { x + t }).clamp(0, screen.w as i32 - 1);
+                    let sy = (if vertical { y + t } else { y }).clamp(0, screen.h as i32 - 1);
+                    let p = u32::from(src.pixel(sx as u32, sy as u32));
+                    red += p >> 11;
+                    green += (p >> 5) & 63;
+                    blue += p & 31;
+                }
+                let avg = |s: u32| (s + count / 2) / count;
+                image.pixels[y as usize * screen.w as usize + x as usize] =
+                    ((avg(red) << 11) | (avg(green) << 5) | avg(blue)) as u16;
+            }
+        }
+    }
+    image
 }

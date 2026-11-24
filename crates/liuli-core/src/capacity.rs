@@ -32,6 +32,8 @@ pub enum BuildError {
     InvalidKind,
     InvalidRange,
     Sparklines,
+    Effects,
+    LayerPixels,
     Layout(LayoutError),
 }
 

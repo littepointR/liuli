@@ -139,6 +139,11 @@ impl<'s, 'f, A: App> AppSession<'s, 'f, A> {
     pub fn engine(&self) -> &Engine<'s, 'f, A> {
         &self.engine
     }
+    /// Configure the underlying engine (for example the target's layer budget).
+    /// Pass inputs through `step` to keep frame recordings in sync.
+    pub fn engine_mut(&mut self) -> &mut Engine<'s, 'f, A> {
+        &mut self.engine
+    }
     pub fn screen(&self) -> &MemoryScreen {
         &self.screen
     }
@@ -319,6 +324,11 @@ impl<'s, 'f, A: App> AppSession<'s, 'f, A> {
                 self.engine.pointer().captured_id(),
                 pre_damage
             );
+            report.push_str(&format!(
+                "\nlayer_pixel_bytes={} reused_groups={}",
+                self.engine.active_commands().cached_layer_bytes(),
+                self.engine.active_commands().reused_groups()
+            ));
             report.push_str(&format!("\ninline_font_requests={} requested_bitmap_bytes={} cross_band={} external_read_bytes=0",fonts.requests,fonts.bytes,fonts.cross_band));
             self.png_history
                 .push_back((self.completed_frame_id, png, report));
