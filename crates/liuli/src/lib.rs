@@ -35,7 +35,7 @@ pub mod prelude {
     pub use liuli_core::paint::{SceneResources, SliceSceneResources, TextId, WidgetCanvas};
     pub use liuli_core::time::{
         Easing, InstantMs, MAX_REPEAT_STEPS_PER_ADVANCE, NextWakeup, REPEAT_DELAY_MS,
-        REPEAT_PERIOD_MS,
+        REPEAT_PERIOD_MS, Tween,
     };
     pub use liuli_core::view::StoredProps;
     pub use liuli_core::view::{

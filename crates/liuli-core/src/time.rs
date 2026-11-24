@@ -111,6 +111,74 @@ impl Easing {
     }
 }
 
+/// A scalar animation owned by an application or component. Its units are set by the caller.
+/// Sample in App::on_time and expose the next deadline through App::next_deadline.
+#[derive(Debug, Clone, Copy)]
+pub struct Tween {
+    from: i32,
+    to: i32,
+    start: InstantMs,
+    duration_ms: u32,
+    easing: Easing,
+}
+impl Tween {
+    pub const fn at(value: i32) -> Self {
+        Self {
+            from: value,
+            to: value,
+            start: InstantMs(0),
+            duration_ms: 0,
+            easing: Easing::Linear,
+        }
+    }
+    pub fn value(&self, now: InstantMs) -> i32 {
+        let elapsed = now.saturating_sub(self.start);
+        if elapsed >= u64::from(self.duration_ms) {
+            return self.to;
+        }
+        let progress = (elapsed * 1000 / u64::from(self.duration_ms)) as i64;
+        let delta = i64::from(self.to) - i64::from(self.from);
+        (i64::from(self.from) + delta * self.easing.apply(progress) / 1000) as i32
+    }
+    pub fn animate_to(&mut self, now: InstantMs, target: i32, duration_ms: u32, easing: Easing) {
+        *self = Self {
+            from: self.value(now),
+            to: target,
+            start: now,
+            duration_ms,
+            easing,
+        };
+    }
+    pub fn cancel(&mut self, now: InstantMs) {
+        *self = Self::at(self.value(now));
+    }
+    pub fn next_deadline(
+        &self,
+        now: InstantMs,
+        frame_ms: core::num::NonZeroU32,
+    ) -> Option<InstantMs> {
+        let end = self.start.saturating_add(self.duration_ms.into());
+        (self.from != self.to && now < end)
+            .then(|| end.min(now.saturating_add(frame_ms.get().into())))
+    }
+}
+#[cfg(test)]
+mod tween_tests {
+    use super::*;
+    #[test]
+    fn retarget_and_cancel_take_effect_at_event_time() {
+        let mut t = Tween::at(i32::MIN);
+        t.animate_to(InstantMs(20), i32::MAX, 100, Easing::Linear);
+        assert_eq!(t.value(InstantMs(70)), -1);
+        t.animate_to(InstantMs(70), 99, 10, Easing::Linear);
+        t.cancel(InstantMs(75));
+        assert_eq!(t.value(InstantMs(500)), 49);
+        assert_eq!(
+            t.next_deadline(InstantMs(75), core::num::NonZeroU32::new(16).unwrap()),
+            None
+        );
+    }
+}
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct AnimTrack {
     pub active: bool,

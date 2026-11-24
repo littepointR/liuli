@@ -90,8 +90,12 @@ pub(super) fn run(
         }
         e.invalidate_screen().map_err(|_| ())?;
         present(e, target, scratch, glyphs)?;
+        let pixels = e.last_metrics().pixels_sent;
+        if pixels != WIDTH * HEIGHT {
+            return Err(());
+        }
         unsafe {
-            board_sample(4, 0, board_now_us() - start, e.last_metrics().pixels_sent);
+            board_sample(4, 0, board_now_us() - start, pixels);
         }
     }
     e.invalidate_screen().map_err(|_| ())?;

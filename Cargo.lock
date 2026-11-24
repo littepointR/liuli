@@ -148,7 +148,7 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
 name = "liuli"
-version = "0.3.0-dev.1"
+version = "1.0.0-rc.1"
 dependencies = [
  "embedded-graphics-core",
  "liuli-core",
@@ -159,7 +159,7 @@ dependencies = [
 
 [[package]]
 name = "liuli-alarms"
-version = "0.3.0-dev.1"
+version = "1.0.0-rc.1"
 dependencies = [
  "liuli",
  "liuli-sim",
@@ -168,14 +168,14 @@ dependencies = [
 
 [[package]]
 name = "liuli-core"
-version = "0.3.0-dev.1"
+version = "1.0.0-rc.1"
 dependencies = [
  "embedded-graphics-core",
 ]
 
 [[package]]
 name = "liuli-enhanced"
-version = "0.3.0-dev.1"
+version = "1.0.0-rc.1"
 dependencies = [
  "ab_glyph_rasterizer",
  "harfrust",
@@ -190,7 +190,7 @@ dependencies = [
 
 [[package]]
 name = "liuli-fontpack"
-version = "0.3.0-dev.1"
+version = "1.0.0-rc.1"
 dependencies = [
  "ab_glyph_rasterizer",
  "serde",
@@ -200,7 +200,7 @@ dependencies = [
 
 [[package]]
 name = "liuli-render"
-version = "0.3.0-dev.1"
+version = "1.0.0-rc.1"
 dependencies = [
  "embedded-graphics",
  "liuli-core",
@@ -209,14 +209,14 @@ dependencies = [
 
 [[package]]
 name = "liuli-settings"
-version = "0.3.0-dev.1"
+version = "1.0.0-rc.1"
 dependencies = [
  "liuli",
 ]
 
 [[package]]
 name = "liuli-sim"
-version = "0.3.0-dev.1"
+version = "1.0.0-rc.1"
 dependencies = [
  "embedded-graphics",
  "liuli",
@@ -225,14 +225,14 @@ dependencies = [
 
 [[package]]
 name = "liuli-text"
-version = "0.3.0-dev.1"
+version = "1.0.0-rc.1"
 dependencies = [
  "liuli-core",
 ]
 
 [[package]]
 name = "liuli-widgets"
-version = "0.3.0-dev.1"
+version = "1.0.0-rc.1"
 dependencies = [
  "liuli",
  "liuli-sim",

@@ -1,6 +1,6 @@
-# 参考板验收记录 · 0.3.0-dev.1
+# 琉璃 1.0.0-rc.1 验收记录
 
-2026-11-24 在 Windows 本机连接 Waveshare ESP32-S3-Touch-AMOLED-1.91，USB 303A:1001。ESP32-S3 rev 0.2，16 MiB Flash、8 MiB PSRAM、240 MHz、40 MHz QSPI。实板操作者已确认竖屏告警列表出画、点开和返回。双指按压时串口记录 FT3168 同时上报 2 个触点。基础、增强与基准镜像分别构建。当前版本处于开发阶段。
+2026-11-24 在 Windows 本机连接 Waveshare ESP32-S3-Touch-AMOLED-1.91，USB 303A:1001。ESP32-S3 rev 0.2，16 MiB Flash、8 MiB PSRAM、240 MHz、40 MHz QSPI。实板操作者已确认竖屏告警列表出画、点开和返回。双指按压时串口记录 FT3168 同时上报 2 个触点。基础、增强与基准镜像分别构建。下表记录 0.3.0-dev.1 实板基线，镜像散列与串口日志配对保存。
 
 ## 实板测量
 

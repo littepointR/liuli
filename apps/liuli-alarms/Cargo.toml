@@ -7,10 +7,10 @@ license.workspace = true
 
 [dependencies]
 liuli.workspace = true
-liuli-widgets = { version = "=0.3.0-dev.1", path = "../../crates/liuli-widgets" }
+liuli-widgets = { version = "=1.0.0-rc.1", path = "../../crates/liuli-widgets" }
 
 [dev-dependencies]
-liuli-sim = { version = "=0.3.0-dev.1", path = "../../host/liuli-sim", default-features = false }
+liuli-sim = { version = "=1.0.0-rc.1", path = "../../host/liuli-sim", default-features = false }
 
 [features]
 enhanced = ["liuli/enhanced"]

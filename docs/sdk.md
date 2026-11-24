@@ -33,6 +33,8 @@ cargo test --offline --manifest-path liuli-alarms/Cargo.toml --release
 
 从 Theme::DARK 或 LIGHT 开始，把主题传给子组件。Theme::with(Style { accent: Some(color), ..Default::default() }) 生成局部覆盖。更深的组件继续使用该值作为父主题。颜色变化影响绘制，字体、间距和尺寸影响布局。字体槽可以通过 FontSet::new 在构建应用时单独指定。
 
+把 Tween::at(initial) 存入组件状态，用 animate_to(now, target, duration_ms, easing) 控制位置、缩放或透明度。App::next_deadline 返回 tween.next_deadline 的结果，App::on_time 读取 tween.value(now) 更新绘制属性。重新设置目标会从当前取值续接，cancel(now) 可在页面退出时冻结动画。
+
 ## 字库与图片
 
 device-ui/assets/fonts.toml 中的 source、charset 和 output 都相对配置文件。每个 [[font]] 提供源字体、Unicode 字符集文件、字号和一个源字体具备的回退字符。budget 限制所有槽位生成的总字节数。把纯数字项目的 fallback 设置为项目中已有的字符即可；配置文件支持多项和自定义像素字号。
@@ -78,11 +80,11 @@ try_message、try_dispatch 和 try_advance 提供事务结果。Busy 会交还�
 
 ## 版本与兼容性
 
-0.3.0-dev.1 是开发版本。应用、控件、模拟器、资源工具和参考板使用同一个 SDK 版本。升级时先保留原 LF4 和应用回放，再在新 SDK 的供应目录中构建并核对它们。安装包自带 liuli-sim 命令，可在空目录内重放两个 v0.2 应用。打包验收会把 12 幅输出和原始 PPM 逐字节比较。
+1.0.0-rc.1 冻结本候选版的应用、组件和资源接口，正式发布以实板验收记录为准。应用、控件、模拟器、资源工具和参考板使用同一个 SDK 版本。升级时先保留原 LF4 和应用回放，再在新 SDK 的供应目录中构建并核对它们。安装包自带 liuli-sim 命令，可在空目录内重放两个 v0.2 应用。打包验收会把 12 幅输出和原始 PPM 逐字节比较。
 
 ~~~
-tools/bin/liuli-sim replay vendor/liuli-sim-0.3.0-dev.1/tests/fixtures/settings.events --out shots/settings --format ppm
-tools/bin/liuli-sim replay vendor/liuli-sim-0.3.0-dev.1/tests/fixtures/terminal.events --out shots/terminal --format ppm
+tools/bin/liuli-sim replay vendor/liuli-sim-1.0.0-rc.1/tests/fixtures/settings.events --out shots/settings --format ppm
+tools/bin/liuli-sim replay vendor/liuli-sim-1.0.0-rc.1/tests/fixtures/terminal.events --out shots/terminal --format ppm
 ~~~
 
 | 接口或数据 | 1.0 兼容约定 |
