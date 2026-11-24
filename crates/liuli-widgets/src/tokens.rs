@@ -511,12 +511,18 @@ impl Default for Shape {
     }
 }
 
-/// Logical font slots for headings, controls, and secondary captions.
+/// Logical font slots and default text shaping/rendering attributes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Typography {
     pub title: FontId,
     pub body: FontId,
     pub caption: FontId,
+    pub display: FontId,
+    pub wrap: WrapMode,
+    pub gamma: TextGamma,
+    pub subpixel: SubpixelOrder,
+    pub letter_spacing: i8,
+    pub line_spacing: i8,
 }
 
 impl Typography {
@@ -524,12 +530,24 @@ impl Typography {
         title: FontId::Body16,
         body: FontId::Body16,
         caption: FontId::Body16,
+        display: FontId::Body16,
+        wrap: WrapMode::Char,
+        gamma: TextGamma::Linear,
+        subpixel: SubpixelOrder::None,
+        letter_spacing: 0,
+        line_spacing: 0,
     };
 
     pub const COMPACT_CAPTIONS: Self = Self {
         title: FontId::Body16,
         body: FontId::Body16,
         caption: FontId::Small12,
+        display: FontId::Body16,
+        wrap: WrapMode::Char,
+        gamma: TextGamma::Linear,
+        subpixel: SubpixelOrder::None,
+        letter_spacing: 0,
+        line_spacing: 0,
     };
 
     #[inline]
@@ -538,6 +556,12 @@ impl Typography {
             title: font,
             body: font,
             caption: font,
+            display: font,
+            wrap: WrapMode::Char,
+            gamma: TextGamma::Linear,
+            subpixel: SubpixelOrder::None,
+            letter_spacing: 0,
+            line_spacing: 0,
         }
     }
     #[inline]
@@ -553,6 +577,36 @@ impl Typography {
     #[inline]
     pub const fn with_caption(mut self, font: FontId) -> Self {
         self.caption = font;
+        self
+    }
+    #[inline]
+    pub const fn with_display(mut self, font: FontId) -> Self {
+        self.display = font;
+        self
+    }
+    #[inline]
+    pub const fn with_wrap(mut self, wrap: WrapMode) -> Self {
+        self.wrap = wrap;
+        self
+    }
+    #[inline]
+    pub const fn with_gamma(mut self, gamma: TextGamma) -> Self {
+        self.gamma = gamma;
+        self
+    }
+    #[inline]
+    pub const fn with_subpixel(mut self, subpixel: SubpixelOrder) -> Self {
+        self.subpixel = subpixel;
+        self
+    }
+    #[inline]
+    pub const fn with_letter_spacing(mut self, letter_spacing: i8) -> Self {
+        self.letter_spacing = letter_spacing;
+        self
+    }
+    #[inline]
+    pub const fn with_line_spacing(mut self, line_spacing: i8) -> Self {
+        self.line_spacing = line_spacing;
         self
     }
 }

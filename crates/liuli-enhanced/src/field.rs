@@ -1,7 +1,7 @@
 //! A single-line text field with immutable frame images and a bounded text budget.
 use crate::{
     Editor, Glyph, ShapingFont,
-    glyphs::{GlyphError, raster_glyph},
+    glyphs::{GlyphCache, GlyphError, raster_glyph},
     shape_paragraph,
 };
 use alloc::{string::String, sync::Arc, vec, vec::Vec};
@@ -11,7 +11,9 @@ use liuli_core::{
     geometry::{IntoStorage, Rect, Rgb565},
     input::TextInput,
     paint::WidgetCanvas,
+    view::TextGamma,
 };
+use liuli_text::{a4_pixel, blend_rgb565_a4_u16, gamma_remap_a4};
 use unicode_bidi::BidiInfo;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -31,13 +33,26 @@ pub enum FieldError {
     NoFonts,
     Multiline,
 }
+const GLYPH_CACHE_BYTES: usize = 16_384;
+
+struct ShapedLine {
+    text: String,
+    px: u16,
+    glyphs: Vec<(usize, Glyph, i32)>,
+    clusters: Vec<usize>,
+    bidi_rtl: Vec<bool>,
+}
+
 pub struct TextField<'a> {
     fonts: Vec<ShapingFont<'a>>,
     editor: Editor,
     style: FieldStyle,
+    gamma: TextGamma,
     max_bytes: usize,
     image: Arc<OwnedBitmap>,
     revision: u16,
+    cache: GlyphCache,
+    shaped: Option<ShapedLine>,
 }
 impl<'a> TextField<'a> {
     pub fn new(
@@ -56,14 +71,20 @@ impl<'a> TextField<'a> {
             return Err(FieldError::Multiline);
         }
         let editor = Editor::new(text);
-        let image = render(&editor, &fonts, style)?;
+        let gamma = TextGamma::Linear;
+        let mut cache = GlyphCache::new(GLYPH_CACHE_BYTES);
+        let mut shaped = None;
+        let image = render(&editor, &fonts, style, gamma, &mut cache, &mut shaped)?;
         Ok(Self {
             fonts,
             editor,
             style,
+            gamma,
             max_bytes,
             image,
             revision: 0,
+            cache,
+            shaped,
         })
     }
     pub fn editor(&self) -> &Editor {
@@ -71,6 +92,32 @@ impl<'a> TextField<'a> {
     }
     pub fn revision(&self) -> u16 {
         self.revision
+    }
+    pub fn gamma(&self) -> TextGamma {
+        self.gamma
+    }
+    pub fn cache_hits(&self) -> u64 {
+        self.cache.hits()
+    }
+    pub fn image(&self) -> &OwnedBitmap {
+        &self.image
+    }
+    pub fn set_gamma(&mut self, gamma: TextGamma) -> Result<(), FieldError> {
+        if self.gamma == gamma {
+            return Ok(());
+        }
+        let image = render(
+            &self.editor,
+            &self.fonts,
+            self.style,
+            gamma,
+            &mut self.cache,
+            &mut self.shaped,
+        )?;
+        self.gamma = gamma;
+        self.image = image;
+        self.revision = self.revision.wrapping_add(1);
+        Ok(())
     }
     pub fn set_colors(&mut self, foreground: Rgb565, background: Rgb565) -> Result<(), FieldError> {
         if self.style.foreground == foreground && self.style.background == background {
@@ -81,7 +128,14 @@ impl<'a> TextField<'a> {
             background,
             ..self.style
         };
-        let image = render(&self.editor, &self.fonts, next_style)?;
+        let image = render(
+            &self.editor,
+            &self.fonts,
+            next_style,
+            self.gamma,
+            &mut self.cache,
+            &mut self.shaped,
+        )?;
         self.style = next_style;
         self.image = image;
         self.revision = self.revision.wrapping_add(1);
@@ -116,7 +170,14 @@ impl<'a> TextField<'a> {
             TextInput::Left => next.move_visual(false),
             TextInput::Right => next.move_visual(true),
         }
-        let image = render(&next, &self.fonts, self.style)?;
+        let image = render(
+            &next,
+            &self.fonts,
+            self.style,
+            self.gamma,
+            &mut self.cache,
+            &mut self.shaped,
+        )?;
         self.editor = next;
         self.image = image;
         self.revision = self.revision.wrapping_add(1);
@@ -127,6 +188,9 @@ fn render(
     editor: &Editor,
     fonts: &[ShapingFont<'_>],
     style: FieldStyle,
+    gamma: TextGamma,
+    cache: &mut GlyphCache,
+    shaped_cache: &mut Option<ShapedLine>,
 ) -> Result<Arc<OwnedBitmap>, FieldError> {
     let (w, h) = (usize::from(style.width), usize::from(style.height));
     if w == 0
@@ -136,22 +200,44 @@ fn render(
     {
         return Err(FieldError::Size);
     }
-    let mut text = String::from(editor.text());
+    let pre_start = editor.cursor();
     let composition = editor.preedit().unwrap_or("");
-    text.insert_str(editor.cursor(), composition);
-    let cursor = editor.cursor() + composition.len();
-    let mut glyphs: Vec<(usize, Glyph, i32)> = Vec::new();
-    let mut pen = 0i32;
-    shape_paragraph(&text, fonts, i32::from(style.px), |f, g| {
-        let x = pen;
-        pen = pen.saturating_add(g.advance);
-        glyphs.push((f, g, x));
-    });
-    let bidi = BidiInfo::new(&text, None);
-    let mut clusters: Vec<_> = glyphs.iter().map(|(_, g, _)| g.cluster).collect();
-    clusters.push(text.len());
-    clusters.sort_unstable();
-    clusters.dedup();
+    let pre_end = pre_start + composition.len();
+
+    let mut text = String::from(editor.text());
+    text.insert_str(pre_start, composition);
+    let cursor = pre_end;
+
+    let reuse = shaped_cache
+        .as_ref()
+        .is_some_and(|c| c.px == style.px && c.text == text);
+    if !reuse {
+        let mut glyphs: Vec<(usize, Glyph, i32)> = Vec::new();
+        let mut pen = 0i32;
+        shape_paragraph(&text, fonts, i32::from(style.px), |f, g| {
+            let x = pen;
+            pen = pen.saturating_add(g.advance);
+            glyphs.push((f, g, x));
+        });
+        let bidi = BidiInfo::new(&text, None);
+        let bidi_rtl: Vec<bool> = bidi.levels.iter().map(|l| l.is_rtl()).collect();
+        let mut clusters: Vec<_> = glyphs.iter().map(|(_, g, _)| g.cluster).collect();
+        clusters.push(text.len());
+        clusters.sort_unstable();
+        clusters.dedup();
+        *shaped_cache = Some(ShapedLine {
+            text,
+            px: style.px,
+            glyphs,
+            clusters,
+            bidi_rtl,
+        });
+    }
+    let shaped = shaped_cache.as_ref().unwrap();
+    let text = &shaped.text;
+    let glyphs = &shaped.glyphs;
+    let clusters = &shaped.clusters;
+
     let mut caret = 0;
     for span in clusters.windows(2) {
         if cursor < span[0] || cursor > span[1] {
@@ -165,7 +251,7 @@ fn render(
         let count = text[span[0]..span[1]].graphemes(true).count().max(1);
         // A shaper may join multiple graphemes into one cluster.
         let elapsed = text[span[0]..cursor].graphemes(true).count().min(count);
-        let n = if bidi.levels[span[0]].is_rtl() {
+        let n = if shaped.bidi_rtl[span[0]] {
             count - elapsed
         } else {
             elapsed
@@ -176,28 +262,81 @@ fn render(
     let scroll = (caret - (w as i32 - 2)).max(0);
     let bg = style.background.into_storage();
     let fg = style.foreground.into_storage();
+    let perceptual = gamma == TextGamma::Perceptual;
     let mut pixels = vec![bg; w * h];
     let baseline = (i32::from(style.height) + i32::from(style.px)) / 2 - 2;
-    for (f, g, x) in glyphs {
-        raster_glyph(
-            &fonts[f],
-            g.id,
-            style.px,
-            (
-                x.saturating_add(g.x_offset).saturating_sub(scroll),
-                baseline.saturating_sub(g.y_offset),
-            ),
-            65536,
-            |x, y, a| {
-                if x >= 0 && y >= 0 && (x as usize) < w && (y as usize) < h {
-                    let dst = &mut pixels[y as usize * w + x as usize];
-                    let background = Rgb565::from(liuli_core::geometry::RawU16::new(*dst));
-                    *dst =
-                        liuli_text::blend_rgb565_a4(style.foreground, background, a).into_storage();
+    let mut pre_x0 = i32::MAX;
+    let mut pre_x1 = i32::MIN;
+
+    for &(f, ref g, x) in glyphs {
+        if !composition.is_empty() && g.cluster >= pre_start && g.cluster < pre_end {
+            pre_x0 = pre_x0.min(x);
+            pre_x1 = pre_x1.max(x.saturating_add(g.advance));
+        }
+        let gx_base = x.saturating_add(g.x_offset).saturating_sub(scroll);
+        let gy_base = baseline.saturating_sub(g.y_offset);
+        if let Some(cached) = cache
+            .raster_glyph_cached(f, &fonts[f], g.id, style.px, 65536)
+            .map_err(FieldError::Glyph)?
+        {
+            let x0 = gx_base.saturating_add(i32::from(cached.left));
+            let y0 = gy_base.saturating_sub(i32::from(cached.top));
+            for sy in 0..cached.height {
+                let py = y0.saturating_add(i32::from(sy));
+                if py < 0 || (py as usize) >= h {
+                    continue;
                 }
-            },
-        )
-        .map_err(FieldError::Glyph)?;
+                let row_off = (py as usize) * w;
+                for sx in 0..cached.width {
+                    let cov = a4_pixel(&cached.data, cached.width, sx, sy);
+                    if cov == 0 {
+                        continue;
+                    }
+                    let px = x0.saturating_add(i32::from(sx));
+                    if px >= 0 && (px as usize) < w {
+                        let dst = &mut pixels[row_off + px as usize];
+                        let a = if perceptual {
+                            gamma_remap_a4(cov, fg, *dst)
+                        } else {
+                            cov
+                        };
+                        if a != 0 {
+                            *dst = blend_rgb565_a4_u16(fg, *dst, a);
+                        }
+                    }
+                }
+            }
+        } else {
+            raster_glyph(
+                &fonts[f],
+                g.id,
+                style.px,
+                (gx_base, gy_base),
+                65536,
+                |px, py, a| {
+                    if px >= 0 && py >= 0 && (px as usize) < w && (py as usize) < h {
+                        let dst = &mut pixels[py as usize * w + px as usize];
+                        let eff = if perceptual {
+                            gamma_remap_a4(a, fg, *dst)
+                        } else {
+                            a
+                        };
+                        if eff != 0 {
+                            *dst = blend_rgb565_a4_u16(fg, *dst, eff);
+                        }
+                    }
+                },
+            )
+            .map_err(FieldError::Glyph)?;
+        }
+    }
+    if pre_x0 < pre_x1 {
+        let uy = (baseline + 2).clamp(0, h as i32 - 1) as usize;
+        let sx0 = (pre_x0 - scroll).clamp(0, w as i32) as usize;
+        let sx1 = (pre_x1 - scroll).clamp(0, w as i32) as usize;
+        if sx0 < sx1 {
+            pixels[uy * w + sx0..uy * w + sx1].fill(fg);
+        }
     }
     let col = (caret - scroll).clamp(0, w as i32 - 1) as usize;
     for row in pixels.chunks_exact_mut(w) {

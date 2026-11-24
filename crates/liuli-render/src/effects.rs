@@ -484,18 +484,83 @@ mod layers {
         )
     }
 
-    /// Two separable running sums executed 100% in-place on `backdrop.pixels`
-    /// (zero heap scratch buffer) using small stack ring buffers.
-    pub fn blur(backdrop: &mut Backdrop, rect: Rect, radius: u8) {
-        let w = rect.w as usize;
-        let h = rect.h as usize;
-        if w == 0 || h == 0 || radius == 0 {
-            return;
+    /// A run of identical scanlines can omit input rows whose complete blur
+    /// windows are identical. Keep both transitions and one interior row.
+    pub fn redundant_rows(
+        rect: Rect,
+        radius: u8,
+        commands: &[liuli_core::paint::PaintCmd],
+    ) -> core::ops::Range<usize> {
+        use liuli_core::paint::PaintCmd;
+        let height = rect.h as usize;
+        let mid = height / 2;
+        let mut uniform = 0..height;
+        for cmd in commands {
+            let overlap = cmd.bounds().intersect(rect);
+            if overlap.is_empty() {
+                continue;
+            }
+            let start = (overlap.y - rect.y) as usize;
+            let end = start + overlap.h as usize;
+            if end <= mid {
+                uniform.start = uniform.start.max(end);
+            } else if start > mid {
+                uniform.end = uniform.end.min(start);
+            } else if matches!(cmd, PaintCmd::FillRect { .. } | PaintCmd::Overlay { .. }) {
+                uniform.start = uniform.start.max(start);
+                uniform.end = uniform.end.min(end);
+            } else {
+                return height..height;
+            }
         }
         let r = usize::from(radius);
+        let first = uniform.start + usize::from(uniform.start != 0) * r + 1;
+        let end = uniform
+            .end
+            .saturating_sub(usize::from(uniform.end != height) * r);
+        if first < end {
+            first..end
+        } else {
+            height..height
+        }
+    }
+
+    /// Input contains the retained scanlines packed at the front, in logical order.
+    pub fn filter_backdrop(
+        backdrop: &mut Backdrop,
+        rect: Rect,
+        radius: u8,
+        omitted: core::ops::Range<usize>,
+        tint: impl FnOnce(&mut [u16]),
+    ) {
+        let w = rect.w as usize;
+        let h = rect.h as usize;
+        let pixels = &mut backdrop.pixels[..w * h];
+        let r = usize::from(radius);
+        if w == 0 || h == 0 {
+            tint(pixels);
+            return;
+        }
+        let skip = omitted.len();
+        let kept = h - skip;
+        if r != 0 {
+            blur_rows(&mut pixels[..kept * w], w, kept, r);
+        }
+        tint(&mut pixels[..kept * w]);
+        if skip > 0 {
+            pixels.copy_within(omitted.start * w..kept * w, omitted.end * w);
+            let (head, tail) = pixels.split_at_mut(omitted.start * w);
+            let row = &head[head.len() - w..];
+            for dst in tail[..skip * w].chunks_exact_mut(w) {
+                dst.copy_from_slice(row);
+            }
+        }
+    }
+
+    // Two separable in-place running sums using stack ring buffers.
+    fn blur_rows(pixels: &mut [u16], w: usize, h: usize, r: usize) {
         let recip = BLUR_RECIP[r];
         let half = r as i32; // `(2 * r + 1) / 2 == r`
-        let pixels = &mut backdrop.pixels;
 
         // Horizontal in-place pass with a 16-entry ring saving the trailing `r <= 8` inputs.
         let mut h_ring = [0u16; 16];
@@ -528,6 +593,9 @@ mod layers {
             }
         }
 
+        if h == 1 {
+            return;
+        }
         // Vertical in-place pass: 16-column tiles swept row-major with a 16-row stack ring.
         let mut v_ring = [[0u16; BLUR_TILE_W]; 16];
         for col_start in (0..w).step_by(BLUR_TILE_W) {
@@ -678,7 +746,28 @@ mod layers {
                 if has_backdrop {
                     let bd_off = (y - cache.capture.y) as usize * cap_w + bd_x;
                     let bd_row = &backdrop.pixels[bd_off..bd_off + len];
-                    for lx in 0..len {
+                    // Inside the rounded body, fully transparent group pixels show
+                    // only the filtered backdrop. Long opaque runs show only the
+                    // group's color. Both are contiguous RGB565 copies at opacity 15.
+                    let middle = if opacity == 15 && card_box.fast {
+                        if (card_box.core_t..=card_box.core_b).contains(&y) {
+                            0..len
+                        } else {
+                            let left = (card_box.core_l - area.x).clamp(0, len as i32) as usize;
+                            let right =
+                                (card_box.core_r + 1 - area.x).clamp(0, len as i32) as usize;
+                            left..right.max(left)
+                        }
+                    } else {
+                        0..0
+                    };
+                    composite_glass_span(
+                        group,
+                        src_off + middle.start,
+                        &bd_row[middle.clone()],
+                        &mut out_row[middle.clone()],
+                    );
+                    for lx in (0..middle.start).chain(middle.end..len) {
                         let px = area.x + lx as i32;
                         composite_pixel(
                             &group.color,
@@ -800,9 +889,69 @@ mod layers {
             }
         }
     }
+
+    fn composite_glass_span(group: &GroupPixels, start: usize, bg: &[u16], dst: &mut [u16]) {
+        let mut x = 0;
+        while x < dst.len() {
+            let i = start + x;
+            if i % 2 == 0 && x + 8 <= dst.len() {
+                let mask = &group.alpha[i / 2..i / 2 + 4];
+                if mask == [0; 4] || mask == [0xff; 4] {
+                    let opaque = mask[0] != 0;
+                    let mut end = x + 8;
+                    while end + 8 <= dst.len()
+                        && group.alpha[(start + end) / 2..(start + end) / 2 + 4] == *mask
+                    {
+                        end += 8;
+                    }
+                    let pixels = if opaque {
+                        &group.color[i..start + end]
+                    } else {
+                        &bg[x..end]
+                    };
+                    dst[x..end].copy_from_slice(pixels);
+                    x = end;
+                    continue;
+                }
+            }
+            dst[x] = blend_rgb565_a4_u16(group.color[i], bg[x], get_a4(&group.alpha, i));
+            x += 1;
+        }
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn glass_span_matches_scalar_for_clipped_odd_and_even_alpha_runs() {
+        let mut group = GroupPixels {
+            color: (0..99).map(|i| (i * 613) as u16).collect(),
+            alpha: alloc::vec![0; 50],
+            ..Default::default()
+        };
+        for i in 0..99 {
+            let alpha = match i {
+                17..=40 => 15,
+                47..=69 => (i % 16) as u8,
+                _ => 0,
+            };
+            liuli_core::layers::set_a4(&mut group.alpha, i, alpha);
+        }
+        let bg: alloc::vec::Vec<_> = (0..99).map(|i| (0xf800 ^ (i * 39)) as u16).collect();
+        for start in 0..20 {
+            for end in [start, start + 1, 62, 98, 99] {
+                let mut dst = alloc::vec![0x1234; end - start];
+                composite_glass_span(&group, start, &bg[start..end], &mut dst);
+                for (i, actual) in (start..end).zip(dst) {
+                    assert_eq!(
+                        actual,
+                        blend_rgb565_a4_u16(group.color[i], bg[i], get_a4(&group.alpha, i))
+                    );
+                }
+            }
+        }
+    }
 }
 #[cfg(feature = "layers")]
-pub use layers::{blur, composite};
+pub use layers::{composite, filter_backdrop, redundant_rows};
 
 #[cfg(test)]
 mod tests {
@@ -851,6 +1000,31 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[cfg(feature = "layers")]
+    #[test]
+    fn backdrop_rows_respect_clips_and_nonuniform_paint() {
+        use liuli_core::paint::PaintCmd;
+        let capture = Rect::new(20, 30, 40, 40);
+        let color = Rgb565::new(1, 2, 3);
+        let stripe = PaintCmd::FillRect {
+            rect: capture,
+            clip: Rect::new(25, 33, 10, 32),
+            color,
+        };
+        let shadowed = |rect| PaintCmd::StrokeRect {
+            rect,
+            clip: capture,
+            color,
+            width: 1,
+        };
+        assert_eq!(redundant_rows(capture, 4, &[stripe]), 8..31);
+        assert_eq!(
+            redundant_rows(capture, 4, &[stripe, shadowed(Rect::new(22, 36, 3, 4))]),
+            15..31
+        );
+        assert!(redundant_rows(capture, 4, &[stripe, shadowed(capture)]).is_empty());
     }
 
     #[cfg(feature = "layers")]
@@ -923,9 +1097,61 @@ mod tests {
                         clear: None,
                         tint: None,
                     };
-                    blur(&mut backdrop, Rect::new(0, 0, w as u32, h as u32), r);
+                    filter_backdrop(
+                        &mut backdrop,
+                        Rect::new(0, 0, w as u32, h as u32),
+                        r,
+                        h..h,
+                        |_| {},
+                    );
                     assert_eq!(backdrop.pixels, expected, "w={w} h={h} r={r}");
                 }
+            }
+        }
+
+        // Scrolling a clipped pane puts runs of identical scanlines against
+        // different content at either edge of the capture. Check both seams
+        // and tint against the independent, uncompressed two-pass reference.
+        let w = 67;
+        let h = 47;
+        for r in 1..=8 {
+            for run in [0..h, 0..26, 9..37, 21..h, 11..14] {
+                let input: Vec<u16> = (0..h)
+                    .flat_map(|y| {
+                        let y = if run.contains(&y) { run.start } else { y };
+                        (0..w).map(move |x| ((x * 637 + y * 919) & 0xffff) as u16)
+                    })
+                    .collect();
+                let mut expected = ref_blur(&input, w, h, r);
+                let tint =
+                    |row: &mut [u16]| crate::raster::blend_solid(row, Rgb565::new(4, 33, 12), 7);
+                tint(&mut expected);
+                let mut backdrop = Backdrop {
+                    pixels: input,
+                    clear: None,
+                    tint: None,
+                };
+                let rect = Rect::new(7, 30, w as u32, h as u32);
+                let cmd = liuli_core::paint::PaintCmd::FillRect {
+                    rect: Rect::new(7, 30 + run.start as i32, w as u32, run.len() as u32),
+                    clip: rect,
+                    color: Rgb565::new(0, 0, 0),
+                };
+                // Rows outside the synthetic run vary; mark each as a separate draw.
+                let mut commands = alloc::vec![cmd];
+                for y in (0..h).filter(|y| !run.contains(y)) {
+                    commands.push(liuli_core::paint::PaintCmd::FillRect {
+                        rect: Rect::new(7, 30 + y as i32, w as u32, 1),
+                        clip: rect,
+                        color: Rgb565::new(0, 0, 0),
+                    });
+                }
+                let omitted = redundant_rows(rect, r, &commands);
+                backdrop
+                    .pixels
+                    .copy_within(omitted.end * w.., omitted.start * w);
+                filter_backdrop(&mut backdrop, rect, r, omitted, tint);
+                assert_eq!(backdrop.pixels, expected, "run={run:?} r={r}");
             }
         }
     }

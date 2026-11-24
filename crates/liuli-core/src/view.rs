@@ -272,6 +272,131 @@ pub enum FontId {
     #[default]
     Body16 = 0,
     Small12 = 1,
+    Title20 = 2,
+    Display28 = 3,
+}
+
+impl FontId {
+    #[inline]
+    pub const fn from_raw(raw: u8) -> Self {
+        match raw & 0b11 {
+            1 => Self::Small12,
+            2 => Self::Title20,
+            3 => Self::Display28,
+            _ => Self::Body16,
+        }
+    }
+}
+
+/// Line-wrapping strategy for `PaintCmd::Text` and `TextMeasurer`.
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Default)]
+#[repr(u8)]
+pub enum WrapMode {
+    /// Greedy per-character wrapping (default; matches baseline behavior).
+    #[default]
+    Char = 0,
+    /// Word-boundary wrapping for ASCII and CJK kinsoku punctuation rules.
+    Word = 1,
+}
+
+/// Perceptual sRGB gamma compensation for alpha-blended glyph coverage.
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Default)]
+#[repr(u8)]
+pub enum TextGamma {
+    /// Linear coverage alpha (default; preserves baseline goldens).
+    #[default]
+    Linear = 0,
+    /// Contrast-aware gamma compensation for crisp light/dark glyph weight.
+    Perceptual = 1,
+}
+
+/// Physical RGB LCD subpixel stripe order for horizontal subpixel AA.
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Default)]
+#[repr(u8)]
+pub enum SubpixelOrder {
+    /// Grayscale coverage AA (best for rotated/AMOLED Pentile panels; default).
+    #[default]
+    None = 0,
+    /// Horizontal Red-Green-Blue stripe order (e.g. standard RGB LCDs).
+    Rgb = 1,
+    /// Horizontal Blue-Green-Red stripe order.
+    Bgr = 2,
+}
+
+/// Packed 6-bit text rendering and decoration flags (`u8`, bottom 6 bits).
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Default)]
+#[repr(transparent)]
+pub struct TextStyleFlags(pub u8);
+
+impl TextStyleFlags {
+    pub const DEFAULT: Self = Self(0);
+
+    #[inline]
+    pub const fn wrap(self) -> WrapMode {
+        if (self.0 & 0x01) != 0 {
+            WrapMode::Word
+        } else {
+            WrapMode::Char
+        }
+    }
+
+    #[inline]
+    pub const fn underline(self) -> bool {
+        (self.0 & 0x02) != 0
+    }
+
+    #[inline]
+    pub const fn strikethrough(self) -> bool {
+        (self.0 & 0x04) != 0
+    }
+
+    #[inline]
+    pub const fn gamma(self) -> TextGamma {
+        if (self.0 & 0x08) != 0 {
+            TextGamma::Perceptual
+        } else {
+            TextGamma::Linear
+        }
+    }
+
+    #[inline]
+    pub const fn subpixel(self) -> SubpixelOrder {
+        match (self.0 >> 4) & 0x03 {
+            1 => SubpixelOrder::Rgb,
+            2 => SubpixelOrder::Bgr,
+            _ => SubpixelOrder::None,
+        }
+    }
+
+    #[inline]
+    pub const fn with_wrap(mut self, wrap: WrapMode) -> Self {
+        self.0 = (self.0 & !0x01) | ((wrap as u8) & 0x01);
+        self
+    }
+
+    #[inline]
+    pub const fn with_underline(mut self, enabled: bool) -> Self {
+        self.0 = (self.0 & !0x02) | ((enabled as u8) << 1);
+        self
+    }
+
+    #[inline]
+    pub const fn with_strikethrough(mut self, enabled: bool) -> Self {
+        self.0 = (self.0 & !0x04) | ((enabled as u8) << 2);
+        self
+    }
+
+    #[inline]
+    pub const fn with_gamma(mut self, gamma: TextGamma) -> Self {
+        self.0 = (self.0 & !0x08) | (((gamma as u8) & 0x01) << 3);
+        self
+    }
+
+    #[inline]
+    pub const fn with_subpixel(mut self, order: SubpixelOrder) -> Self {
+        self.0 = (self.0 & !0x30) | (((order as u8) & 0x03) << 4);
+        self
+    }
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Default)]
@@ -460,6 +585,13 @@ pub struct NodeProps {
     pub text_align: TextAlign,
     pub max_lines: u8,
     pub ellipsis: bool,
+    pub wrap: WrapMode,
+    pub text_gamma: TextGamma,
+    pub subpixel: SubpixelOrder,
+    pub underline: bool,
+    pub strikethrough: bool,
+    pub letter_spacing: i8,
+    pub line_spacing: i8,
     pub value: i16,
     pub min: i16,
     pub max: i16,
@@ -510,6 +642,13 @@ impl NodeProps {
             text_align: TextAlign::Start,
             max_lines: 0,
             ellipsis: true,
+            wrap: WrapMode::Char,
+            text_gamma: TextGamma::Linear,
+            subpixel: SubpixelOrder::None,
+            underline: false,
+            strikethrough: false,
+            letter_spacing: 0,
+            line_spacing: 0,
             value: 0,
             min: 0,
             max: 100,
@@ -539,7 +678,6 @@ const FLAG_ENABLED: u16 = 1 << 5;
 const FLAG_VISIBLE: u16 = 1 << 6;
 const FLAG_CLICKABLE: u16 = 1 << 7;
 const FLAG_TEXT_DYN: u16 = 1 << 8;
-const FLAG_FONT_SMALL12: u16 = 1 << 9;
 const TEXT_ALIGN_SHIFT: u16 = 10;
 const TEXT_ALIGN_MASK: u16 = 0b11 << TEXT_ALIGN_SHIFT;
 const FLAG_EASE_OUT_CUBIC: u16 = 1 << 12;
@@ -566,6 +704,9 @@ pub struct StoredProps {
     pub focus_color: Rgb565,
     pub overlay_color: Rgb565,
     pub overlay_alpha: u8,
+    pub text_style_raw: u8,
+    pub letter_spacing: i8,
+    pub line_spacing: i8,
     pub dyn_text: TextRange,
     pub static_text: Option<&'static str>,
     pub max_lines: u8,
@@ -597,6 +738,9 @@ impl StoredProps {
         focus_color: Rgb565::new(0, 0, 0),
         overlay_color: Rgb565::new(0, 0, 0),
         overlay_alpha: 0,
+        text_style_raw: 0,
+        letter_spacing: 0,
+        line_spacing: 0,
         dyn_text: TextRange { start: 0, len: 0 },
         static_text: None,
         max_lines: 0,
@@ -644,9 +788,13 @@ impl StoredProps {
         if p.clickable {
             flags |= FLAG_CLICKABLE;
         }
-        if p.font == FontId::Small12 {
-            flags |= FLAG_FONT_SMALL12;
-        }
+        let text_style_flags = TextStyleFlags::DEFAULT
+            .with_wrap(p.wrap)
+            .with_underline(p.underline)
+            .with_strikethrough(p.strikethrough)
+            .with_gamma(p.text_gamma)
+            .with_subpixel(p.subpixel);
+        let text_style_raw = (text_style_flags.0 & 0x3F) | (((p.font as u8) & 0x03) << 6);
         flags |= ((p.text_align as u16) << TEXT_ALIGN_SHIFT) & TEXT_ALIGN_MASK;
         if p.anim_easing == Easing::EaseOutCubic {
             flags |= FLAG_EASE_OUT_CUBIC;
@@ -687,6 +835,9 @@ impl StoredProps {
             focus_color: p.focus_color,
             overlay_color: p.overlay_color,
             overlay_alpha: p.overlay_alpha,
+            text_style_raw,
+            letter_spacing: p.letter_spacing,
+            line_spacing: p.line_spacing,
             dyn_text,
             static_text,
             max_lines: p.max_lines,
@@ -762,11 +913,47 @@ impl StoredProps {
 
     #[inline]
     pub const fn font(&self) -> FontId {
-        if (self.flags & FLAG_FONT_SMALL12) != 0 {
-            FontId::Small12
-        } else {
-            FontId::Body16
-        }
+        FontId::from_raw(self.text_style_raw >> 6)
+    }
+
+    #[inline]
+    pub const fn text_style(&self) -> TextStyleFlags {
+        TextStyleFlags(self.text_style_raw & 0x3F)
+    }
+
+    #[inline]
+    pub const fn wrap(&self) -> WrapMode {
+        self.text_style().wrap()
+    }
+
+    #[inline]
+    pub const fn text_gamma(&self) -> TextGamma {
+        self.text_style().gamma()
+    }
+
+    #[inline]
+    pub const fn subpixel(&self) -> SubpixelOrder {
+        self.text_style().subpixel()
+    }
+
+    #[inline]
+    pub const fn underline(&self) -> bool {
+        self.text_style().underline()
+    }
+
+    #[inline]
+    pub const fn strikethrough(&self) -> bool {
+        self.text_style().strikethrough()
+    }
+
+    #[inline]
+    pub const fn letter_spacing(&self) -> i8 {
+        self.letter_spacing
+    }
+
+    #[inline]
+    pub const fn line_spacing(&self) -> i8 {
+        self.line_spacing
     }
 
     #[inline]

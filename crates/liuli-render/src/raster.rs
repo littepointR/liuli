@@ -11,8 +11,13 @@ use embedded_graphics::primitives::{
 };
 use liuli_core::geometry::{Point, Rect, rgb565_to_u16};
 use liuli_core::paint::{CommandList, PaintCmd, SceneResources};
-use liuli_core::view::IconKind;
-use liuli_text::{FontSet, TextLayoutOptions, a4_pixel, visit_layout_glyphs};
+use liuli_core::view::{FontId, IconKind, SubpixelOrder, TextAlign, TextGamma, TextStyleFlags};
+use liuli_text::{
+    FontProvider, FontSet, GlyphEncoding, GlyphFormat, LineDecor, ProviderLayoutStyle,
+    TextLayoutOptions, TextLayoutStyle, a2_pixel, blend_rgb565_a4_u16, blend_rgb565_a8_u16,
+    blend_rgb565_lcd_a4_u16, decode_rle_rows, gamma_remap_a4, gamma_remap_a8, lcd_rgb_pixel,
+    visit_layout_glyphs_provider, visit_layout_glyphs_styled,
+};
 
 use crate::band::BandTarget;
 
@@ -82,16 +87,23 @@ pub fn render_band_with_blend<'f, R>(
 where
     R: SceneResources + ?Sized,
 {
-    match render_band_inner(
+    match render_range(
         target,
         cmds,
         resources,
-        fonts,
         blend,
-        &mut liuli_text::storage::InlinePixels,
+        &mut LegacyTextSource {
+            fonts,
+            glyphs: &mut liuli_text::storage::InlinePixels,
+        },
+        0..cmds.count,
+        cmds.root_bg,
     ) {
         Ok(count) => count,
-        Err(never) => match never {},
+        Err(err) => match err {
+            GlyphReadError::Source(never) => match never {},
+            GlyphReadError::Short { .. } => 0,
+        },
     }
 }
 
@@ -101,28 +113,6 @@ pub enum GlyphReadError<E> {
     Short { needed: usize, actual: usize },
 }
 
-struct CheckedGlyphs<'p, G>(&'p mut G);
-impl<G: liuli_text::storage::GlyphPixels> liuli_text::storage::GlyphPixels
-    for CheckedGlyphs<'_, G>
-{
-    type Error = GlyphReadError<G::Error>;
-    fn begin_band(&mut self, band: Rect) {
-        self.0.begin_band(band);
-    }
-    fn pixels<'a>(
-        &'a mut self,
-        font: liuli_core::view::FontId,
-        glyph: liuli_text::GlyphBitmap<'a>,
-    ) -> Result<&'a [u8], Self::Error> {
-        let needed =
-            usize::from(glyph.metrics.width).div_ceil(2) * usize::from(glyph.metrics.height);
-        let bytes = self.0.pixels(font, glyph).map_err(GlyphReadError::Source)?;
-        bytes.get(..needed).ok_or(GlyphReadError::Short {
-            needed,
-            actual: bytes.len(),
-        })
-    }
-}
 pub fn render_band_with_pixels<'f, R, G: liuli_text::storage::GlyphPixels>(
     target: &mut BandTarget<'_>,
     cmds: &CommandList,
@@ -134,24 +124,24 @@ pub fn render_band_with_pixels<'f, R, G: liuli_text::storage::GlyphPixels>(
 where
     R: SceneResources + ?Sized,
 {
-    render_band_inner(
+    render_range(
         target,
         cmds,
         resources,
-        fonts,
         blend,
-        &mut CheckedGlyphs(glyphs),
+        &mut LegacyTextSource { fonts, glyphs },
+        0..cmds.count,
+        cmds.root_bg,
     )
 }
 
-fn render_band_inner<'f, R, G: liuli_text::storage::GlyphPixels>(
+pub fn render_band_with_provider<R, F: FontProvider>(
     target: &mut BandTarget<'_>,
     cmds: &CommandList,
     resources: &R,
-    fonts: &FontSet<'f>,
+    fonts: &F,
     blend: impl Fn(&mut [u16], Rgb565, u8) + Copy,
-    glyphs: &mut G,
-) -> Result<u32, G::Error>
+) -> Result<u32, F::Error>
 where
     R: SceneResources + ?Sized,
 {
@@ -159,28 +149,451 @@ where
         target,
         cmds,
         resources,
-        fonts,
         blend,
-        glyphs,
+        &mut ProviderTextSource { fonts },
         0..cmds.count,
         cmds.root_bg,
     )
 }
 
+trait BandTextSource {
+    type Error;
+    fn begin_band(&mut self, band: Rect);
+    #[allow(clippy::too_many_arguments)]
+    fn draw_text(
+        &mut self,
+        target: &mut BandTarget<'_>,
+        band_rect: Rect,
+        stride: usize,
+        width_limit_clip: Rect,
+        pos: Point,
+        s: &str,
+        fg_raw: u16,
+        wrap_width: u32,
+        max_lines: u8,
+        ellipsis: bool,
+        font_id: FontId,
+        align: TextAlign,
+        style: TextStyleFlags,
+        letter_spacing: i8,
+        line_spacing: i8,
+        vis_y: Option<(i32, i32)>,
+        row_buf: &mut [u8],
+    ) -> Result<(), Self::Error>;
+}
+
+struct LegacyTextSource<'a, 'f, G> {
+    fonts: &'a FontSet<'f>,
+    glyphs: &'a mut G,
+}
+
+impl<G: liuli_text::storage::GlyphPixels> BandTextSource for LegacyTextSource<'_, '_, G> {
+    type Error = GlyphReadError<G::Error>;
+
+    fn begin_band(&mut self, band: Rect) {
+        self.glyphs.begin_band(band);
+    }
+
+    fn draw_text(
+        &mut self,
+        target: &mut BandTarget<'_>,
+        band_rect: Rect,
+        stride: usize,
+        width_limit_clip: Rect,
+        pos: Point,
+        s: &str,
+        fg_raw: u16,
+        wrap_width: u32,
+        max_lines: u8,
+        ellipsis: bool,
+        font_id: FontId,
+        align: TextAlign,
+        style: TextStyleFlags,
+        letter_spacing: i8,
+        line_spacing: i8,
+        vis_y: Option<(i32, i32)>,
+        row_buf: &mut [u8],
+    ) -> Result<(), Self::Error> {
+        let font = self.fonts.get(font_id);
+        let fallback_face = self.fonts.fallback();
+        let draw_decor = style.underline() || style.strikethrough();
+        let perceptual = style.gamma() == TextGamma::Perceptual;
+        let subpixel = style.subpixel();
+        let mut decors = [LineDecor {
+            line: 0,
+            x_start: 0,
+            x_end: 0,
+            baseline_y: 0,
+            ascent: 0,
+        }; 32];
+        let mut decor_count = 0usize;
+        let mut resource_error: Option<Self::Error> = None;
+
+        visit_layout_glyphs_styled(
+            font,
+            s,
+            TextLayoutOptions {
+                max_width: wrap_width,
+                max_lines,
+                ellipsis,
+                align,
+            },
+            TextLayoutStyle {
+                wrap: style.wrap(),
+                letter_spacing,
+                line_spacing,
+                fallback: fallback_face,
+                vis_y,
+            },
+            |pg| {
+                if resource_error.is_some() {
+                    return;
+                }
+                let gx = pos.x.saturating_add(pg.x);
+                let gy = pos.y.saturating_add(pg.y);
+                let gw = pg.glyph.metrics.width;
+                let gh = pg.glyph.metrics.height;
+                if gw == 0 || gh == 0 {
+                    return;
+                }
+                let g_rect = Rect::new(gx, gy, gw as u32, gh as u32);
+                let vis = g_rect.intersect(width_limit_clip);
+                if vis.is_empty() {
+                    return;
+                }
+                let data = if pg.from_fallback {
+                    pg.glyph.data
+                } else {
+                    match self.glyphs.pixels(font_id, pg.glyph) {
+                        Ok(bytes) => {
+                            let needed = if pg.encoding == GlyphEncoding::Rle {
+                                1
+                            } else {
+                                pg.format.row_bytes(gw)
+                                    * usize::from(gh)
+                                    * usize::from(font.subpixel_phases())
+                            };
+                            if bytes.len() < needed {
+                                resource_error = Some(GlyphReadError::Short {
+                                    needed,
+                                    actual: bytes.len(),
+                                });
+                                return;
+                            }
+                            bytes
+                        }
+                        Err(e) => {
+                            resource_error = Some(GlyphReadError::Source(e));
+                            return;
+                        }
+                    }
+                };
+                blit_decoded_glyph(
+                    target,
+                    band_rect,
+                    stride,
+                    vis,
+                    gx,
+                    gy,
+                    gw,
+                    gh,
+                    pg.phase,
+                    pg.format,
+                    pg.encoding,
+                    subpixel,
+                    fg_raw,
+                    perceptual,
+                    row_buf,
+                    data,
+                );
+            },
+            |dec| {
+                if draw_decor && decor_count < decors.len() {
+                    decors[decor_count] = dec;
+                    decor_count += 1;
+                }
+            },
+        );
+        if let Some(e) = resource_error {
+            return Err(e);
+        }
+        for &dec in &decors[..decor_count] {
+            draw_line_decor(
+                target,
+                pos,
+                width_limit_clip,
+                band_rect,
+                stride,
+                fg_raw,
+                style,
+                dec,
+            );
+        }
+        Ok(())
+    }
+}
+
+struct ProviderTextSource<'a, F> {
+    fonts: &'a F,
+}
+
+impl<F: FontProvider> BandTextSource for ProviderTextSource<'_, F> {
+    type Error = F::Error;
+
+    fn begin_band(&mut self, band: Rect) {
+        self.fonts.begin_band(band);
+    }
+
+    fn draw_text(
+        &mut self,
+        target: &mut BandTarget<'_>,
+        band_rect: Rect,
+        stride: usize,
+        width_limit_clip: Rect,
+        pos: Point,
+        s: &str,
+        fg_raw: u16,
+        wrap_width: u32,
+        max_lines: u8,
+        ellipsis: bool,
+        font_id: FontId,
+        align: TextAlign,
+        style: TextStyleFlags,
+        letter_spacing: i8,
+        line_spacing: i8,
+        vis_y: Option<(i32, i32)>,
+        row_buf: &mut [u8],
+    ) -> Result<(), Self::Error> {
+        let draw_decor = style.underline() || style.strikethrough();
+        let perceptual = style.gamma() == TextGamma::Perceptual;
+        let subpixel = style.subpixel();
+        let mut decors = [LineDecor {
+            line: 0,
+            x_start: 0,
+            x_end: 0,
+            baseline_y: 0,
+            ascent: 0,
+        }; 32];
+        let mut decor_count = 0usize;
+        let mut fetch_err: Option<F::Error> = None;
+
+        visit_layout_glyphs_provider(
+            self.fonts,
+            font_id,
+            s,
+            TextLayoutOptions {
+                max_width: wrap_width,
+                max_lines,
+                ellipsis,
+                align,
+            },
+            ProviderLayoutStyle {
+                wrap: style.wrap(),
+                letter_spacing,
+                line_spacing,
+                vis_y,
+            },
+            |pg| {
+                if fetch_err.is_some() {
+                    return;
+                }
+                let gx = pos.x.saturating_add(pg.x);
+                let gy = pos.y.saturating_add(pg.y);
+                let gw = pg.metrics.width;
+                let gh = pg.metrics.height;
+                if gw == 0 || gh == 0 {
+                    return;
+                }
+                let g_rect = Rect::new(gx, gy, gw as u32, gh as u32);
+                let vis = g_rect.intersect(width_limit_clip);
+                if vis.is_empty() {
+                    return;
+                }
+                if let Err(e) = self.fonts.with_glyph_bytes(
+                    font_id,
+                    pg.from_fallback,
+                    pg.metrics,
+                    |data, enc| {
+                        blit_decoded_glyph(
+                            target, band_rect, stride, vis, gx, gy, gw, gh, pg.phase, pg.format,
+                            enc, subpixel, fg_raw, perceptual, row_buf, data,
+                        );
+                    },
+                ) {
+                    fetch_err = Some(e);
+                }
+            },
+            |dec| {
+                if draw_decor && decor_count < decors.len() {
+                    decors[decor_count] = dec;
+                    decor_count += 1;
+                }
+            },
+        )?;
+        if let Some(e) = fetch_err {
+            return Err(e);
+        }
+        for &dec in &decors[..decor_count] {
+            draw_line_decor(
+                target,
+                pos,
+                width_limit_clip,
+                band_rect,
+                stride,
+                fg_raw,
+                style,
+                dec,
+            );
+        }
+        Ok(())
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
-fn render_range<'f, R: SceneResources + ?Sized, G: liuli_text::storage::GlyphPixels>(
+fn blit_decoded_glyph(
+    target: &mut BandTarget<'_>,
+    band_rect: Rect,
+    stride: usize,
+    vis: Rect,
+    gx: i32,
+    gy: i32,
+    gw: u16,
+    gh: u16,
+    phase: u8,
+    format: GlyphFormat,
+    encoding: GlyphEncoding,
+    subpixel: SubpixelOrder,
+    fg_raw: u16,
+    perceptual: bool,
+    row_buf: &mut [u8],
+    data: &[u8],
+) {
+    let row_bytes = format.row_bytes(gw);
+    let vis_x0 = vis.x;
+    let vis_x1 = vis.x + vis.w as i32;
+    match encoding {
+        GlyphEncoding::Raw => {
+            let phase_off = usize::from(phase) * usize::from(gh) * row_bytes;
+            for py in vis.y..(vis.y + vis.h as i32) {
+                let src_y = (py - gy) as usize;
+                let rstart = phase_off + src_y * row_bytes;
+                let Some(row) = data.get(rstart..rstart + row_bytes) else {
+                    break;
+                };
+                let ly = (py - band_rect.y) as usize;
+                blit_glyph_row(
+                    target,
+                    ly * stride,
+                    band_rect.x,
+                    gx,
+                    gw,
+                    vis_x0,
+                    vis_x1,
+                    row,
+                    format,
+                    subpixel,
+                    fg_raw,
+                    perceptual,
+                );
+            }
+        }
+        GlyphEncoding::Rle => {
+            if row_bytes > row_buf.len() {
+                return;
+            }
+            let phase_start_row = usize::from(phase) * usize::from(gh);
+            let total_rows = phase_start_row + usize::from(gh);
+            let skip_rows = phase_start_row + (vis.y - gy) as usize;
+            let _ = decode_rle_rows(
+                data,
+                row_bytes,
+                total_rows,
+                skip_rows,
+                vis.h as usize,
+                &mut row_buf[..row_bytes],
+                |row_idx, row| {
+                    let py = gy + (row_idx - phase_start_row) as i32;
+                    let ly = (py - band_rect.y) as usize;
+                    blit_glyph_row(
+                        target,
+                        ly * stride,
+                        band_rect.x,
+                        gx,
+                        gw,
+                        vis_x0,
+                        vis_x1,
+                        row,
+                        format,
+                        subpixel,
+                        fg_raw,
+                        perceptual,
+                    );
+                },
+            );
+        }
+    }
+}
+
+// A run of vertical fills (stripes, charts) writes the same opaque span on
+// every scanline. Paint it once, then copy contiguous rows. Column-at-a-time
+// writes thrash the MCU data cache, especially on an SDRAM backdrop.
+fn fill_adjacent_rects(
+    target: &mut BandTarget<'_>,
+    first: Rect,
+    color: Rgb565,
+    following: &[PaintCmd],
+) -> usize {
+    let band = target.band_rect();
+    let stride = band.w as usize;
+    let start = (first.y - band.y) as usize * stride + (first.x - band.x) as usize;
+    let mut width = first.w as usize;
+    let mut used = 0;
+    for cmd in following {
+        let PaintCmd::FillRect {
+            rect,
+            clip,
+            color: next,
+        } = *cmd
+        else {
+            break;
+        };
+        let r = rect.intersect(clip).intersect(band);
+        if r.y != first.y || r.h != first.h || i64::from(r.x) != first.left64() + width as i64 {
+            break;
+        }
+        let words = target.words_mut();
+        if used == 0 {
+            words[start..start + width].fill(rgb565_to_u16(color));
+        }
+        let end = width + r.w as usize;
+        words[start + width..start + end].fill(rgb565_to_u16(next));
+        width = end;
+        used += 1;
+    }
+    if used > 0 {
+        target.set_opaque_span(start, width);
+        for dy in 1..first.h as usize {
+            let dst = start + dy * stride;
+            target.words_mut().copy_within(start..start + width, dst);
+            target.set_opaque_span(dst, width);
+        }
+    }
+    used
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_range<R: SceneResources + ?Sized, T: BandTextSource>(
     target: &mut BandTarget<'_>,
     cmds: &CommandList,
     resources: &R,
-    fonts: &FontSet<'f>,
     blend: impl Fn(&mut [u16], Rgb565, u8) + Copy,
-    glyphs: &mut G,
+    text_source: &mut T,
     range: core::ops::Range<usize>,
     clear: Rgb565,
-) -> Result<u32, G::Error> {
+) -> Result<u32, T::Error> {
     let _ = target.clear(clear);
     let band_rect = target.band_rect();
-    glyphs.begin_band(band_rect);
+    text_source.begin_band(band_rect);
     let mut replayed = 0u32;
 
     let mut cursor = range.start;
@@ -231,9 +644,8 @@ fn render_range<'f, R: SceneResources + ?Sized, G: liuli_text::storage::GlyphPix
                             &mut tile,
                             cmds,
                             resources,
-                            fonts,
                             blend,
-                            glyphs,
+                            text_source,
                             local,
                             Rgb565::new(0, 0, 0),
                         )?;
@@ -247,30 +659,53 @@ fn render_range<'f, R: SceneResources + ?Sized, G: liuli_text::storage::GlyphPix
                     {
                         backdrop.clear = None;
                         backdrop.tint = None;
-                        let mut tile = BandTarget::new::<()>(&mut backdrop.pixels, cache.capture)
-                            .expect("reserved backdrop");
-                        replayed += render_range(
-                            &mut tile,
-                            cmds,
-                            resources,
-                            fonts,
-                            blend,
-                            glyphs,
-                            range.start..cache.backdrop_end.max(range.start),
-                            clear,
-                        )?;
-                        crate::effects::blur(
+                        let underlay = range.start..cache.backdrop_end.max(range.start);
+                        let capture = cache.capture;
+                        let omitted = crate::effects::redundant_rows(
+                            capture,
+                            cache.style.backdrop_radius,
+                            &cmds.as_slice()[underlay.clone()],
+                        );
+                        let mut offset = 0;
+                        for rows in [0..omitted.start, omitted.end..capture.h as usize] {
+                            if rows.is_empty() {
+                                continue;
+                            }
+                            let rect = Rect::new(
+                                capture.x,
+                                capture.y + rows.start as i32,
+                                capture.w,
+                                rows.len() as u32,
+                            );
+                            let mut tile =
+                                BandTarget::new::<()>(&mut backdrop.pixels[offset..], rect)
+                                    .expect("reserved backdrop");
+                            replayed += render_range(
+                                &mut tile,
+                                cmds,
+                                resources,
+                                blend,
+                                text_source,
+                                underlay.clone(),
+                                clear,
+                            )?;
+                            offset += rows.len() * capture.w as usize;
+                        }
+                        crate::effects::filter_backdrop(
                             &mut backdrop,
                             cache.capture,
                             cache.style.backdrop_radius,
+                            omitted,
+                            |pixels| {
+                                if let Some((color, alpha)) = expected_tint {
+                                    blend(pixels, color, alpha);
+                                }
+                            },
                         );
-                        if let Some((tint_color, tint_alpha)) = expected_tint {
-                            blend(&mut backdrop.pixels, tint_color, tint_alpha);
-                        }
                         backdrop.clear = Some(clear);
                         backdrop.tint = expected_tint;
                     }
-                    glyphs.begin_band(band_rect);
+                    text_source.begin_band(band_rect);
                     crate::effects::composite(target, rect, cache, &group, &backdrop);
                 }
             }
@@ -314,10 +749,21 @@ fn render_range<'f, R: SceneResources + ?Sized, G: liuli_text::storage::GlyphPix
 
             PaintCmd::FillRect { rect, clip, color } => {
                 let eff = rect.intersect(clip).intersect(band_rect);
-                if !eff.is_empty() {
-                    let local = eff.translate(-band_rect.x, -band_rect.y);
-                    let _ = target.fill_solid(&local.to_eg(), color);
+                if eff.h > 1 {
+                    let used = fill_adjacent_rects(
+                        target,
+                        eff,
+                        color,
+                        &cmds.as_slice()[cursor..range.end],
+                    );
+                    if used > 0 {
+                        cursor += used;
+                        replayed += used as u32;
+                        continue;
+                    }
                 }
+                let local = eff.translate(-band_rect.x, -band_rect.y);
+                let _ = target.fill_solid(&local.to_eg(), color);
             }
             PaintCmd::StrokeRect {
                 rect,
@@ -429,6 +875,9 @@ fn render_range<'f, R: SceneResources + ?Sized, G: liuli_text::storage::GlyphPix
                 align,
                 max_lines,
                 ellipsis,
+                style,
+                letter_spacing,
+                line_spacing,
             } => {
                 let eff_clip = clip.intersect(band_rect);
                 if eff_clip.is_empty() || wrap_width == 0 {
@@ -445,62 +894,37 @@ fn render_range<'f, R: SceneResources + ?Sized, G: liuli_text::storage::GlyphPix
                     continue;
                 }
                 let s = resources.text(text);
-                let font = fonts.get(font_id);
                 let stride = target.width() as usize;
                 let fg_raw = rgb565_to_u16(color);
-
-                let mut resource_error = None;
-                visit_layout_glyphs(
-                    font,
+                let decor_pad = if style.underline() || style.strikethrough() {
+                    4
+                } else {
+                    0
+                };
+                let vis_y = Some((
+                    width_limit_clip.y - pos.y - decor_pad.max(8),
+                    (width_limit_clip.y + width_limit_clip.h as i32) - pos.y + decor_pad.max(8),
+                ));
+                let mut row_buf = [0u8; 256];
+                text_source.draw_text(
+                    target,
+                    band_rect,
+                    stride,
+                    width_limit_clip,
+                    pos,
                     s,
-                    TextLayoutOptions {
-                        max_width: wrap_width,
-                        max_lines,
-                        ellipsis,
-                        align,
-                    },
-                    |pg| {
-                        if resource_error.is_some() {
-                            return;
-                        }
-                        let gx = pos.x.saturating_add(pg.x);
-                        let gy = pos.y.saturating_add(pg.y);
-                        let gw = pg.glyph.metrics.width;
-                        let gh = pg.glyph.metrics.height;
-                        if gw == 0 || gh == 0 {
-                            return;
-                        }
-                        let g_rect = Rect::new(gx, gy, gw as u32, gh as u32);
-                        let vis = g_rect.intersect(width_limit_clip);
-                        if vis.is_empty() {
-                            return;
-                        }
-                        let data = match glyphs.pixels(font_id, pg.glyph) {
-                            Ok(bytes) => bytes,
-                            Err(e) => {
-                                resource_error = Some(e);
-                                return;
-                            }
-                        };
-                        for py in vis.y..(vis.y + vis.h as i32) {
-                            let src_y = (py - gy) as u16;
-                            let ly = (py - band_rect.y) as usize;
-                            let row_off = ly * stride;
-                            for px in vis.x..(vis.x + vis.w as i32) {
-                                let src_x = (px - gx) as u16;
-                                let cov = a4_pixel(data, gw, src_x, src_y);
-                                if cov == 0 {
-                                    continue;
-                                }
-                                let lx = (px - band_rect.x) as usize;
-                                target.blend_pixel_a4(row_off + lx, fg_raw, cov);
-                            }
-                        }
-                    },
-                );
-                if let Some(e) = resource_error {
-                    return Err(e);
-                }
+                    fg_raw,
+                    wrap_width,
+                    max_lines,
+                    ellipsis,
+                    font_id,
+                    align,
+                    style,
+                    letter_spacing,
+                    line_spacing,
+                    vis_y,
+                    &mut row_buf,
+                )?;
             }
             PaintCmd::Icon {
                 rect,
@@ -753,5 +1177,243 @@ fn draw_icon(target: &mut BandTarget<'_>, rect: Rect, clip: Rect, kind: IconKind
             draw_icon_line(target, rect, eff_clip, 7, 10, 7, 4, stroke);
             draw_icon_line(target, rect, eff_clip, 10, 10, 10, 6, stroke);
         }
+    }
+}
+
+#[inline]
+fn blit_a4_cov(
+    target: &mut BandTarget<'_>,
+    has_alpha: bool,
+    idx: usize,
+    fg_raw: u16,
+    cov: u8,
+    perceptual: bool,
+) {
+    if cov == 0 {
+        return;
+    }
+    if has_alpha {
+        target.blend_pixel_a4(idx, fg_raw, cov);
+        return;
+    }
+    let words = target.words_mut();
+    if cov == 15 {
+        words[idx] = fg_raw;
+    } else {
+        let bg = words[idx];
+        let c = if perceptual {
+            gamma_remap_a4(cov, fg_raw, bg)
+        } else {
+            cov
+        };
+        if c != 0 {
+            words[idx] = blend_rgb565_a4_u16(fg_raw, bg, c);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn blit_glyph_row(
+    target: &mut BandTarget<'_>,
+    row_off: usize,
+    band_x: i32,
+    gx: i32,
+    gw: u16,
+    vis_x0: i32,
+    vis_x1: i32,
+    row: &[u8],
+    format: GlyphFormat,
+    subpixel: SubpixelOrder,
+    fg_raw: u16,
+    perceptual: bool,
+) {
+    let has_alpha = target.has_alpha();
+    match format {
+        GlyphFormat::A4 => {
+            let mut px = vis_x0;
+            while px < vis_x1 {
+                let sx = (px - gx) as usize;
+                let lx = (px - band_x) as usize;
+                if (sx & 1) == 0 && px + 1 < vis_x1 {
+                    let b = row[sx >> 1];
+                    if b == 0 {
+                        px += 2;
+                        continue;
+                    }
+                    if b == 0xff && !has_alpha {
+                        let words = target.words_mut();
+                        words[row_off + lx] = fg_raw;
+                        words[row_off + lx + 1] = fg_raw;
+                        px += 2;
+                        continue;
+                    }
+                    blit_a4_cov(target, has_alpha, row_off + lx, fg_raw, b >> 4, perceptual);
+                    blit_a4_cov(
+                        target,
+                        has_alpha,
+                        row_off + lx + 1,
+                        fg_raw,
+                        b & 0x0f,
+                        perceptual,
+                    );
+                    px += 2;
+                } else {
+                    let b = row[sx >> 1];
+                    let cov = if (sx & 1) == 0 { b >> 4 } else { b & 0x0f };
+                    blit_a4_cov(target, has_alpha, row_off + lx, fg_raw, cov, perceptual);
+                    px += 1;
+                }
+            }
+        }
+        GlyphFormat::A1 => {
+            let mut px = vis_x0;
+            while px < vis_x1 {
+                let sx = (px - gx) as usize;
+                let lx = (px - band_x) as usize;
+                if (sx & 7) == 0 && px + 8 <= vis_x1 {
+                    let b = row[sx >> 3];
+                    if b == 0 {
+                        px += 8;
+                        continue;
+                    }
+                    if b == 0xff && !has_alpha {
+                        target.words_mut()[row_off + lx..row_off + lx + 8].fill(fg_raw);
+                        px += 8;
+                        continue;
+                    }
+                }
+                if ((row[sx >> 3] >> (7 - (sx & 7))) & 1) != 0 {
+                    blit_a4_cov(target, has_alpha, row_off + lx, fg_raw, 15, false);
+                }
+                px += 1;
+            }
+        }
+        GlyphFormat::A2 => {
+            for px in vis_x0..vis_x1 {
+                let sx = (px - gx) as u16;
+                let cov = a2_pixel(row, gw, sx, 0);
+                if cov != 0 {
+                    let lx = (px - band_x) as usize;
+                    blit_a4_cov(target, has_alpha, row_off + lx, fg_raw, cov, perceptual);
+                }
+            }
+        }
+        GlyphFormat::A8 => {
+            for px in vis_x0..vis_x1 {
+                let sx = (px - gx) as usize;
+                let a8 = row[sx];
+                if a8 == 0 {
+                    continue;
+                }
+                let lx = (px - band_x) as usize;
+                let idx = row_off + lx;
+                if has_alpha {
+                    let a4 = ((u16::from(a8) * 15 + 127) / 255) as u8;
+                    target.blend_pixel_a4(idx, fg_raw, a4);
+                } else {
+                    let words = target.words_mut();
+                    if a8 == 255 {
+                        words[idx] = fg_raw;
+                    } else {
+                        let bg = words[idx];
+                        let a = if perceptual {
+                            gamma_remap_a8(a8, fg_raw, bg)
+                        } else {
+                            a8
+                        };
+                        words[idx] = blend_rgb565_a8_u16(fg_raw, bg, a);
+                    }
+                }
+            }
+        }
+        GlyphFormat::LcdRgb => {
+            for px in vis_x0..vis_x1 {
+                let sx = (px - gx) as u16;
+                let (r, g, b) = lcd_rgb_pixel(row, gw, sx, 0);
+                if (r | g | b) == 0 {
+                    continue;
+                }
+                let lx = (px - band_x) as usize;
+                let idx = row_off + lx;
+                if has_alpha || subpixel == SubpixelOrder::None {
+                    let cov = ((u16::from(r) + u16::from(g) * 2 + u16::from(b) + 2) >> 2) as u8;
+                    blit_a4_cov(target, has_alpha, idx, fg_raw, cov, perceptual);
+                } else {
+                    let words = target.words_mut();
+                    let bg = words[idx];
+                    let (cr, cg, cb) = if perceptual {
+                        (
+                            gamma_remap_a4(r, fg_raw, bg),
+                            gamma_remap_a4(g, fg_raw, bg),
+                            gamma_remap_a4(b, fg_raw, bg),
+                        )
+                    } else {
+                        (r, g, b)
+                    };
+                    words[idx] = blend_rgb565_lcd_a4_u16(
+                        fg_raw,
+                        bg,
+                        cr,
+                        cg,
+                        cb,
+                        subpixel == SubpixelOrder::Bgr,
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn draw_h_span(
+    target: &mut BandTarget<'_>,
+    band_rect: Rect,
+    stride: usize,
+    clip: Rect,
+    x0: i32,
+    x1: i32,
+    y: i32,
+    fg_raw: u16,
+) {
+    if y < clip.y || y >= clip.y + clip.h as i32 {
+        return;
+    }
+    let sx0 = x0.max(clip.x);
+    let sx1 = x1.min(clip.x + clip.w as i32);
+    if sx0 >= sx1 {
+        return;
+    }
+    let row_off = ((y - band_rect.y) as usize) * stride;
+    let start = row_off + (sx0 - band_rect.x) as usize;
+    let len = (sx1 - sx0) as usize;
+    target.words_mut()[start..start + len].fill(fg_raw);
+    target.set_opaque_span(start, len);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_line_decor(
+    target: &mut BandTarget<'_>,
+    pos: Point,
+    clip: Rect,
+    band_rect: Rect,
+    stride: usize,
+    fg_raw: u16,
+    style: TextStyleFlags,
+    dec: LineDecor,
+) {
+    if !(style.underline() || style.strikethrough()) || dec.x_end <= dec.x_start {
+        return;
+    }
+    let x0 = pos.x.saturating_add(dec.x_start);
+    let x1 = pos.x.saturating_add(dec.x_end);
+    if style.underline() {
+        let uy = pos.y.saturating_add(dec.baseline_y).saturating_add(2);
+        draw_h_span(target, band_rect, stride, clip, x0, x1, uy, fg_raw);
+    }
+    if style.strikethrough() {
+        let sy = pos
+            .y
+            .saturating_add(dec.baseline_y)
+            .saturating_sub((i32::from(dec.ascent) * 3) / 8);
+        draw_h_span(target, band_rect, stride, clip, x0, x1, sy, fg_raw);
     }
 }

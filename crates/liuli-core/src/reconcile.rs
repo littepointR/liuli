@@ -20,6 +20,7 @@ pub struct ReconcileOutcome {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[inline(never)]
 pub fn reconcile_into(
     draft: &ViewDraft,
     active: &RetainedTree,
@@ -225,7 +226,10 @@ pub fn reconcile_into(
             || op.border_width != np.border_width
             || op.radius != np.radius
             || op.font() != np.font()
-            || op.text_align() != np.text_align();
+            || op.text_align() != np.text_align()
+            || op.wrap() != np.wrap()
+            || op.letter_spacing != np.letter_spacing
+            || op.line_spacing != np.line_spacing;
 
         let mut text_changed_measure = false;
         let old_text = active.text_str(op.text());
@@ -243,8 +247,17 @@ pub fn reconcile_into(
                 };
                 let font = np.font();
                 let align = np.text_align();
-                let new_tm =
-                    measurer.measure_text(font, new_text, wrap_w, max_lines, np.ellipsis(), align);
+                let new_tm = measurer.measure_text_styled(
+                    font,
+                    new_text,
+                    wrap_w,
+                    max_lines,
+                    np.ellipsis(),
+                    align,
+                    np.wrap(),
+                    np.letter_spacing,
+                    np.line_spacing,
+                );
                 let size_same = new_tm.size == old.text_cache.size;
                 let ink_same_or_inside = new_tm.ink == old.text_cache.rel_ink
                     || (new_tm.ink.x >= 0
@@ -292,6 +305,7 @@ pub fn reconcile_into(
             || active.effects.get(node.key) != candidate.effects.get(node.key)
             || op.focus_ring_raw != np.focus_ring_raw
             || op.press_feedback_raw != np.press_feedback_raw
+            || op.text_style() != np.text_style()
             || op.theme_id != np.theme_id
             || sparkline_changed;
 

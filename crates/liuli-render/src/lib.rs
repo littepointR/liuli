@@ -18,7 +18,7 @@ pub use dma::{
     FreeBand, InFlightBand, NoCacheOps, PollOutcome, ReadyBand, SealError, StartOutcome, TeError,
     TeGate, TeMode, TeWait,
 };
-pub use raster::{draw_eg, render_band};
+pub use raster::{draw_eg, render_band, render_band_with_provider};
 pub use spi::{RECOMMENDED_SPI_CHUNK_BYTES, SpiWindowBus, SpiWindowTarget};
-pub use sync::{present_sync, present_sync_with};
+pub use sync::{FrameError, present_sync, present_sync_with, present_sync_with_provider};
 pub use wire::{BufferTooSmall, ByteOrder, encode_rgb565};

@@ -173,12 +173,28 @@ fn run_verify(root: &Path) -> Result<(), String> {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let cmd = args.get(1).map(String::as_str).unwrap_or("verify");
+    if cmd == "inspect" {
+        let result = match args.get(2) {
+            Some(path) if args.len() == 3 => project::inspect_path(Path::new(path)).map(|s| {
+                println!("{s}");
+            }),
+            _ => Err("usage: liuli-fontpack inspect <file.lf4>".into()),
+        };
+        if let Err(err) = result {
+            eprintln!("liuli-fontpack: {err}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if args.len() > 2 {
         let result = match args.as_slice() {
             [_, op, flag, path] if flag == "--project" && (op == "pack" || op == "verify") => {
                 project::run(Path::new(path), op == "verify")
             }
-            _ => Err("usage: liuli-fontpack [pack|verify] [--project fonts.toml]".into()),
+            _ => Err(
+                "usage: liuli-fontpack [pack|verify|inspect <file.lf4>] [--project fonts.toml]"
+                    .into(),
+            ),
         };
         if let Err(err) = result {
             eprintln!("liuli-fontpack: {err}");
@@ -191,7 +207,7 @@ fn main() {
         "pack" => run_pack(&root),
         "verify" => run_verify(&root),
         other => Err(format!(
-            "unknown subcommand '{other}'; expected 'pack' or 'verify'"
+            "unknown subcommand '{other}'; expected 'pack', 'verify', or 'inspect'"
         )),
     };
     if let Err(err) = res {

@@ -317,6 +317,31 @@ impl Theme {
     }
 
     #[track_caller]
+    pub fn with_text_gamma(self, gamma: TextGamma) -> Self {
+        self.with_typography(self.typography.with_gamma(gamma))
+    }
+
+    #[track_caller]
+    pub fn with_word_wrap(self, wrap: WrapMode) -> Self {
+        self.with_typography(self.typography.with_wrap(wrap))
+    }
+
+    #[track_caller]
+    pub fn with_subpixel_order(self, subpixel: SubpixelOrder) -> Self {
+        self.with_typography(self.typography.with_subpixel(subpixel))
+    }
+
+    #[track_caller]
+    pub fn with_letter_spacing(self, letter_spacing: i8) -> Self {
+        self.with_typography(self.typography.with_letter_spacing(letter_spacing))
+    }
+
+    #[track_caller]
+    pub fn with_line_spacing(self, line_spacing: i8) -> Self {
+        self.with_typography(self.typography.with_line_spacing(line_spacing))
+    }
+
+    #[track_caller]
     pub fn with_elevations(mut self, elevations: ElevationScale) -> Self {
         if elevations != self.elevations {
             self.source = self.source.scoped_index(11);
@@ -689,6 +714,11 @@ impl Theme {
             focus_ring: self.interaction.focus,
             press_feedback: self.interaction.press_surface,
             font: self.typography.body,
+            wrap: self.typography.wrap,
+            text_gamma: self.typography.gamma,
+            subpixel: self.typography.subpixel,
+            letter_spacing: self.typography.letter_spacing,
+            line_spacing: self.typography.line_spacing,
             width: Length::Fill(1),
             height: Length::Px(self.density.control_height.into()),
             clickable: true,
@@ -896,9 +926,51 @@ impl Theme {
             style_source: self.source.declared(),
             fg: self.text,
             font: self.typography.title,
+            wrap: self.typography.wrap,
+            text_gamma: self.typography.gamma,
+            subpixel: self.typography.subpixel,
+            letter_spacing: self.typography.letter_spacing,
+            line_spacing: self.typography.line_spacing,
             align_cross: Align::Center,
             width: Length::Fill(1),
             height: Length::Px(self.density.title_height.into()),
+            ..NodeProps::new()
+        }
+    }
+
+    #[track_caller]
+    pub fn display(self) -> NodeProps {
+        NodeProps {
+            style_source: self.source.declared(),
+            fg: self.text,
+            font: self.typography.display,
+            wrap: self.typography.wrap,
+            text_gamma: self.typography.gamma,
+            subpixel: self.typography.subpixel,
+            letter_spacing: self.typography.letter_spacing,
+            line_spacing: self.typography.line_spacing,
+            align_cross: Align::Center,
+            width: Length::Fill(1),
+            height: Length::Content,
+            ..NodeProps::new()
+        }
+    }
+
+    #[track_caller]
+    pub fn paragraph(self) -> NodeProps {
+        NodeProps {
+            style_source: self.source.declared(),
+            fg: self.text,
+            font: self.typography.body,
+            wrap: WrapMode::Word,
+            text_gamma: self.typography.gamma,
+            subpixel: self.typography.subpixel,
+            letter_spacing: self.typography.letter_spacing,
+            line_spacing: self.typography.line_spacing,
+            max_lines: 0,
+            ellipsis: false,
+            width: Length::Fill(1),
+            height: Length::Content,
             ..NodeProps::new()
         }
     }
@@ -909,6 +981,11 @@ impl Theme {
             style_source: self.source.declared(),
             fg: self.text_muted,
             font: self.typography.caption,
+            wrap: self.typography.wrap,
+            text_gamma: self.typography.gamma,
+            subpixel: self.typography.subpixel,
+            letter_spacing: self.typography.letter_spacing,
+            line_spacing: self.typography.line_spacing,
             align_cross: Align::Center,
             width: Length::Fill(1),
             height: Length::Px(self.density.caption_height.into()),

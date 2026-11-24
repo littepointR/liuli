@@ -43,6 +43,8 @@ mod tests {
             match font {
                 crate::view::FontId::Body16 => 16,
                 crate::view::FontId::Small12 => 12,
+                crate::view::FontId::Title20 => 20,
+                crate::view::FontId::Display28 => 28,
             }
         }
 
@@ -58,6 +60,8 @@ mod tests {
             let cw = match font {
                 crate::view::FontId::Body16 => 8,
                 crate::view::FontId::Small12 => 6,
+                crate::view::FontId::Title20 => 10,
+                crate::view::FontId::Display28 => 14,
             };
             let lh = self.line_height(font);
             let chars = text.chars().count() as u32;

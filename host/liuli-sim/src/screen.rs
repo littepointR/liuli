@@ -9,10 +9,13 @@ use embedded_graphics::primitives::{
 };
 use embedded_graphics::{Drawable, Pixel};
 use liuli::core::paint::{CommandList, PaintCmd, SceneResources};
-use liuli::prelude::{IconKind, Point, Rect};
+use liuli::prelude::{IconKind, Point, Rect, SubpixelOrder, TextGamma, TextStyleFlags};
 use liuli::text::{
-    FontSet, TextLayoutOptions, a4_pixel, blend_over_rgb565_a4, blend_rgb565_a4,
-    blend_rgb565_a4_u16, visit_layout_glyphs,
+    FontProvider, FontSet, GlyphEncoding, GlyphFormat, LineDecor, ProviderLayoutStyle,
+    TextLayoutOptions, TextLayoutStyle, a2_pixel, blend_over_rgb565_a4, blend_rgb565_a4,
+    blend_rgb565_a4_u16, blend_rgb565_a8_u16, blend_rgb565_lcd_a4_u16, decode_rle_rows,
+    gamma_remap_a4, gamma_remap_a8, lcd_rgb_pixel, visit_layout_glyphs_provider,
+    visit_layout_glyphs_styled,
 };
 
 use crate::image::{encode_png_rgb8, encode_ppm, rgb565_to_rgb8};
@@ -219,17 +222,313 @@ pub fn render_reference_fullscreen(
     resources: &impl SceneResources,
     fonts: &FontSet<'_>,
 ) -> MemoryScreen {
-    reference_range_with_alpha(cmds, resources, fonts, 0..cmds.count, cmds.root_bg, false)
+    match reference_range_with_source(
+        cmds,
+        resources,
+        &SimLegacySource(fonts),
+        0..cmds.count,
+        cmds.root_bg,
+        false,
+    ) {
+        Ok(screen) => screen,
+        Err(never) => match never {},
+    }
 }
 
-fn reference_range_with_alpha(
+pub fn render_reference_fullscreen_with_provider<F: FontProvider>(
     cmds: &CommandList,
     resources: &impl SceneResources,
-    fonts: &FontSet<'_>,
+    fonts: &F,
+) -> Result<MemoryScreen, F::Error> {
+    fonts.begin_frame();
+    reference_range_with_source(
+        cmds,
+        resources,
+        &SimProviderSource(fonts),
+        0..cmds.count,
+        cmds.root_bg,
+        false,
+    )
+}
+
+trait SimTextSource {
+    type Error;
+    #[allow(clippy::too_many_arguments)]
+    fn draw_text(
+        &self,
+        screen: &mut MemoryScreen,
+        stride: usize,
+        width_limit_clip: Rect,
+        pos: Point,
+        s: &str,
+        text_raw: u16,
+        wrap_width: u32,
+        max_lines: u8,
+        ellipsis: bool,
+        font_id: liuli::prelude::FontId,
+        align: liuli::prelude::TextAlign,
+        style: TextStyleFlags,
+        letter_spacing: i8,
+        line_spacing: i8,
+        vis_y: Option<(i32, i32)>,
+        row_buf: &mut [u8],
+    ) -> Result<(), Self::Error>;
+}
+
+struct SimLegacySource<'a, 'f>(&'a FontSet<'f>);
+impl SimTextSource for SimLegacySource<'_, '_> {
+    type Error = core::convert::Infallible;
+
+    fn draw_text(
+        &self,
+        screen: &mut MemoryScreen,
+        stride: usize,
+        width_limit_clip: Rect,
+        pos: Point,
+        s: &str,
+        text_raw: u16,
+        wrap_width: u32,
+        max_lines: u8,
+        ellipsis: bool,
+        font_id: liuli::prelude::FontId,
+        align: liuli::prelude::TextAlign,
+        style: TextStyleFlags,
+        letter_spacing: i8,
+        line_spacing: i8,
+        vis_y: Option<(i32, i32)>,
+        row_buf: &mut [u8],
+    ) -> Result<(), Self::Error> {
+        let font = self.0.get(font_id);
+        let perceptual = style.gamma() == TextGamma::Perceptual;
+        let subpixel = style.subpixel();
+        let mut decors = Vec::new();
+        visit_layout_glyphs_styled(
+            font,
+            s,
+            TextLayoutOptions {
+                max_width: wrap_width,
+                max_lines,
+                ellipsis,
+                align,
+            },
+            TextLayoutStyle {
+                wrap: style.wrap(),
+                letter_spacing,
+                line_spacing,
+                fallback: self.0.fallback(),
+                vis_y,
+            },
+            |pg| {
+                let gx = pos.x + pg.x;
+                let gy = pos.y + pg.y;
+                let gw = pg.glyph.metrics.width;
+                let gh = pg.glyph.metrics.height;
+                if gw == 0 || gh == 0 {
+                    return;
+                }
+                let g_rect = Rect::new(gx, gy, gw as u32, gh as u32);
+                let vis = g_rect.intersect(width_limit_clip);
+                if vis.is_empty() {
+                    return;
+                }
+                blit_sim_decoded_glyph(
+                    screen,
+                    stride,
+                    vis,
+                    gx,
+                    gy,
+                    gw,
+                    gh,
+                    pg.phase,
+                    pg.format,
+                    pg.encoding,
+                    subpixel,
+                    text_raw,
+                    perceptual,
+                    row_buf,
+                    pg.glyph.data,
+                );
+            },
+            |dec| decors.push(dec),
+        );
+        for dec in decors {
+            draw_sim_line_decor(screen, pos, width_limit_clip, stride, text_raw, style, dec);
+        }
+        Ok(())
+    }
+}
+
+struct SimProviderSource<'a, F>(&'a F);
+impl<F: FontProvider> SimTextSource for SimProviderSource<'_, F> {
+    type Error = F::Error;
+
+    fn draw_text(
+        &self,
+        screen: &mut MemoryScreen,
+        stride: usize,
+        width_limit_clip: Rect,
+        pos: Point,
+        s: &str,
+        text_raw: u16,
+        wrap_width: u32,
+        max_lines: u8,
+        ellipsis: bool,
+        font_id: liuli::prelude::FontId,
+        align: liuli::prelude::TextAlign,
+        style: TextStyleFlags,
+        letter_spacing: i8,
+        line_spacing: i8,
+        vis_y: Option<(i32, i32)>,
+        row_buf: &mut [u8],
+    ) -> Result<(), Self::Error> {
+        let perceptual = style.gamma() == TextGamma::Perceptual;
+        let subpixel = style.subpixel();
+        let mut decors = Vec::new();
+        let mut fetch_err = None;
+        visit_layout_glyphs_provider(
+            self.0,
+            font_id,
+            s,
+            TextLayoutOptions {
+                max_width: wrap_width,
+                max_lines,
+                ellipsis,
+                align,
+            },
+            ProviderLayoutStyle {
+                wrap: style.wrap(),
+                letter_spacing,
+                line_spacing,
+                vis_y,
+            },
+            |pg| {
+                if fetch_err.is_some() {
+                    return;
+                }
+                let gx = pos.x + pg.x;
+                let gy = pos.y + pg.y;
+                let gw = pg.metrics.width;
+                let gh = pg.metrics.height;
+                if gw == 0 || gh == 0 {
+                    return;
+                }
+                let g_rect = Rect::new(gx, gy, gw as u32, gh as u32);
+                let vis = g_rect.intersect(width_limit_clip);
+                if vis.is_empty() {
+                    return;
+                }
+                if let Err(e) =
+                    self.0
+                        .with_glyph_bytes(font_id, pg.from_fallback, pg.metrics, |data, enc| {
+                            blit_sim_decoded_glyph(
+                                screen, stride, vis, gx, gy, gw, gh, pg.phase, pg.format, enc,
+                                subpixel, text_raw, perceptual, row_buf, data,
+                            );
+                        })
+                {
+                    fetch_err = Some(e);
+                }
+            },
+            |dec| decors.push(dec),
+        )?;
+        if let Some(e) = fetch_err {
+            return Err(e);
+        }
+        for dec in decors {
+            draw_sim_line_decor(screen, pos, width_limit_clip, stride, text_raw, style, dec);
+        }
+        Ok(())
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn blit_sim_decoded_glyph(
+    screen: &mut MemoryScreen,
+    stride: usize,
+    vis: Rect,
+    gx: i32,
+    gy: i32,
+    gw: u16,
+    gh: u16,
+    phase: u8,
+    format: GlyphFormat,
+    encoding: GlyphEncoding,
+    subpixel: SubpixelOrder,
+    text_raw: u16,
+    perceptual: bool,
+    row_buf: &mut [u8],
+    data: &[u8],
+) {
+    let row_bytes = format.row_bytes(gw);
+    let vis_x0 = vis.x;
+    let vis_x1 = vis.x + vis.w as i32;
+    match encoding {
+        GlyphEncoding::Raw => {
+            let phase_off = usize::from(phase) * usize::from(gh) * row_bytes;
+            for py in vis.y..(vis.y + vis.h as i32) {
+                let sy = (py - gy) as usize;
+                let rstart = phase_off + sy * row_bytes;
+                let Some(row) = data.get(rstart..rstart + row_bytes) else {
+                    break;
+                };
+                blit_sim_glyph_row(
+                    screen,
+                    (py as usize) * stride,
+                    gx,
+                    gw,
+                    vis_x0,
+                    vis_x1,
+                    row,
+                    format,
+                    subpixel,
+                    text_raw,
+                    perceptual,
+                );
+            }
+        }
+        GlyphEncoding::Rle => {
+            if row_bytes > row_buf.len() {
+                return;
+            }
+            let phase_start_row = usize::from(phase) * usize::from(gh);
+            let total_rows = phase_start_row + usize::from(gh);
+            let skip_rows = phase_start_row + (vis.y - gy) as usize;
+            let _ = decode_rle_rows(
+                data,
+                row_bytes,
+                total_rows,
+                skip_rows,
+                vis.h as usize,
+                &mut row_buf[..row_bytes],
+                |row_idx, row| {
+                    let py = gy + (row_idx - phase_start_row) as i32;
+                    blit_sim_glyph_row(
+                        screen,
+                        (py as usize) * stride,
+                        gx,
+                        gw,
+                        vis_x0,
+                        vis_x1,
+                        row,
+                        format,
+                        subpixel,
+                        text_raw,
+                        perceptual,
+                    );
+                },
+            );
+        }
+    }
+}
+
+fn reference_range_with_source<S: SimTextSource>(
+    cmds: &CommandList,
+    resources: &impl SceneResources,
+    text_source: &S,
     range: std::ops::Range<usize>,
     clear: Rgb565,
     with_alpha: bool,
-) -> MemoryScreen {
+) -> Result<MemoryScreen, S::Error> {
     let mut screen = if with_alpha {
         MemoryScreen::new_with_alpha(cmds.screen.w, cmds.screen.h)
     } else {
@@ -302,26 +601,28 @@ fn reference_range_with_alpha(
                 if style.opacity == 0 || matches!(style.projection.0, 64 | 192) {
                     continue;
                 }
-                let group = reference_range_with_alpha(
+                let group = reference_range_with_source(
                     cmds,
                     resources,
-                    fonts,
+                    text_source,
                     content,
                     Rgb565::new(0, 0, 0),
                     true,
-                );
+                )?;
                 let backdrop_end = cmds.group_backdrop_end(index).unwrap_or(group_cmd_idx);
-                let mut blurred = (style.backdrop_radius > 0).then(|| {
-                    let bg_raw = reference_range_with_alpha(
-                        cmds,
-                        resources,
-                        fonts,
-                        range.start..backdrop_end.max(range.start),
-                        clear,
-                        false,
-                    );
-                    reference_blur(&bg_raw, style.backdrop_radius)
-                });
+                let mut blurred = (style.backdrop_radius > 0)
+                    .then(|| -> Result<MemoryScreen, S::Error> {
+                        let bg_raw = reference_range_with_source(
+                            cmds,
+                            resources,
+                            text_source,
+                            range.start..backdrop_end.max(range.start),
+                            clear,
+                            false,
+                        )?;
+                        Ok(reference_blur(&bg_raw, style.backdrop_radius))
+                    })
+                    .transpose()?;
                 let rgb = liuli::core::geometry::u16_to_rgb565;
                 if let Some(ref mut b) = blurred
                     && style.tint_alpha > 0
@@ -512,6 +813,9 @@ fn reference_range_with_alpha(
                 align,
                 max_lines,
                 ellipsis,
+                style,
+                letter_spacing,
+                line_spacing,
             } => {
                 let eff_clip = clip.intersect(full);
                 if eff_clip.is_empty() || wrap_width == 0 {
@@ -528,41 +832,35 @@ fn reference_range_with_alpha(
                     continue;
                 }
                 let s = resources.text(text);
-                let font = fonts.get(font_id);
                 let text_raw = color.into_storage();
-                visit_layout_glyphs(
-                    font,
+                let decor_pad = if style.underline() || style.strikethrough() {
+                    4
+                } else {
+                    0
+                };
+                let vis_y = Some((
+                    width_limit_clip.y - pos.y - decor_pad,
+                    (width_limit_clip.y + width_limit_clip.h as i32) - pos.y + decor_pad,
+                ));
+                let mut row_buf = [0u8; 256];
+                text_source.draw_text(
+                    &mut screen,
+                    stride,
+                    width_limit_clip,
+                    pos,
                     s,
-                    TextLayoutOptions {
-                        max_width: wrap_width,
-                        max_lines,
-                        ellipsis,
-                        align,
-                    },
-                    |pg| {
-                        let gx = pos.x + pg.x;
-                        let gy = pos.y + pg.y;
-                        let gw = pg.glyph.metrics.width;
-                        let gh = pg.glyph.metrics.height;
-                        if gw == 0 || gh == 0 {
-                            return;
-                        }
-                        let g_rect = Rect::new(gx, gy, gw as u32, gh as u32);
-                        let vis = g_rect.intersect(width_limit_clip);
-                        for py in vis.y..(vis.y + vis.h as i32) {
-                            let sy = (py - gy) as u16;
-                            let row = (py as usize) * stride;
-                            for px in vis.x..(vis.x + vis.w as i32) {
-                                let sx = (px - gx) as u16;
-                                let cov = a4_pixel(pg.glyph.data, gw, sx, sy);
-                                if cov == 0 {
-                                    continue;
-                                }
-                                screen.blend_pixel_a4(row + px as usize, text_raw, cov);
-                            }
-                        }
-                    },
-                );
+                    text_raw,
+                    wrap_width,
+                    max_lines,
+                    ellipsis,
+                    font_id,
+                    align,
+                    style,
+                    letter_spacing,
+                    line_spacing,
+                    vis_y,
+                    &mut row_buf,
+                )?;
             }
             PaintCmd::Icon {
                 rect,
@@ -757,7 +1055,7 @@ fn reference_range_with_alpha(
         }
     }
 
-    screen
+    Ok(screen)
 }
 
 fn rounded_rect_threshold(r: u32) -> i32 {
@@ -812,4 +1110,179 @@ fn reference_blur(screen: &MemoryScreen, r: u8) -> MemoryScreen {
         }
     }
     image
+}
+
+#[inline]
+fn blit_sim_a4_cov(screen: &mut MemoryScreen, idx: usize, fg_raw: u16, cov: u8, perceptual: bool) {
+    if cov == 0 {
+        return;
+    }
+    if screen.alpha.is_some() {
+        screen.blend_pixel_a4(idx, fg_raw, cov);
+        return;
+    }
+    if cov == 15 {
+        screen.pixels[idx] = fg_raw;
+    } else {
+        let bg = screen.pixels[idx];
+        let c = if perceptual {
+            gamma_remap_a4(cov, fg_raw, bg)
+        } else {
+            cov
+        };
+        if c != 0 {
+            screen.pixels[idx] = blend_rgb565_a4_u16(fg_raw, bg, c);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn blit_sim_glyph_row(
+    screen: &mut MemoryScreen,
+    row_off: usize,
+    gx: i32,
+    gw: u16,
+    vis_x0: i32,
+    vis_x1: i32,
+    row: &[u8],
+    format: GlyphFormat,
+    subpixel: SubpixelOrder,
+    fg_raw: u16,
+    perceptual: bool,
+) {
+    let has_alpha = screen.alpha.is_some();
+    match format {
+        GlyphFormat::A4 => {
+            for px in vis_x0..vis_x1 {
+                let sx = (px - gx) as usize;
+                let b = row[sx >> 1];
+                let cov = if (sx & 1) == 0 { b >> 4 } else { b & 0x0f };
+                blit_sim_a4_cov(screen, row_off + px as usize, fg_raw, cov, perceptual);
+            }
+        }
+        GlyphFormat::A1 => {
+            for px in vis_x0..vis_x1 {
+                let sx = (px - gx) as usize;
+                if ((row[sx >> 3] >> (7 - (sx & 7))) & 1) != 0 {
+                    blit_sim_a4_cov(screen, row_off + px as usize, fg_raw, 15, false);
+                }
+            }
+        }
+        GlyphFormat::A2 => {
+            for px in vis_x0..vis_x1 {
+                let sx = (px - gx) as u16;
+                let cov = a2_pixel(row, gw, sx, 0);
+                if cov != 0 {
+                    blit_sim_a4_cov(screen, row_off + px as usize, fg_raw, cov, perceptual);
+                }
+            }
+        }
+        GlyphFormat::A8 => {
+            for px in vis_x0..vis_x1 {
+                let sx = (px - gx) as usize;
+                let a8 = row[sx];
+                if a8 == 0 {
+                    continue;
+                }
+                let idx = row_off + px as usize;
+                if has_alpha {
+                    let a4 = ((u16::from(a8) * 15 + 127) / 255) as u8;
+                    screen.blend_pixel_a4(idx, fg_raw, a4);
+                } else if a8 == 255 {
+                    screen.pixels[idx] = fg_raw;
+                } else {
+                    let bg = screen.pixels[idx];
+                    let a = if perceptual {
+                        gamma_remap_a8(a8, fg_raw, bg)
+                    } else {
+                        a8
+                    };
+                    screen.pixels[idx] = blend_rgb565_a8_u16(fg_raw, bg, a);
+                }
+            }
+        }
+        GlyphFormat::LcdRgb => {
+            for px in vis_x0..vis_x1 {
+                let sx = (px - gx) as u16;
+                let (r, g, b) = lcd_rgb_pixel(row, gw, sx, 0);
+                if (r | g | b) == 0 {
+                    continue;
+                }
+                let idx = row_off + px as usize;
+                if has_alpha || subpixel == SubpixelOrder::None {
+                    let cov = ((u16::from(r) + u16::from(g) * 2 + u16::from(b) + 2) >> 2) as u8;
+                    blit_sim_a4_cov(screen, idx, fg_raw, cov, perceptual);
+                } else {
+                    let bg = screen.pixels[idx];
+                    let (cr, cg, cb) = if perceptual {
+                        (
+                            gamma_remap_a4(r, fg_raw, bg),
+                            gamma_remap_a4(g, fg_raw, bg),
+                            gamma_remap_a4(b, fg_raw, bg),
+                        )
+                    } else {
+                        (r, g, b)
+                    };
+                    screen.pixels[idx] = blend_rgb565_lcd_a4_u16(
+                        fg_raw,
+                        bg,
+                        cr,
+                        cg,
+                        cb,
+                        subpixel == SubpixelOrder::Bgr,
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn draw_sim_h_span(
+    screen: &mut MemoryScreen,
+    stride: usize,
+    clip: Rect,
+    x0: i32,
+    x1: i32,
+    y: i32,
+    fg_raw: u16,
+) {
+    if y < clip.y || y >= clip.y + clip.h as i32 {
+        return;
+    }
+    let sx0 = x0.max(clip.x);
+    let sx1 = x1.min(clip.x + clip.w as i32);
+    if sx0 >= sx1 {
+        return;
+    }
+    let row_off = (y as usize) * stride;
+    for x in sx0..sx1 {
+        screen.put_opaque(row_off + x as usize, fg_raw);
+    }
+}
+
+fn draw_sim_line_decor(
+    screen: &mut MemoryScreen,
+    pos: Point,
+    clip: Rect,
+    stride: usize,
+    fg_raw: u16,
+    style: TextStyleFlags,
+    dec: LineDecor,
+) {
+    if !(style.underline() || style.strikethrough()) || dec.x_end <= dec.x_start {
+        return;
+    }
+    let x0 = pos.x.saturating_add(dec.x_start);
+    let x1 = pos.x.saturating_add(dec.x_end);
+    if style.underline() {
+        let uy = pos.y.saturating_add(dec.baseline_y).saturating_add(2);
+        draw_sim_h_span(screen, stride, clip, x0, x1, uy, fg_raw);
+    }
+    if style.strikethrough() {
+        let sy = pos
+            .y
+            .saturating_add(dec.baseline_y)
+            .saturating_sub((i32::from(dec.ascent) * 3) / 8);
+        draw_sim_h_span(screen, stride, clip, x0, x1, sy, fg_raw);
+    }
 }

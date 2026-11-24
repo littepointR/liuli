@@ -6,7 +6,6 @@ use liuli_core::time::InstantMs;
 use liuli_text::FontSet;
 
 use crate::band::BandTarget;
-use crate::raster::render_band;
 
 pub const CACHE_LINE_BYTES: usize = 32;
 
@@ -607,8 +606,31 @@ impl<'a> DmaCoordinator<'a> {
         S: DmaSink<'a>,
         R: SceneResources + ?Sized,
     {
+        self.step_with_provider(sink, cmds, live_damage, resources, fonts)
+            .map_err(|err| match err {
+                crate::sync::FrameError::Display(e) => e,
+                crate::sync::FrameError::ShortGlyph { needed, actual } => {
+                    PresentError::ShortGlyph { needed, actual }
+                }
+                crate::sync::FrameError::Font(never) => match never {},
+            })
+    }
+
+    pub fn step_with_provider<S, R, F>(
+        &mut self,
+        sink: &mut S,
+        cmds: &CommandList,
+        live_damage: &mut DamageSet,
+        resources: &R,
+        fonts: &F,
+    ) -> Result<(PresentStatus, FrameMetrics), crate::sync::FrameError<S::Error, F::Error>>
+    where
+        S: DmaSink<'a>,
+        R: SceneResources + ?Sized,
+        F: liuli_text::FontProvider,
+    {
         if self.faulted {
-            return Err(PresentError::DmaFaulted);
+            return Err(PresentError::DmaFaulted.into());
         }
 
         // 1. Poll in-flight completion if any.
@@ -626,7 +648,7 @@ impl<'a> DmaCoordinator<'a> {
                             self.in_flight = None;
                             self.abort_keep_damage(live_damage);
                             self.faulted = true;
-                            return Err(PresentError::DmaFaulted);
+                            return Err(PresentError::DmaFaulted.into());
                         }
                         self.in_flight = None;
                         self.slots[exp_slot as usize] = Some(band);
@@ -648,13 +670,13 @@ impl<'a> DmaCoordinator<'a> {
                         if let Some(free) = band {
                             if free.slot() != exp_slot {
                                 self.faulted = true;
-                                return Err(PresentError::DmaFaulted);
+                                return Err(PresentError::DmaFaulted.into());
                             }
                             self.slots[exp_slot as usize] = Some(free);
-                            return Err(PresentError::Target(error));
+                            return Err(PresentError::Target(error).into());
                         } else {
                             self.faulted = true;
-                            return Err(PresentError::DmaFaulted);
+                            return Err(PresentError::DmaFaulted.into());
                         }
                     }
                 }
@@ -687,7 +709,7 @@ impl<'a> DmaCoordinator<'a> {
                     let s = free.slot() as usize;
                     self.slots[s] = Some(free);
                     self.abort_keep_damage(live_damage);
-                    return Err(PresentError::Target(err));
+                    return Err(PresentError::Target(err).into());
                 }
             }
         }
@@ -712,13 +734,26 @@ impl<'a> DmaCoordinator<'a> {
                     Err(e) => {
                         self.slots[free_idx] = Some(free);
                         self.abort_keep_damage(live_damage);
-                        return Err(e);
+                        return Err(e.into());
                     }
                 };
-                self.metrics.commands_replayed = self
-                    .metrics
-                    .commands_replayed
-                    .saturating_add(render_band(&mut target, cmds, resources, fonts));
+                match crate::raster::render_band_with_provider(
+                    &mut target,
+                    cmds,
+                    resources,
+                    fonts,
+                    crate::raster::blend_solid,
+                ) {
+                    Ok(replayed) => {
+                        self.metrics.commands_replayed =
+                            self.metrics.commands_replayed.saturating_add(replayed);
+                    }
+                    Err(err) => {
+                        self.slots[free_idx] = Some(free);
+                        self.abort_keep_damage(live_damage);
+                        return Err(crate::sync::FrameError::Font(err));
+                    }
+                }
             }
             let seq = self.next_seq;
             self.next_seq += 1;
@@ -726,7 +761,7 @@ impl<'a> DmaCoordinator<'a> {
                 Ok(r) => r,
                 Err(_) => {
                     self.abort_keep_damage(live_damage);
-                    return Err(PresentError::BufferTooSmall);
+                    return Err(PresentError::BufferTooSmall.into());
                 }
             };
 
@@ -750,7 +785,7 @@ impl<'a> DmaCoordinator<'a> {
                         let s = free.slot() as usize;
                         self.slots[s] = Some(free);
                         self.abort_keep_damage(live_damage);
-                        return Err(PresentError::Target(err));
+                        return Err(PresentError::Target(err).into());
                     }
                 }
             } else {

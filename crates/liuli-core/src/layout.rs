@@ -69,6 +69,22 @@ pub trait TextMeasurer {
         ellipsis: bool,
         align: TextAlign,
     ) -> TextMeasureOut;
+
+    #[allow(clippy::too_many_arguments)]
+    fn measure_text_styled(
+        &self,
+        font: FontId,
+        text: &str,
+        max_width: u32,
+        max_lines: u8,
+        ellipsis: bool,
+        align: TextAlign,
+        _wrap: crate::view::WrapMode,
+        _letter_spacing: i8,
+        _line_spacing: i8,
+    ) -> TextMeasureOut {
+        self.measure_text(font, text, max_width, max_lines, ellipsis, align)
+    }
 }
 
 pub fn layout_tree(
@@ -175,6 +191,9 @@ fn measure_leaf(
     };
     let max_lines = n.props.max_lines;
     let ellipsis = n.props.ellipsis();
+    let wrap = n.props.wrap();
+    let letter_spacing = n.props.letter_spacing;
+    let line_spacing = n.props.line_spacing;
     let icon = n.props.icon;
 
     match kind {
@@ -182,8 +201,17 @@ fn measure_leaf(
             let avail_w = resolve_axis_max(width_prop, c.max_w);
             let wrap_w = avail_w.saturating_sub(pad_w);
             let text_str = tree.text_str(text_ref);
-            let tm =
-                measurer.measure_text(font, text_str, wrap_w, max_lines, ellipsis, measure_align);
+            let tm = measurer.measure_text_styled(
+                font,
+                text_str,
+                wrap_w,
+                max_lines,
+                ellipsis,
+                measure_align,
+                wrap,
+                letter_spacing,
+                line_spacing,
+            );
             tree.nodes[slot as usize].text_cache = TextCache {
                 wrap_width: wrap_w,
                 size: tm.size,
@@ -210,13 +238,16 @@ fn measure_leaf(
             let wrap_w = avail_w.saturating_sub(pad_w + icon_space);
             let eff_max_lines = max_lines.max(1);
             let text_str = tree.text_str(text_ref);
-            let tm = measurer.measure_text(
+            let tm = measurer.measure_text_styled(
                 font,
                 text_str,
                 wrap_w,
                 eff_max_lines,
                 ellipsis,
                 measure_align,
+                wrap,
+                letter_spacing,
+                line_spacing,
             );
             tree.nodes[slot as usize].text_cache = TextCache {
                 wrap_width: wrap_w,
@@ -305,6 +336,7 @@ impl MeasureFrame {
     };
 }
 
+#[inline(never)]
 fn measure_iterative(
     tree: &mut RetainedTree,
     root: u16,
@@ -927,6 +959,7 @@ impl ArrangeDepthFrame {
     };
 }
 
+#[inline(never)]
 fn arrange_iterative(
     tree: &mut RetainedTree,
     start_slot: u16,

@@ -41,8 +41,8 @@ pub mod prelude {
     pub use liuli_core::view::StoredProps;
     pub use liuli_core::view::{
         Align, App, Change, Children, EdgeInsets, FocusRingStyle, FontId, IconKind, Key, Length,
-        NodeKind, NodeProps, PageRestore, PressFeedback, SampleRing, TextAlign, TextRef,
-        ViewBuilder,
+        NodeKind, NodeProps, PageRestore, PressFeedback, SampleRing, SubpixelOrder, TextAlign,
+        TextGamma, TextRef, TextStyleFlags, ViewBuilder, WrapMode,
     };
     pub use liuli_render::{
         AlignedBand, BandSlot, BufferTooSmall, ByteOrder, CACHE_LINE_BYTES, DmaCacheOps,
@@ -50,7 +50,10 @@ pub mod prelude {
         RECOMMENDED_SPI_CHUNK_BYTES, ReadyBand, SpiWindowBus, SpiWindowTarget, StartOutcome,
         TeError, TeGate, TeMode, TeWait, encode_rgb565,
     };
-    pub use liuli_text::{FontSet, Lf4Font};
+    pub use liuli_text::{
+        BlockCache, FontCacheStats, FontFace, FontProvider, FontSet, FontSlot, GlyphPoolCache,
+        HybridFontSet, Lf4Font, MetricsCache, SparseIndex, StreamingFont,
+    };
 
     pub use crate::{Engine, Storage};
 }

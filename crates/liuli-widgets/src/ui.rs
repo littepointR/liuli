@@ -266,6 +266,28 @@ impl<'a, 'b, 'p> ThemedUi<'a, 'b, 'p> {
     }
 
     #[track_caller]
+    pub fn display(&mut self, key: Key, text: TextRef) -> Result<(), BuildError> {
+        self.ui.label(
+            key,
+            NodeProps {
+                text,
+                ..self.theme.display()
+            },
+        )
+    }
+
+    #[track_caller]
+    pub fn paragraph(&mut self, key: Key, text: TextRef) -> Result<(), BuildError> {
+        self.ui.label(
+            key,
+            NodeProps {
+                text,
+                ..self.theme.paragraph()
+            },
+        )
+    }
+
+    #[track_caller]
     pub fn caption(&mut self, key: Key, text: TextRef) -> Result<(), BuildError> {
         self.ui.label(
             key,
@@ -310,6 +332,11 @@ impl<'a, 'b, 'p> ThemedUi<'a, 'b, 'p> {
                     text: label,
                     fg: t.text,
                     font: t.font,
+                    wrap: t.typography.wrap,
+                    text_gamma: t.typography.gamma,
+                    subpixel: t.typography.subpixel,
+                    letter_spacing: t.typography.letter_spacing,
+                    line_spacing: t.typography.line_spacing,
                     align_cross: Align::Center,
                     width: Length::Fill(1),
                     height: Length::Content,

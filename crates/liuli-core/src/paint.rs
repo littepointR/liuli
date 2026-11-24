@@ -4,7 +4,7 @@ use crate::node::RetainedTree;
 use crate::time::{ANIM_SCALE, AnimPool, AnimProp};
 use crate::view::{
     Align, BUTTON_ICON_GAP, BUTTON_ICON_SIZE, BUTTON_ICON_SPAN, FontId, IconKind, NodeKind,
-    SlotLink, TextAlign,
+    SlotLink, TextAlign, TextStyleFlags,
 };
 
 #[repr(transparent)]
@@ -78,6 +78,9 @@ pub enum PaintCmd {
         align: TextAlign,
         max_lines: u8,
         ellipsis: bool,
+        style: TextStyleFlags,
+        letter_spacing: i8,
+        line_spacing: i8,
     } = 4,
     Overlay {
         rect: Rect,
@@ -120,6 +123,38 @@ impl PaintCmd {
         font: FontId,
         align: TextAlign,
     ) -> Self {
+        Self::text_styled(
+            pos,
+            clip,
+            text,
+            color,
+            wrap_width,
+            max_lines,
+            ellipsis,
+            font,
+            align,
+            TextStyleFlags::DEFAULT,
+            0,
+            0,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[inline]
+    pub const fn text_styled(
+        pos: Point,
+        clip: Rect,
+        text: TextId,
+        color: Rgb565,
+        wrap_width: u32,
+        max_lines: u8,
+        ellipsis: bool,
+        font: FontId,
+        align: TextAlign,
+        style: TextStyleFlags,
+        letter_spacing: i8,
+        line_spacing: i8,
+    ) -> Self {
         Self::Text {
             pos,
             clip,
@@ -130,6 +165,9 @@ impl PaintCmd {
             align,
             max_lines,
             ellipsis,
+            style,
+            letter_spacing,
+            line_spacing,
         }
     }
 
@@ -581,6 +619,7 @@ pub fn emit_commands_with(
                         let mut text_y = inner.y;
                         let align = node.props.text_align();
                         let font = node.props.font();
+                        let text_style = node.props.text_style();
                         let mut text_clip = clip;
                         if node.text_cache.valid {
                             let text_size = node.text_cache.size;
@@ -596,12 +635,20 @@ pub fn emit_commands_with(
                                 && (align == TextAlign::Start
                                     || node.text_cache.wrap_width == inner.w)
                             {
-                                text_clip = clip
-                                    .intersect(node.text_cache.rel_ink.translate(text_x, text_y));
+                                let mut rel_ink = node.text_cache.rel_ink;
+                                if text_style.underline() || text_style.strikethrough() {
+                                    rel_ink = rel_ink.union(Rect::new(
+                                        0,
+                                        0,
+                                        text_size.width.max(1),
+                                        text_size.height.saturating_add(3),
+                                    ));
+                                }
+                                text_clip = clip.intersect(rel_ink.translate(text_x, text_y));
                             }
                         }
                         if !text_clip.is_empty() {
-                            out.push(PaintCmd::text(
+                            out.push(PaintCmd::text_styled(
                                 Point::new(text_x, text_y),
                                 text_clip,
                                 TextId(frame.slot),
@@ -611,6 +658,9 @@ pub fn emit_commands_with(
                                 node.props.ellipsis(),
                                 font,
                                 align,
+                                text_style,
+                                node.props.letter_spacing,
+                                node.props.line_spacing,
                             ))?;
                         }
                     }
@@ -740,17 +790,27 @@ pub fn emit_commands_with(
                             text_x = inner.x + icon_span as i32;
                             cmd_align = align;
                         }
+                        let text_style = node.props.text_style();
                         let text_clip = if node.text_cache.valid
                             && node.text_cache.align == cmd_align
                             && (cmd_align == TextAlign::Start
                                 || node.text_cache.wrap_width == wrap_w)
                         {
-                            clip.intersect(node.text_cache.rel_ink.translate(text_x, text_y))
+                            let mut rel_ink = node.text_cache.rel_ink;
+                            if text_style.underline() || text_style.strikethrough() {
+                                rel_ink = rel_ink.union(Rect::new(
+                                    0,
+                                    0,
+                                    node.text_cache.size.width.max(1),
+                                    node.text_cache.size.height.saturating_add(3),
+                                ));
+                            }
+                            clip.intersect(rel_ink.translate(text_x, text_y))
                         } else {
                             clip
                         };
                         if !text_clip.is_empty() {
-                            out.push(PaintCmd::text(
+                            out.push(PaintCmd::text_styled(
                                 Point::new(text_x, text_y),
                                 text_clip,
                                 TextId(frame.slot),
@@ -760,6 +820,9 @@ pub fn emit_commands_with(
                                 node.props.ellipsis(),
                                 font,
                                 cmd_align,
+                                text_style,
+                                node.props.letter_spacing,
+                                node.props.line_spacing,
                             ))?;
                         }
                     }

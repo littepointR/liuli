@@ -326,3 +326,226 @@ fn text_align_center_end_crlf_negative_bearing_ellipsis_overwide_and_font_set() 
     );
     assert_eq!(wide_end, vec![0]);
 }
+
+#[allow(clippy::too_many_arguments)]
+fn build_synthetic_lf4_v2(
+    format: liuli_text::GlyphFormat,
+    encoding: liuli_text::GlyphEncoding,
+    compact: bool,
+    phases: u8,
+    advance_q2: bool,
+    kern_pairs: &[(char, char, i16)],
+    glyphs: &[(char, u16, i16, i16, u16, u16, &[u8])],
+) -> Vec<u8> {
+    let count = glyphs.len() as u16;
+    let fallback_idx = glyphs
+        .iter()
+        .position(|g| g.0 == '□')
+        .expect("needs U+25A1") as u16;
+    let kern_offset = if kern_pairs.is_empty() { 0u32 } else { 32u32 };
+    let table_offset = 32u32
+        + if kern_pairs.is_empty() {
+            0
+        } else {
+            4 + (kern_pairs.len() as u32) * 12
+        };
+    let entry_size = if compact { 12u32 } else { 20u32 };
+    let bitmap_offset = table_offset + (count as u32) * entry_size;
+
+    let mut kern_bytes = Vec::new();
+    if !kern_pairs.is_empty() {
+        kern_bytes.extend_from_slice(&(kern_pairs.len() as u32).to_le_bytes());
+        for &(l, r, dx) in kern_pairs {
+            kern_bytes.extend_from_slice(&(l as u32).to_le_bytes());
+            kern_bytes.extend_from_slice(&(r as u32).to_le_bytes());
+            kern_bytes.extend_from_slice(&dx.to_le_bytes());
+            kern_bytes.extend_from_slice(&0u16.to_le_bytes());
+        }
+    }
+
+    let mut table = Vec::new();
+    let mut bitmaps = Vec::new();
+    for &(ch, adv, bx, by, w, h, data) in glyphs {
+        let off = bitmaps.len() as u32;
+        if encoding == liuli_text::GlyphEncoding::Rle && w > 0 && h > 0 {
+            bitmaps.extend_from_slice(&(data.len() as u16).to_le_bytes());
+        }
+        bitmaps.extend_from_slice(data);
+        if compact {
+            table.extend_from_slice(&(ch as u32).to_le_bytes());
+            table.push(adv as u8);
+            table.push((bx as i8) as u8);
+            table.push((by as i8) as u8);
+            table.push(w as u8);
+            table.push(h as u8);
+            table.push((off & 0xFF) as u8);
+            table.push(((off >> 8) & 0xFF) as u8);
+            table.push(((off >> 16) & 0xFF) as u8);
+        } else {
+            table.extend_from_slice(&(ch as u32).to_le_bytes());
+            table.extend_from_slice(&adv.to_le_bytes());
+            table.extend_from_slice(&bx.to_le_bytes());
+            table.extend_from_slice(&by.to_le_bytes());
+            table.extend_from_slice(&w.to_le_bytes());
+            table.extend_from_slice(&h.to_le_bytes());
+            table.extend_from_slice(&0u16.to_le_bytes());
+            table.extend_from_slice(&off.to_le_bytes());
+        }
+    }
+
+    let phase_bits = match phases {
+        2 => 1u8 << 1,
+        4 => 2u8 << 1,
+        _ => 0,
+    };
+    let flags = u8::from(compact) | phase_bits | (u8::from(advance_q2) << 3);
+    let mut out = Vec::new();
+    out.extend_from_slice(b"LLF4");
+    out.extend_from_slice(&2u16.to_le_bytes());
+    out.extend_from_slice(&count.to_le_bytes());
+    out.extend_from_slice(&14i16.to_le_bytes());
+    out.extend_from_slice(&2u16.to_le_bytes());
+    out.extend_from_slice(&2u16.to_le_bytes());
+    out.extend_from_slice(&fallback_idx.to_le_bytes());
+    out.extend_from_slice(&table_offset.to_le_bytes());
+    out.extend_from_slice(&bitmap_offset.to_le_bytes());
+    out.push(format as u8);
+    out.push(encoding as u8);
+    out.push(flags);
+    out.push(0);
+    out.extend_from_slice(&kern_offset.to_le_bytes());
+    out.extend_from_slice(&kern_bytes);
+    out.extend_from_slice(&table);
+    out.extend_from_slice(&bitmaps);
+    out
+}
+
+#[test]
+fn lf4_v2_multibpp_rle_kerning_subpixel_word_wrap_and_storage() {
+    use liuli_core::view::WrapMode;
+    use liuli_text::storage::{Cached, StoredFont};
+    use liuli_text::{
+        FontSet, GlyphEncoding, GlyphFormat, TextLayoutStyle, visit_layout_glyphs_styled,
+    };
+
+    // Compact 12-byte index, RLE, 2 subpixel phases, Q2 advance, kerning A+V -> -4 q2 (-1 px).
+    // 2x1 A2 => 1 row byte * 2 phases = 2 raw bytes; RLE [1, 0xF0, 0x50] -> literal 2 bytes.
+    let rle2 = &[1u8, 0xF0, 0x50];
+    let bytes = build_synthetic_lf4_v2(
+        GlyphFormat::A2,
+        GlyphEncoding::Rle,
+        true,
+        2,
+        true,
+        &[('A', 'V', -4)],
+        &[
+            (' ', 16, 0, 10, 0, 0, &[]),
+            ('A', 22, 0, 10, 2, 1, rle2), // 5.5 px advance in Q2
+            ('V', 20, 0, 10, 2, 1, rle2),
+            ('…', 32, 0, 10, 2, 1, rle2),
+            ('□', 32, 0, 10, 2, 1, rle2),
+        ],
+    );
+    let font = Lf4Font::from_bytes(&bytes).unwrap();
+    assert_eq!(font.version(), 2);
+    assert!(font.compact_index());
+    assert_eq!(font.format(), GlyphFormat::A2);
+    assert_eq!(font.encoding(), GlyphEncoding::Rle);
+    assert_eq!(font.subpixel_phases(), 2);
+    assert!(font.advance_is_q2());
+    assert_eq!(font.kerning('A', 'V'), -4);
+    assert_eq!(font.kerning('V', 'A'), 0);
+
+    // StoredFont opens LF4 v2 cleanly and decodes RLE length prefix.
+    let mut cache_buf = [0u8; 256];
+    let mut stored = StoredFont::open(Cached::new(bytes.as_slice(), &mut cache_buf)).unwrap();
+    let m_a = stored.lookup('A').unwrap().unwrap();
+    let mut scratch = [0u8; 32];
+    let bmp_a = stored.read_bitmap(m_a, &mut scratch).unwrap();
+    assert_eq!(bmp_a.data, rle2);
+    let mut row_buf = [0u8; 4];
+    let mut decoded = Vec::new();
+    liuli_text::decode_rle_rows(bmp_a.data, 1, 2, 0, 2, &mut row_buf, |row, bytes| {
+        decoded.push((row, bytes.to_vec()));
+    })
+    .unwrap();
+    assert_eq!(decoded, vec![(0, vec![0xF0]), (1, vec![0x50])]);
+
+    // Check Q2 phase stepping + kerning: 'A' at x=0 (phase 0), pen becomes 22 - 4 = 18 q2 (x=4, phase=1)
+    let mut out = Vec::new();
+    visit_layout_glyphs_styled(
+        &font,
+        "AV",
+        TextLayoutOptions {
+            max_width: 80,
+            max_lines: 1,
+            ellipsis: false,
+            align: TextAlign::Start,
+        },
+        TextLayoutStyle::default(),
+        |pg| out.push((pg.glyph.metrics.unicode, pg.x, pg.phase)),
+        |_| {},
+    );
+    assert_eq!(out, vec![('A' as u32, 0, 0), ('V' as u32, 4, 1)]);
+
+    // Word wrap & CJK kinsoku test with v1 font.
+    let raw1 = &[0xFF];
+    let word_bytes = build_synthetic_lf4(&[
+        (' ', 6, 0, 10, 0, 0, &[]),
+        ('A', 6, 0, 10, 1, 1, raw1),
+        ('B', 6, 0, 10, 1, 1, raw1),
+        ('□', 12, 0, 10, 1, 1, raw1),
+    ]);
+    let wf = Lf4Font::from_bytes(&word_bytes).unwrap();
+    let mut lines = Vec::new();
+    visit_layout_glyphs_styled(
+        &wf,
+        "AA BBB",
+        TextLayoutOptions {
+            max_width: 24,
+            max_lines: 4,
+            ellipsis: false,
+            align: TextAlign::Start,
+        },
+        TextLayoutStyle {
+            wrap: WrapMode::Word,
+            ..TextLayoutStyle::default()
+        },
+        |pg| lines.push((pg.line, char::from_u32(pg.glyph.metrics.unicode).unwrap())),
+        |_| {},
+    );
+    // "AA BBB" in width 24 = 4 chars -> breaks cleanly before "BBB" instead of breaking mid-word.
+    assert_eq!(
+        lines,
+        vec![(0, 'A'), (0, 'A'), (1, 'B'), (1, 'B'), (1, 'B')]
+    );
+
+    // 4-slot FontSet + fallback chain test.
+    let fb_bytes = build_synthetic_lf4(&[('Z', 9, 0, 10, 1, 1, raw1), ('□', 9, 0, 10, 1, 1, raw1)]);
+    let fb = Lf4Font::from_bytes(&fb_bytes).unwrap();
+    let set = FontSet::single(wf).with_title(font).with_fallback(fb);
+    assert_eq!(set.get(FontId::Title20).version(), 2);
+    let mut seen_chars = Vec::new();
+    visit_layout_glyphs_styled(
+        set.get(FontId::Body16),
+        "AZ",
+        TextLayoutOptions {
+            max_width: 80,
+            max_lines: 1,
+            ellipsis: false,
+            align: TextAlign::Start,
+        },
+        TextLayoutStyle {
+            fallback: set.fallback(),
+            ..TextLayoutStyle::default()
+        },
+        |pg| {
+            seen_chars.push((
+                char::from_u32(pg.glyph.metrics.unicode).unwrap(),
+                pg.from_fallback,
+            ))
+        },
+        |_| {},
+    );
+    assert_eq!(seen_chars, vec![('A', false), ('Z', true)]);
+}

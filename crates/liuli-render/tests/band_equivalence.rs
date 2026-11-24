@@ -41,6 +41,43 @@ fn render_with_band_height(
 }
 
 #[test]
+fn adjacent_fills_match_single_row_raster_across_clips_gaps_and_overlaps() {
+    let fonts = FontSet::single(Lf4Font::from_bytes(SETTINGS_LF4).unwrap());
+    let resources = SliceSceneResources {
+        texts: &[],
+        sparklines: &[],
+    };
+    let mut cmds = CommandList::new();
+    cmds.screen = Rect::new(0, 0, 63, 29);
+    for (i, (x, y, w, h)) in [
+        (-4, 2, 9, 27),
+        (5, 2, 7, 27),
+        (12, 2, 3, 27),
+        (18, 2, 9, 27),
+        (23, 2, 10, 27),
+        (33, 5, 13, 19),
+        (46, 5, 23, 19),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        cmds.push(PaintCmd::FillRect {
+            rect: Rect::new(x, y, w, h),
+            clip: Rect::new(1, 1, 60, 27),
+            color: Rgb565::new(3 + i as u8, 30, 8),
+        })
+        .unwrap();
+    }
+    let reference = render_with_band_height(&cmds, &resources, &fonts, 1);
+    for height in [3, 7, 29] {
+        assert_eq!(
+            render_with_band_height(&cmds, &resources, &fonts, height),
+            reference
+        );
+    }
+}
+
+#[test]
 fn band_heights_1_3_8_17_240_produce_identical_pixels_including_chinese_text() {
     let fonts = FontSet::single(Lf4Font::from_bytes(SETTINGS_LF4).unwrap());
     let resources = SliceSceneResources {
@@ -325,4 +362,332 @@ fn sparkline_dual_font_align_and_all_icons_band_equivalent() {
         );
         icon_buffers.push(buf);
     }
+}
+
+#[test]
+fn render_band_multibpp_rle_lcd_gamma_decor_matches_reference() {
+    use liuli_core::view::{SubpixelOrder, TextGamma, TextStyleFlags, WrapMode};
+    use liuli_text::{GlyphEncoding, GlyphFormat};
+
+    fn pack_v2(
+        format: GlyphFormat,
+        encoding: GlyphEncoding,
+        phases: u8,
+        glyphs: &[(char, u16, u16, &[u8])],
+    ) -> Vec<u8> {
+        let count = glyphs.len() as u16;
+        let table_off = 32u32;
+        let mut table = Vec::new();
+        let mut bitmaps = Vec::new();
+        for &(ch, w, h, data) in glyphs {
+            let off = bitmaps.len() as u32;
+            if encoding == GlyphEncoding::Rle && w > 0 && h > 0 {
+                bitmaps.extend_from_slice(&(data.len() as u16).to_le_bytes());
+            }
+            bitmaps.extend_from_slice(data);
+            table.extend_from_slice(&(ch as u32).to_le_bytes());
+            table.push(w as u8 + 1);
+            table.push(0);
+            table.push(10i8 as u8);
+            table.push(w as u8);
+            table.push(h as u8);
+            table.push((off & 0xFF) as u8);
+            table.push(((off >> 8) & 0xFF) as u8);
+            table.push(((off >> 16) & 0xFF) as u8);
+        }
+        let bm_off = table_off + table.len() as u32;
+        let phase_bits = match phases {
+            2 => 1u8 << 1,
+            4 => 2u8 << 1,
+            _ => 0,
+        };
+        let mut out = Vec::new();
+        out.extend_from_slice(b"LLF4");
+        out.extend_from_slice(&2u16.to_le_bytes());
+        out.extend_from_slice(&count.to_le_bytes());
+        out.extend_from_slice(&12i16.to_le_bytes());
+        out.extend_from_slice(&2u16.to_le_bytes());
+        out.extend_from_slice(&14u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&table_off.to_le_bytes());
+        out.extend_from_slice(&bm_off.to_le_bytes());
+        out.push(format as u8);
+        out.push(encoding as u8);
+        out.push(1 | phase_bits);
+        out.push(0);
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&table);
+        out.extend_from_slice(&bitmaps);
+        out
+    }
+
+    // Exercise A1, A8+RLE, and LcdRgb+RLE across multiple band heights to confirm
+    // band height 1 == band height 48 == full frame parity + non-empty rendering.
+    let a1_bytes = pack_v2(
+        GlyphFormat::A1,
+        GlyphEncoding::Raw,
+        1,
+        &[
+            (' ', 2, 0, &[]),
+            ('A', 4, 4, &[0x90, 0xF0, 0x90, 0x90]),
+            ('□', 4, 4, &[0xF0, 0x90, 0x90, 0xF0]),
+        ],
+    );
+    // 2x2 A8 -> RLE literal run of 4 bytes: header (4-1)=3 followed by 4 coverage values.
+    let a8_rle_bytes = pack_v2(
+        GlyphFormat::A8,
+        GlyphEncoding::Rle,
+        1,
+        &[
+            (' ', 2, 0, &[]),
+            ('B', 2, 2, &[3, 64, 192, 128, 255]),
+            ('□', 2, 2, &[3, 255, 255, 255, 255]),
+        ],
+    );
+    // 2x1 LcdRgb -> 3 nibbles per px -> 3 bytes/row -> RLE literal 3 bytes.
+    let lcd_bytes = pack_v2(
+        GlyphFormat::LcdRgb,
+        GlyphEncoding::Rle,
+        1,
+        &[
+            (' ', 2, 0, &[]),
+            ('C', 2, 1, &[2, 0xF8, 0x40, 0xCF]),
+            ('□', 2, 1, &[2, 0xFF, 0xFF, 0xFF]),
+        ],
+    );
+
+    let fonts = FontSet::single(Lf4Font::from_bytes(&a1_bytes).unwrap())
+        .with_slot(FontId::Title20, Lf4Font::from_bytes(&a8_rle_bytes).unwrap())
+        .with_slot(FontId::Display28, Lf4Font::from_bytes(&lcd_bytes).unwrap());
+
+    let screen = Rect::new(0, 0, 64, 48);
+    let resources = SliceSceneResources {
+        texts: &["A", "B", "C"],
+        sparklines: &[],
+    };
+    let mut cmds = CommandList::new();
+    cmds.screen = screen;
+    cmds.root_bg = Rgb565::new(2, 4, 2);
+
+    let decor_style = TextStyleFlags::DEFAULT
+        .with_wrap(WrapMode::Word)
+        .with_gamma(TextGamma::Perceptual)
+        .with_subpixel(SubpixelOrder::Rgb)
+        .with_underline(true)
+        .with_strikethrough(true);
+    cmds.push(PaintCmd::text_styled(
+        Point::new(2, 2),
+        Rect::new(2, 2, 60, 18),
+        TextId(0),
+        Rgb565::new(31, 63, 31),
+        60,
+        1,
+        false,
+        FontId::Body16,
+        TextAlign::Start,
+        decor_style,
+        1,
+        0,
+    ))
+    .unwrap();
+    cmds.push(PaintCmd::text_styled(
+        Point::new(2, 18),
+        Rect::new(2, 18, 60, 16),
+        TextId(1),
+        Rgb565::new(31, 63, 31),
+        60,
+        1,
+        false,
+        FontId::Title20,
+        TextAlign::Start,
+        decor_style,
+        0,
+        0,
+    ))
+    .unwrap();
+    cmds.push(PaintCmd::text_styled(
+        Point::new(2, 34),
+        Rect::new(2, 34, 60, 14),
+        TextId(2),
+        Rgb565::new(31, 63, 31),
+        60,
+        1,
+        false,
+        FontId::Display28,
+        TextAlign::Start,
+        decor_style,
+        0,
+        0,
+    ))
+    .unwrap();
+
+    let full = render_with_band_height(&cmds, &resources, &fonts, 48);
+    let bg_u16 = liuli_core::geometry::rgb565_to_u16(cmds.root_bg);
+    assert!(full.iter().any(|&p| p != bg_u16), "rendered empty");
+    for bh in [1u32, 3, 5, 11] {
+        assert_eq!(
+            render_with_band_height(&cmds, &resources, &fonts, bh),
+            full,
+            "multi-bpp band mismatch at band_h={bh}"
+        );
+    }
+}
+
+struct SliceFlash<'a>(&'a [u8]);
+
+impl liuli_text::storage::ReadAt for SliceFlash<'_> {
+    type Error = ();
+
+    fn byte_len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn read_at(&mut self, offset: usize, dst: &mut [u8]) -> Result<usize, Self::Error> {
+        let Some(end) = offset.checked_add(dst.len()) else {
+            return Err(());
+        };
+        if end > self.0.len() {
+            return Err(());
+        }
+        dst.copy_from_slice(&self.0[offset..end]);
+        Ok(dst.len())
+    }
+}
+
+fn render_provider_with_band_height<F: liuli_text::FontProvider>(
+    cmds: &CommandList,
+    resources: &SliceSceneResources<'_>,
+    fonts: &F,
+    band_h: u32,
+) -> Vec<u16>
+where
+    F::Error: core::fmt::Debug,
+{
+    let w = cmds.screen.w as usize;
+    let h = cmds.screen.h as usize;
+    let mut full = vec![0u16; w * h];
+    let mut scratch = vec![0u16; w * (band_h as usize)];
+
+    let mut dmg = DamageSet::new();
+    dmg.mark_full_screen(cmds.screen);
+
+    for band in
+        liuli_render::BandIter::new::<()>(dmg.as_slice(), cmds.screen, band_h, scratch.len())
+            .unwrap()
+    {
+        let mut bt = BandTarget::new::<()>(&mut scratch, band).unwrap();
+        liuli_render::render_band_with_provider(
+            &mut bt,
+            cmds,
+            resources,
+            fonts,
+            liuli_render::raster::blend_solid,
+        )
+        .unwrap();
+        let words = bt.words();
+        for ry in 0..band.h as usize {
+            let gy = band.y as usize + ry;
+            let dst = gy * w + band.x as usize;
+            let src = ry * band.w as usize;
+            full[dst..dst + band.w as usize].copy_from_slice(&words[src..src + band.w as usize]);
+        }
+    }
+    full
+}
+
+#[test]
+fn streaming_font_and_hybrid_font_set_match_xip_pixel_exact_across_band_heights() {
+    use liuli_core::view::{SubpixelOrder, TextGamma, TextStyleFlags, WrapMode};
+    use liuli_text::{FontProvider, HybridFontSet, StreamingFont};
+
+    let body = Lf4Font::from_bytes(SETTINGS_LF4).unwrap();
+    let small = Lf4Font::from_bytes(SMALL12_LF4).unwrap();
+    let xip_fonts = FontSet::new(body, small);
+
+    let resources = SliceSceneResources {
+        texts: &["设备设置 · 屏幕亮度 60%", "恢复默认设置？ 12:34"],
+        sparklines: &[],
+    };
+    let mut cmds = CommandList::new();
+    cmds.screen = Rect::new(0, 0, 240, 120);
+    cmds.root_bg = Rgb565::new(2, 4, 2);
+
+    let style = TextStyleFlags::DEFAULT
+        .with_wrap(WrapMode::Word)
+        .with_gamma(TextGamma::Perceptual)
+        .with_subpixel(SubpixelOrder::None)
+        .with_underline(true);
+    cmds.push(PaintCmd::text_styled(
+        Point::new(8, 10),
+        Rect::new(0, 0, 240, 120),
+        TextId(0),
+        Rgb565::new(31, 63, 31),
+        220,
+        2,
+        true,
+        FontId::Body16,
+        TextAlign::Start,
+        style,
+        0,
+        2,
+    ))
+    .unwrap();
+    cmds.push(PaintCmd::text_styled(
+        Point::new(8, 56),
+        Rect::new(0, 0, 240, 120),
+        TextId(1),
+        Rgb565::new(20, 50, 31),
+        220,
+        2,
+        false,
+        FontId::Small12,
+        TextAlign::Start,
+        style,
+        0,
+        1,
+    ))
+    .unwrap();
+
+    let mut b_blk = [0u8; 2048];
+    let mut b_pool = [0u8; 4096];
+    let mut b_scr = [0u8; 512];
+    let stream_body = StreamingFont::<_, 32, 64, 32, 4>::open(
+        SliceFlash(SETTINGS_LF4),
+        &mut b_blk,
+        &mut b_pool,
+        &mut b_scr,
+    )
+    .unwrap();
+
+    let mut s_blk = [0u8; 2048];
+    let mut s_pool = [0u8; 4096];
+    let mut s_scr = [0u8; 512];
+    let stream_small = StreamingFont::<_, 32, 64, 32, 4>::open(
+        SliceFlash(SMALL12_LF4),
+        &mut s_blk,
+        &mut s_pool,
+        &mut s_scr,
+    )
+    .unwrap();
+
+    let pure_streaming =
+        HybridFontSet::streaming(&stream_body).with_stream_slot(FontId::Small12, &stream_small);
+    let mixed_hybrid = HybridFontSet::from_xip(FontSet::single(body))
+        .with_stream_slot(FontId::Small12, &stream_small);
+
+    for bh in [1u32, 3, 8, 120] {
+        let xip_ref = render_with_band_height(&cmds, &resources, &xip_fonts, bh);
+        assert_eq!(
+            render_provider_with_band_height(&cmds, &resources, &pure_streaming, bh),
+            xip_ref,
+            "pure streaming mismatch at band_h={bh}"
+        );
+        assert_eq!(
+            render_provider_with_band_height(&cmds, &resources, &mixed_hybrid, bh),
+            xip_ref,
+            "mixed hybrid mismatch at band_h={bh}"
+        );
+    }
+    let stats = pure_streaming.cache_stats();
+    assert!(stats.metrics_hits > 0 && stats.bitmap_hits > 0);
 }

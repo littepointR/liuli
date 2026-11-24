@@ -21,20 +21,20 @@ use liuli_core::time::{
 };
 use liuli_core::view::{App, Change, Key, NodeKind, ViewBuilder};
 use liuli_render::{DmaCoordinator, DmaSink};
-use liuli_text::{FontSet, Lf4Font};
+use liuli_text::{FontCacheStats, FontProvider, FontSet, Lf4Font};
 
 use crate::storage::Storage;
 use liuli_core::geometry::Size;
 use liuli_core::layout::{TextMeasureOut, TextMeasurer};
 use liuli_core::view::{FontId, TextAlign};
 
-struct AppMeasure<'a, 'f, A>(&'a FontSet<'f>, core::marker::PhantomData<A>);
-impl<A: App> TextMeasurer for AppMeasure<'_, '_, A> {
+struct AppMeasure<'a, A, F>(&'a F, core::marker::PhantomData<A>);
+impl<A: App, F: TextMeasurer> TextMeasurer for AppMeasure<'_, A, F> {
     fn custom_size(&self, key: Key, font: FontId, available: Size) -> Size {
         A::measure_custom(key, font, available)
     }
     fn line_height(&self, font: FontId) -> u32 {
-        self.0.get(font).line_height()
+        self.0.line_height(font)
     }
     fn measure_text(
         &self,
@@ -48,6 +48,30 @@ impl<A: App> TextMeasurer for AppMeasure<'_, '_, A> {
         self.0
             .measure_text(font, text, max_width, max_lines, ellipsis, align)
     }
+    fn measure_text_styled(
+        &self,
+        font: FontId,
+        text: &str,
+        max_width: u32,
+        max_lines: u8,
+        ellipsis: bool,
+        align: TextAlign,
+        wrap: liuli_core::view::WrapMode,
+        letter_spacing: i8,
+        line_spacing: i8,
+    ) -> TextMeasureOut {
+        self.0.measure_text_styled(
+            font,
+            text,
+            max_width,
+            max_lines,
+            ellipsis,
+            align,
+            wrap,
+            letter_spacing,
+            line_spacing,
+        )
+    }
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
@@ -57,10 +81,10 @@ struct ActiveDma {
     scene_version: u32,
 }
 
-pub struct Engine<'s, 'f, A: App> {
+pub struct Engine<'s, 'f, A: App, F: FontProvider + TextMeasurer = FontSet<'f>> {
     storage: &'s mut Storage,
     model: A::Model,
-    fonts: FontSet<'f>,
+    fonts: F,
     screen: Rect,
     band_height: u32,
     #[cfg(feature = "platform-blend")]
@@ -79,9 +103,10 @@ pub struct Engine<'s, 'f, A: App> {
     has_committed_once: bool,
     active_page: u8,
     last_content_focus: Option<Key>,
+    _font_lt: core::marker::PhantomData<&'f ()>,
 }
 
-impl<'s, 'f, A: App> Engine<'s, 'f, A> {
+impl<'s, 'f, A: App> Engine<'s, 'f, A, FontSet<'f>> {
     pub fn new_in_place(
         storage: &'s mut Storage,
         model: A::Model,
@@ -96,6 +121,110 @@ impl<'s, 'f, A: App> Engine<'s, 'f, A> {
         storage: &'s mut Storage,
         model: A::Model,
         fonts: FontSet<'f>,
+        screen: Rect,
+        now: InstantMs,
+    ) -> Result<Self, BuildError> {
+        Self::new_in_place_with_provider(storage, model, fonts, screen, now)
+    }
+
+    #[inline]
+    pub fn font(&self) -> &Lf4Font<'f> {
+        self.fonts.body16()
+    }
+
+    #[inline]
+    pub fn fonts(&self) -> &FontSet<'f> {
+        &self.fonts
+    }
+
+    pub fn present_sync<T: DrawTarget<Color = Rgb565>>(
+        &mut self,
+        target: &mut T,
+        scratch: &mut [u16],
+    ) -> Result<PresentStatus, PresentError<T::Error>> {
+        self.present_sync_with(target, scratch, |_| Ok(()))
+    }
+
+    pub fn present_sync_with<T, Fin>(
+        &mut self,
+        target: &mut T,
+        scratch: &mut [u16],
+        finish: Fin,
+    ) -> Result<PresentStatus, PresentError<T::Error>>
+    where
+        T: DrawTarget<Color = Rgb565>,
+        Fin: FnMut(&mut T) -> Result<(), T::Error>,
+    {
+        self.present_sync_with_pixels(
+            target,
+            scratch,
+            finish,
+            &mut liuli_text::storage::InlinePixels,
+        )
+        .map_err(liuli_render::sync::FrameError::into_display)
+    }
+
+    pub fn present_sync_with_pixels<T, Fin, G: liuli_text::storage::GlyphPixels>(
+        &mut self,
+        target: &mut T,
+        scratch: &mut [u16],
+        finish: Fin,
+        glyphs: &mut G,
+    ) -> Result<PresentStatus, liuli_render::sync::FrameError<T::Error, G::Error>>
+    where
+        T: DrawTarget<Color = Rgb565>,
+        Fin: FnMut(&mut T) -> Result<(), T::Error>,
+    {
+        if self.is_dma_busy() {
+            return Err(PresentError::DmaBusy.into());
+        }
+        let active_t_idx = self.storage.active_tree_idx as usize;
+        let active_c_idx = self.storage.active_cmd_idx as usize;
+
+        let (status, mut m) = liuli_render::sync::present_sync_with_pixels(
+            target,
+            scratch,
+            self.screen,
+            self.band_height,
+            &self.storage.cmds[active_c_idx],
+            &mut self.storage.damage,
+            &self.storage.trees[active_t_idx],
+            &self.fonts,
+            finish,
+            #[cfg(feature = "platform-blend")]
+            self.blend,
+            #[cfg(not(feature = "platform-blend"))]
+            liuli_render::raster::blend_solid,
+            glyphs,
+        )?;
+        self.record_present_metrics(status, &mut m);
+        Ok(status)
+    }
+
+    pub fn poll_dma<'a, S>(
+        &mut self,
+        dma: &mut DmaCoordinator<'a>,
+        sink: &mut S,
+    ) -> Result<PresentStatus, PresentError<S::Error>>
+    where
+        S: DmaSink<'a>,
+    {
+        self.poll_dma_with_provider(dma, sink)
+            .map_err(|err| match err {
+                liuli_render::sync::FrameError::Display(e) => e,
+                liuli_render::sync::FrameError::ShortGlyph { needed, actual } => {
+                    PresentError::ShortGlyph { needed, actual }
+                }
+                liuli_render::sync::FrameError::Font(never) => match never {},
+            })
+    }
+}
+
+impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
+    pub fn new_in_place_with_provider(
+        storage: &'s mut Storage,
+        model: A::Model,
+        fonts: F,
         screen: Rect,
         now: InstantMs,
     ) -> Result<Self, BuildError> {
@@ -125,10 +254,61 @@ impl<'s, 'f, A: App> Engine<'s, 'f, A> {
             has_committed_once: false,
             active_page,
             last_content_focus: None,
+            _font_lt: core::marker::PhantomData,
         };
         engine.commit_view_inner(now)?;
         engine.storage.damage.mark_full_screen(screen);
         Ok(engine)
+    }
+
+    #[inline]
+    pub fn font_provider(&self) -> &F {
+        &self.fonts
+    }
+
+    #[inline]
+    pub fn font_cache_stats(&self) -> FontCacheStats {
+        self.fonts.cache_stats()
+    }
+
+    /// Hot-swaps the active font provider, marks all text nodes for re-measurement, and redraws.
+    pub fn reload_fonts(&mut self, fonts: F, now: InstantMs) -> Result<(), TransactionError<()>> {
+        if self.is_dma_busy() {
+            return Err(TransactionError::Busy(()));
+        }
+        self.storage.clock.advance_to(now)?;
+        self.fonts = fonts;
+        let active_t_idx = self.storage.active_tree_idx as usize;
+        for node in &mut self.storage.trees[active_t_idx].nodes {
+            if node.occupied {
+                node.text_cache = liuli_core::node::TextCache::ZERO;
+                node.dirty_measure = true;
+                node.dirty_paint = true;
+            }
+        }
+        self.commit_view_inner(now)
+            .map_err(TransactionError::Build)?;
+        self.storage.damage.mark_full_screen(self.screen);
+        Ok(())
+    }
+
+    #[inline]
+    fn record_present_metrics(&mut self, status: PresentStatus, m: &mut FrameMetrics) {
+        match status {
+            PresentStatus::Presented => {
+                m.measured_nodes = self.pending_measured_nodes;
+                self.pending_measured_nodes = 0;
+                self.last_metrics = *m;
+            }
+            PresentStatus::Idle => {
+                m.measured_nodes = 0;
+                self.last_metrics = *m;
+            }
+            PresentStatus::Pending => {
+                m.measured_nodes = self.pending_measured_nodes;
+                self.last_metrics = *m;
+            }
+        }
     }
 
     #[inline]
@@ -159,24 +339,14 @@ impl<'s, 'f, A: App> Engine<'s, 'f, A> {
     }
 
     #[inline]
-    pub fn try_with_model<R, F>(&mut self, f: F) -> Result<R, TransactionError<()>>
+    pub fn try_with_model<R, Cb>(&mut self, f: Cb) -> Result<R, TransactionError<()>>
     where
-        F: FnOnce(&mut A::Model) -> R,
+        Cb: FnOnce(&mut A::Model) -> R,
     {
         if self.is_dma_busy() {
             return Err(TransactionError::Busy(()));
         }
         Ok(f(&mut self.model))
-    }
-
-    #[inline]
-    pub fn font(&self) -> &Lf4Font<'f> {
-        self.fonts.body16()
-    }
-
-    #[inline]
-    pub fn fonts(&self) -> &FontSet<'f> {
-        &self.fonts
     }
 
     #[inline]
@@ -419,7 +589,7 @@ impl<'s, 'f, A: App> Engine<'s, 'f, A> {
             active_tree,
             cand_tree,
             self.screen,
-            &AppMeasure::<A>(&self.fonts, core::marker::PhantomData),
+            &AppMeasure::<A, F>(&self.fonts, core::marker::PhantomData),
             &mut self.storage.cand_anims,
             focused_slot,
             captured_slot,
@@ -1247,39 +1417,20 @@ impl<'s, 'f, A: App> Engine<'s, 'f, A> {
         anim_wake.earlier(repeat_wake).earlier(app_wake)
     }
 
-    pub fn present_sync<T: DrawTarget<Color = Rgb565>>(
+    pub fn present_sync_streaming<T: DrawTarget<Color = Rgb565>>(
         &mut self,
         target: &mut T,
         scratch: &mut [u16],
-    ) -> Result<PresentStatus, PresentError<T::Error>> {
-        self.present_sync_with(target, scratch, |_| Ok(()))
+    ) -> Result<PresentStatus, liuli_render::sync::FrameError<T::Error, F::Error>> {
+        self.present_sync_with_provider(target, scratch, |_| Ok(()))
     }
 
-    pub fn present_sync_with<T, Fin>(
+    pub fn present_sync_with_provider<T, Fin>(
         &mut self,
         target: &mut T,
         scratch: &mut [u16],
         finish: Fin,
-    ) -> Result<PresentStatus, PresentError<T::Error>>
-    where
-        T: DrawTarget<Color = Rgb565>,
-        Fin: FnMut(&mut T) -> Result<(), T::Error>,
-    {
-        self.present_sync_with_pixels(
-            target,
-            scratch,
-            finish,
-            &mut liuli_text::storage::InlinePixels,
-        )
-        .map_err(liuli_render::sync::FrameError::into_display)
-    }
-    pub fn present_sync_with_pixels<T, Fin, G: liuli_text::storage::GlyphPixels>(
-        &mut self,
-        target: &mut T,
-        scratch: &mut [u16],
-        finish: Fin,
-        glyphs: &mut G,
-    ) -> Result<PresentStatus, liuli_render::sync::FrameError<T::Error, G::Error>>
+    ) -> Result<PresentStatus, liuli_render::sync::FrameError<T::Error, F::Error>>
     where
         T: DrawTarget<Color = Rgb565>,
         Fin: FnMut(&mut T) -> Result<(), T::Error>,
@@ -1290,7 +1441,7 @@ impl<'s, 'f, A: App> Engine<'s, 'f, A> {
         let active_t_idx = self.storage.active_tree_idx as usize;
         let active_c_idx = self.storage.active_cmd_idx as usize;
 
-        let (status, mut m) = liuli_render::sync::present_sync_with_pixels(
+        let (status, mut m) = liuli_render::sync::present_sync_with_provider(
             target,
             scratch,
             self.screen,
@@ -1304,31 +1455,16 @@ impl<'s, 'f, A: App> Engine<'s, 'f, A> {
             self.blend,
             #[cfg(not(feature = "platform-blend"))]
             liuli_render::raster::blend_solid,
-            glyphs,
         )?;
-        match status {
-            PresentStatus::Presented => {
-                m.measured_nodes = self.pending_measured_nodes;
-                self.pending_measured_nodes = 0;
-                self.last_metrics = m;
-            }
-            PresentStatus::Idle => {
-                m.measured_nodes = 0;
-                self.last_metrics = m;
-            }
-            PresentStatus::Pending => {
-                m.measured_nodes = self.pending_measured_nodes;
-                self.last_metrics = m;
-            }
-        }
+        self.record_present_metrics(status, &mut m);
         Ok(status)
     }
 
-    pub fn poll_dma<'a, S>(
+    pub fn poll_dma_with_provider<'a, S>(
         &mut self,
         dma: &mut DmaCoordinator<'a>,
         sink: &mut S,
-    ) -> Result<PresentStatus, PresentError<S::Error>>
+    ) -> Result<PresentStatus, liuli_render::sync::FrameError<S::Error, F::Error>>
     where
         S: DmaSink<'a>,
     {
@@ -1338,14 +1474,14 @@ impl<'s, 'f, A: App> Engine<'s, 'f, A> {
                 || dma.frame_id() != lock.frame_id
                 || self.scene_version != lock.scene_version
             {
-                return Err(PresentError::DmaBusy);
+                return Err(PresentError::DmaBusy.into());
             }
         } else {
             if dma.is_active() {
-                return Err(PresentError::DmaBusy);
+                return Err(PresentError::DmaBusy.into());
             }
             if dma.is_faulted() {
-                return Err(PresentError::DmaFaulted);
+                return Err(PresentError::DmaFaulted.into());
             }
             if !self.storage.damage.is_empty() {
                 let token = self.next_dma_session;
@@ -1367,7 +1503,7 @@ impl<'s, 'f, A: App> Engine<'s, 'f, A> {
         let active_t_idx = self.storage.active_tree_idx as usize;
         let active_c_idx = self.storage.active_cmd_idx as usize;
 
-        let step_res = dma.step(
+        let step_res = dma.step_with_provider(
             sink,
             &self.storage.cmds[active_c_idx],
             &mut self.storage.damage,
@@ -1378,21 +1514,7 @@ impl<'s, 'f, A: App> Engine<'s, 'f, A> {
             self.active_dma = None;
         }
         let (status, mut m) = step_res?;
-        match status {
-            PresentStatus::Presented => {
-                m.measured_nodes = self.pending_measured_nodes;
-                self.pending_measured_nodes = 0;
-                self.last_metrics = m;
-            }
-            PresentStatus::Pending => {
-                m.measured_nodes = self.pending_measured_nodes;
-                self.last_metrics = m;
-            }
-            PresentStatus::Idle => {
-                m.measured_nodes = 0;
-                self.last_metrics = m;
-            }
-        }
+        self.record_present_metrics(status, &mut m);
         Ok(status)
     }
 }
