@@ -13,6 +13,9 @@ static uint16_t scalar(uint16_t bg, uint16_t fg, unsigned a) {
   const unsigned b = ((bg & 31) * inv + (fg & 31) * a + 7) / 15;
   return (r << 11) | (g << 5) | b;
 }
+void board_scene_verified(unsigned pixels) {
+  ESP_LOGI("liuli", "modal_scene pixel_match=%u", pixels);
+}
 void board_blend(uint16_t *row, size_t count, uint16_t fg, unsigned a) {
   while (count && ((uintptr_t)row & 15)) {
     *row = scalar(*row, fg, a);

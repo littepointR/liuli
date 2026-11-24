@@ -10,6 +10,7 @@ RC1 使用 ESP-IDF 5.5.2、其 Python 环境及带 rust-src 的 Xtensa Rust 1.97
 python boards/waveshare-s3-amoled/build.py --profile basic
 python boards/waveshare-s3-amoled/build.py --profile enhanced
 python boards/waveshare-s3-amoled/build.py --profile benchmark
+python boards/waveshare-s3-amoled/build.py --profile widget-demo
 ~~~
 
 可用 --out 为各档指定独立目录，--rust-only 只构建 Xtensa 静态库。脚本用 ESP Rust 分支编译 MCU，并显式允许已实测的分支低于桌面 workspace 的 rust-version。驱动和 ESP-IDF 负责 QSPI/DMA 完成。当前提交路径同步等待每次传输。基本配置在内部 RAM 持有两块 240 × 8 RGB565 缓冲区，增强配置另用 PSRAM 存放字体缓存。基准配置额外包含复杂文字测试字体和固定的输入序列。
@@ -44,10 +45,28 @@ python -m esptool --chip esp32s3 -p PORT write_flash 0x0 bootloader/bootloader.b
 
 sleep-benchmark 配置另行启用 MCU 轻睡测试。轻睡会挂起 USB Serial/JTAG。轻睡配置在入睡前将该 ELF 的标识和测试状态保存到已有 NVS 分区的 liuli_qa 命名空间。只有验证定时器唤醒、重新绘制并完成传输后，才写入完成状态和耗时。下一次正常启动会读出结果；若只读到入睡前标记，会报告未完成并进入普通告警界面。同一个镜像在断电后仍保留该次记录。回到日常使用时刷入 enhanced.bin。[乐鑫 USB Serial/JTAG 休眠说明](https://docs.espressif.com/projects/esp-idf/en/v5.5.1/esp32s3/api-guides/usb-serial-jtag-console.html)
 
+## 将实板触摸录成桌面回归
+
+从离线 SDK 根目录构建带串口记录的告警固件。基础和增强配置都可单独启用 `--trace-input`。普通构建通过 Cargo 特性移除记录器；调试配置使用固定大小的时间起点和序号，直接写串口。串口会增加耗时，性能基准使用普通固件。
+
+~~~sh
+python boards/waveshare-s3-amoled/build.py --profile enhanced --trace-input --offline --out target/trace-input
+python tools/export-touch-trace.py --port PORT --seconds 45 --out touch.trace
+~~~
+
+将 debug 应用镜像写入应用分区，在第二条命令显示 Listening 后轻按 RESET，再执行触摸操作。若已有同一次启动的完整串口日志，也可离线导出。导出器检查启动头、连续序号、单调时间和触点数据。原始事件使用设备实际提交给 Engine 的逻辑坐标，时间为相对 Engine 创建时刻的毫秒。每次成功推进引擎时钟都记录 tick，手指停在原处时也能重现长按。cancel 携带触点 ID；up 携带最后一个有效逻辑坐标。桌面回放按事件渲染并对照全屏参考，板端在一次轮询结束后提交显示。
+
+~~~sh
+python tools/export-touch-trace.py --log serial.log --out touch.trace
+cargo run --offline --manifest-path liuli-alarms/Cargo.toml --example preview -- liuli-alarms/assets/body.lf4 --replay touch.trace
+~~~
+
+随包的 `liuli-alarms/tests/fixtures/touch-workflow.trace` 全程通过原始指针坐标操作列表、详情、编辑器和模态框。运行 `cargo test --offline --manifest-path liuli-alarms/Cargo.toml --test workflow` 可断言第 12 条记录从 50 变为 75，返回后恢复偏移 320 和焦点，下一条记录仍为 50。
+
 ## 生成固件分发包
 
 在离线 SDK 根目录分别构建 basic、enhanced、benchmark 和 device-ui 模板，将各自的 IDF 输出目录传给随包脚本。脚本核对目标芯片、版本、分区表及各文件校验和，把日常固件、基准固件、字体、配置和许可证一起打包。解压后的 README.md 给出空白板安装和仅恢复日常程序的命令。
 
 ~~~
-python package-firmware.py --sdk . --basic target/basic/idf --enhanced target/enhanced/idf --benchmark target/benchmark/idf --starter target/starter/idf --out liuli-waveshare-s3.zip
+python package-firmware.py --sdk . --basic target/basic/idf --enhanced target/enhanced/idf --benchmark target/benchmark/idf --starter target/starter/idf --widget-demo target/widget-demo/idf --out liuli-waveshare-s3.zip
 ~~~

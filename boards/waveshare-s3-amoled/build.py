@@ -10,18 +10,23 @@ TARGET = "xtensa-esp32s3-none-elf"
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--profile", choices=("basic", "enhanced", "benchmark", "sleep-benchmark"), default="basic")
+    profiles = ("basic", "enhanced", "benchmark", "sleep-benchmark", "widget-demo")
+    parser.add_argument("--profile", choices=profiles, default="basic")
     parser.add_argument("--out", type=Path, default=BOARD.parents[1] / "target" / "s3")
     parser.add_argument("--offline", action="store_true")
     parser.add_argument("--rust-only", action="store_true")
+    parser.add_argument("--trace-input", action="store_true", help="stream accepted inputs and clock advances over the debug serial port")
     args = parser.parse_args()
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
     components = "core" if args.profile == "basic" else "core,alloc"
     command = ["cargo", "+esp", "build", "-Zbuild-std=" + components, "--locked",
                "--target", TARGET, "--release", "--ignore-rust-version", "--target-dir", str(out / "rust")]
-    if args.profile != "basic":
-        command.extend(["--features", args.profile])
+    features = [] if args.profile == "basic" else [args.profile]
+    if args.trace_input:
+        features.append("input-trace")
+    if features:
+        command.extend(["--features", ",".join(features)])
     if args.offline:
         command.append("--offline")
     subprocess.run(command, cwd=BOARD/"rust", check=True)

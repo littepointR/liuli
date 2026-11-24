@@ -126,7 +126,7 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
 name = "liuli"
-version = "1.0.0-rc.1"
+version = "1.0.0"
 dependencies = [
  "embedded-graphics-core",
  "liuli-core",
@@ -137,7 +137,7 @@ dependencies = [
 
 [[package]]
 name = "liuli-alarms"
-version = "1.0.0-rc.1"
+version = "1.0.0"
 dependencies = [
  "liuli",
  "liuli-widgets",
@@ -145,14 +145,14 @@ dependencies = [
 
 [[package]]
 name = "liuli-core"
-version = "1.0.0-rc.1"
+version = "1.0.0"
 dependencies = [
  "embedded-graphics-core",
 ]
 
 [[package]]
 name = "liuli-enhanced"
-version = "1.0.0-rc.1"
+version = "1.0.0"
 dependencies = [
  "ab_glyph_rasterizer",
  "harfrust",
@@ -167,7 +167,7 @@ dependencies = [
 
 [[package]]
 name = "liuli-render"
-version = "1.0.0-rc.1"
+version = "1.0.0"
 dependencies = [
  "embedded-graphics",
  "liuli-core",
@@ -176,23 +176,32 @@ dependencies = [
 
 [[package]]
 name = "liuli-s3-runtime"
-version = "1.0.0-rc.1"
+version = "1.0.0"
 dependencies = [
  "embedded-graphics-core",
  "liuli",
  "liuli-alarms",
+ "liuli-widget-demo",
 ]
 
 [[package]]
 name = "liuli-text"
-version = "1.0.0-rc.1"
+version = "1.0.0"
 dependencies = [
  "liuli-core",
 ]
 
 [[package]]
+name = "liuli-widget-demo"
+version = "1.0.0"
+dependencies = [
+ "liuli",
+ "liuli-widgets",
+]
+
+[[package]]
 name = "liuli-widgets"
-version = "1.0.0-rc.1"
+version = "1.0.0"
 dependencies = [
  "liuli",
 ]

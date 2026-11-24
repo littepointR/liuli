@@ -1,5 +1,6 @@
 use super::*;
 use liuli_alarms::Msg;
+mod scene;
 unsafe extern "C" {
     fn board_begin_sample();
     fn board_sample(kind: u32, n: u32, elapsed: i64, pixels: u32);
@@ -16,6 +17,10 @@ pub(super) fn run(
     present(e, target, scratch, glyphs)?;
     e.try_message(Msg::Open(0), time(), false).map_err(|_| ())?;
     e.try_message(Msg::Edit, time(), false).map_err(|_| ())?;
+    present(e, target, scratch, glyphs)?;
+    e.try_message(Msg::Ask, time(), false).map_err(|_| ())?;
+    scene::check(e, scratch, glyphs)?;
+    e.try_message(Msg::Back, time(), false).map_err(|_| ())?;
     present(e, target, scratch, glyphs)?;
     for backend in 0..2 {
         if backend == 0 {

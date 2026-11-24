@@ -59,6 +59,7 @@ $AllowedLocalExternalEdges = @{
     'liuli-widgets' = @()
     'liuli-enhanced' = @('ab_glyph_rasterizer','libm','harfrust','ttf-parser','unicode-bidi','unicode-script','unicode-segmentation')
     'liuli-alarms' = @()
+    'liuli-widget-demo' = @()
     'liuli-fontpack' = @('ab_glyph_rasterizer', 'serde', 'toml', 'ttf-parser')
     'liuli-sim'      = @('embedded-graphics')
     'liuli-firmware' = @('embedded-graphics-core')

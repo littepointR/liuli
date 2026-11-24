@@ -75,12 +75,14 @@ def package(output, fetch=False):
         shutil.copyfile(ROOT / "LICENSE", stage / "LICENSE")
         shutil.copyfile(ROOT / "README.md", stage / "README.md")
         shutil.copyfile(ROOT / "checks/package-firmware.py", stage / "package-firmware.py")
+        (stage/"tools").mkdir()
+        shutil.copyfile(ROOT/"tools/export-touch-trace.py", stage/"tools/export-touch-trace.py")
         board = stage / "boards/waveshare-s3-amoled"
         shutil.copytree(ROOT / "boards/waveshare-s3-amoled", board, ignore=shutil.ignore_patterns("target", "build", "sdkconfig"))
         shutil.copytree(ROOT / "crates/liuli-enhanced/tests/fonts", board / "bench-fonts")
         manifest = board / "rust/Cargo.toml"
         text = manifest.read_text()
-        for crate, path in (("liuli", "../../../crates/liuli"), ("liuli-alarms", "../../../apps/liuli-alarms")):
+        for path in ("../../../crates/liuli", "../../../apps/liuli-alarms", "../../../apps/liuli-widget-demo"):
             text = text.replace(f'path="{path}"', f'version="={VERSION}"')
         manifest.write_text(text)
         # The BSP lock in the checkout describes workspace path dependencies.
@@ -89,7 +91,7 @@ def package(output, fetch=False):
         starter_board = app / "board"
         shutil.copytree(board, starter_board, ignore=shutil.ignore_patterns("bench-fonts"))
         starter_tool = starter_board / "build.py"
-        starter_tool.write_text(starter_tool.read_text().replace('("basic", "enhanced", "benchmark", "sleep-benchmark")','("basic", "enhanced")'))
+        starter_tool.write_text(starter_tool.read_text().replace('("basic", "enhanced", "benchmark", "sleep-benchmark", "widget-demo")','("basic", "enhanced")'))
         starter_manifest = starter_board / "rust/Cargo.toml"
         starter_manifest.write_text(starter_manifest.read_text().replace(f'liuli-alarms={{version="={VERSION}"}}', 'device-ui={path="../.."}'))
         (starter_board / "rust/src/application.rs").write_text(
@@ -99,7 +101,9 @@ def package(output, fetch=False):
         shutil.copytree(vendor / f"liuli-alarms-{VERSION}", product)
         widgets = stage / "liuli-widgets"
         shutil.copytree(vendor / f"liuli-widgets-{VERSION}", widgets)
-        for consumer in (product, widgets):
+        catalog = stage / "liuli-widget-demo"
+        shutil.copytree(vendor / f"liuli-widget-demo-{VERSION}", catalog)
+        for consumer in (product, widgets, catalog):
             with (consumer/"Cargo.toml").open("a") as manifest:
                 manifest.write("\n[workspace]\n")
         # Exercise the packaged product and template without the workspace, registry cache or network.
@@ -117,9 +121,13 @@ def package(output, fetch=False):
         for name, binaries in (("liuli-fontpack",["--bin","liuli-fontpack"]),("liuli-sim",["--bins"])):
             cargo("install","--offline","--root",str(stage/"tools"),"--path",str(vendor/f"{name}-{VERSION}"),
                   *binaries,cwd=stage,env=env)
+        cargo("install", "--offline", "--root", str(stage/"tools"), "--path", str(catalog),
+              "--features", "desktop,enhanced", "--bin", "liuli-widget-demo", cwd=stage, env=env)
         (stage/"tools/.crates2.json").unlink(missing_ok=True)
         (stage/"tools/.crates.toml").unlink(missing_ok=True)
         exe_suffix = ".exe" if os.name == "nt" else ""
+        subprocess.run([str(stage/"tools/bin"/("liuli-widget-demo"+exe_suffix)), "--headless"],
+                       cwd=stage, env=env, check=True)
         subprocess.run([str(stage/"tools"/"bin"/("liuli-fontpack"+exe_suffix)),
                         "verify","--project",str(app/"assets/fonts.toml")],cwd=stage,env=env,check=True)
         packaged_sim = vendor / f"liuli-sim-{VERSION}"

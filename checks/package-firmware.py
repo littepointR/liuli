@@ -9,7 +9,7 @@ from zipfile import ZipFile, ZIP_DEFLATED
 PROFILES = ("basic", "enhanced", "starter", "benchmark")
 GUIDE = """# Waveshare ESP32-S3-Touch-AMOLED-1.91
 
-enhanced.bin 是日常告警固件，basic.bin 为零堆 UI 的基础档，starter.bin 显示 SDK 模板页面，benchmark.bin 会主动输出采样。每次在应用地址选择一个镜像。manifest.json 记录了文件长度、SHA-256 和写入位置。烧录前用 esptool flash_id 和 USB 设备身份核对型号、16 MiB 容量及当前端口。
+enhanced.bin 是日常告警固件，basic.bin 为零堆 UI 的基础档，starter.bin 显示 SDK 模板页面，benchmark.bin 会主动输出采样。官方包内的 widget-demo.bin 展示全部控件，可刷到同一应用地址并用触屏逐页操作。manifest.json 记录了文件长度、SHA-256 和写入位置。烧录前用 esptool flash_id 和 USB 设备身份核对型号、16 MiB 容量及当前端口。
 
 使用 ESP-IDF 5.5 的 Python 环境。对于已经具有本分区表和字体的参考板，恢复日常固件只需要以下命令。PORT 替换为设备管理器或 serial.tools.list_ports 确认的端口。
 
@@ -108,6 +108,10 @@ if __name__ == "__main__":
     parser.add_argument("--sdk", type=Path, required=True, help="extracted SDK root")
     for name in PROFILES:
         parser.add_argument("--" + name, type=Path, required=True, help=f"{name} ESP-IDF output directory")
+    parser.add_argument("--widget-demo", type=Path, help="include the interactive widget catalog firmware")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
-    package(args.sdk.resolve(), {p: getattr(args, p).resolve() for p in PROFILES}, args.out.resolve())
+    builds = {p: getattr(args, p).resolve() for p in PROFILES}
+    if args.widget_demo:
+        builds["widget-demo"] = args.widget_demo.resolve()
+    package(args.sdk.resolve(), builds, args.out.resolve())

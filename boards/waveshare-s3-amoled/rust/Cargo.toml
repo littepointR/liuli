@@ -2,7 +2,7 @@
 
 [package]
 name="liuli-s3-runtime"
-version="1.0.0-rc.1"
+version="1.0.0"
 edition="2024"
 license="MIT"
 publish=false
@@ -13,6 +13,7 @@ crate-type=["staticlib"]
 [dependencies]
 liuli={path="../../../crates/liuli",features=["platform-blend"]}
 liuli-alarms={path="../../../apps/liuli-alarms"}
+liuli-widget-demo={path="../../../apps/liuli-widget-demo",optional=true}
 embedded-graphics-core = "=0.4.1"
 
 [profile.release]
@@ -21,6 +22,8 @@ opt-level="s"
 codegen-units=1
 
 [features]
+input-trace=[]
 enhanced=["liuli/enhanced"]
 benchmark=["enhanced"]
 sleep-benchmark=["benchmark"]
+widget-demo=["enhanced","dep:liuli-widget-demo","liuli-widget-demo/enhanced"]

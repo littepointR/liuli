@@ -1,0 +1,21 @@
+[package]
+name = "liuli-widget-demo"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Interactive Liuli widget catalog for the desktop and ESP32-S3"
+
+[dependencies]
+liuli.workspace = true
+liuli-widgets = { version = "=1.0.0", path = "../../crates/liuli-widgets" }
+liuli-sim = { version = "=1.0.0", path = "../../host/liuli-sim", optional = true, default-features = false }
+
+[features]
+desktop = ["dep:liuli-sim"]
+enhanced = ["liuli/enhanced"]
+
+[[bin]]
+name = "liuli-widget-demo"
+path = "src/main.rs"
+required-features = ["desktop"]

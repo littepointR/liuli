@@ -54,7 +54,7 @@ dependencies = [
 
 [[package]]
 name = "liuli"
-version = "1.0.0-rc.1"
+version = "1.0.0"
 dependencies = [
  "embedded-graphics-core",
  "liuli-core",
@@ -64,14 +64,14 @@ dependencies = [
 
 [[package]]
 name = "liuli-core"
-version = "1.0.0-rc.1"
+version = "1.0.0"
 dependencies = [
  "embedded-graphics-core",
 ]
 
 [[package]]
 name = "liuli-firmware"
-version = "1.0.0-rc.1"
+version = "1.0.0"
 dependencies = [
  "embedded-graphics-core",
  "liuli",
@@ -80,7 +80,7 @@ dependencies = [
 
 [[package]]
 name = "liuli-render"
-version = "1.0.0-rc.1"
+version = "1.0.0"
 dependencies = [
  "embedded-graphics",
  "liuli-core",
@@ -89,14 +89,14 @@ dependencies = [
 
 [[package]]
 name = "liuli-settings"
-version = "1.0.0-rc.1"
+version = "1.0.0"
 dependencies = [
  "liuli",
 ]
 
 [[package]]
 name = "liuli-text"
-version = "1.0.0-rc.1"
+version = "1.0.0"
 dependencies = [
  "liuli-core",
 ]

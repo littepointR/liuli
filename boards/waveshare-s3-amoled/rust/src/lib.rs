@@ -4,13 +4,23 @@ use embedded_graphics_core::{
     Pixel, draw_target::DrawTarget, geometry::OriginDimensions, pixelcolor::IntoStorage,
 };
 use liuli::prelude::*;
+#[cfg(any(not(feature = "widget-demo"), feature = "benchmark"))]
 mod application;
+#[cfg(all(feature = "widget-demo", not(feature = "benchmark")))]
+mod application {
+    pub use liuli_widget_demo::Catalog as BoardApp;
+    pub fn model(height: u16) -> liuli_widget_demo::Model {
+        liuli_widget_demo::Model::new(height)
+    }
+}
 use application::BoardApp;
 
 #[cfg(feature = "benchmark")]
 mod benchmark;
 #[cfg(feature = "enhanced")]
 mod enhanced;
+#[cfg(feature = "input-trace")]
+mod input_trace;
 
 const WIDTH: u32 = 240;
 const HEIGHT: u32 = 536;
@@ -175,6 +185,8 @@ pub unsafe extern "C" fn liuli_run(ptr: *const u8, len: usize) -> i32 {
     }
     let mut previous = [Contact::default(); 2];
     let mut previous_count = 0;
+    #[cfg(feature = "input-trace")]
+    let mut trace = input_trace::Recorder::start(now);
     loop {
         let start = unsafe { board_now_us() };
         let now = InstantMs(start as u64 / 1000);
@@ -184,6 +196,16 @@ pub unsafe extern "C" fn liuli_run(ptr: *const u8, len: usize) -> i32 {
         if engine.try_advance(now, false).is_err() {
             return -3;
         }
+        #[cfg(feature = "input-trace")]
+        trace.tick(now);
+        let mut dispatch = |input| {
+            let result = engine.try_dispatch(input, now, false);
+            #[cfg(feature = "input-trace")]
+            if result.is_ok() {
+                trace.input(now, input);
+            }
+            result
+        };
         for old in &previous[..previous_count] {
             if !points[..count].iter().any(|p| p.id == old.id) {
                 let id = PointerId(old.id);
@@ -192,7 +214,7 @@ pub unsafe extern "C" fn liuli_run(ptr: *const u8, len: usize) -> i32 {
                 } else {
                     RawInput::PointerUp { id, pos: old.pos() }
                 };
-                if engine.try_dispatch(input, now, false).is_err() {
+                if dispatch(input).is_err() {
                     return -4;
                 }
             }
@@ -205,7 +227,7 @@ pub unsafe extern "C" fn liuli_run(ptr: *const u8, len: usize) -> i32 {
                 Some(old) if old.pos() != pos => RawInput::PointerMove { id, pos },
                 _ => continue,
             };
-            if engine.try_dispatch(input, now, false).is_err() {
+            if dispatch(input).is_err() {
                 return -4;
             }
         }

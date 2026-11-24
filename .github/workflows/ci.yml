@@ -83,7 +83,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        profile: [basic, enhanced, benchmark, sleep-benchmark]
+        profile: [basic, enhanced, benchmark, sleep-benchmark, widget-demo, enhanced-trace]
     steps:
       - uses: actions/checkout@v4
       - uses: esp-rs/xtensa-toolchain@v1.5
@@ -92,7 +92,10 @@ jobs:
         with:
           buildtargets: esp32s3
           version: '1.97.0.0'
-      - run: python3 boards/waveshare-s3-amoled/build.py --rust-only --profile ${{ matrix.profile }}
+      - if: matrix.profile != 'enhanced-trace'
+        run: python3 boards/waveshare-s3-amoled/build.py --rust-only --profile ${{ matrix.profile }}
+      - if: matrix.profile == 'enhanced-trace'
+        run: python3 boards/waveshare-s3-amoled/build.py --rust-only --profile enhanced --trace-input
       - uses: espressif/esp-idf-ci-action@v1
         with:
           esp_idf_version: v5.5.2

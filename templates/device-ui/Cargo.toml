@@ -4,10 +4,10 @@ version="0.1.0"
 edition="2024"
 
 [dependencies]
-liuli="=1.0.0-rc.1"
-liuli-widgets="=1.0.0-rc.1"
+liuli="=1.0.0"
+liuli-widgets="=1.0.0"
 
 [dev-dependencies]
-liuli-sim={version="=1.0.0-rc.1",default-features=false}
+liuli-sim={version="=1.0.0",default-features=false}
 
 [workspace]

@@ -1,6 +1,88 @@
 use liuli::prelude::*;
 use liuli_alarms::{Alarms, Model, Msg, Page};
+use liuli_sim::preview::replay_trace;
 use liuli_sim::session::AppSession;
+
+#[test]
+fn touch_workflow_edits_only_the_selected_record_and_restores_the_list() {
+    let trace = include_str!("fixtures/touch-workflow.trace");
+    let font = Lf4Font::from_bytes(include_bytes!("../assets/body.lf4")).unwrap();
+    let mut storage = Storage::new();
+    let mut app = AppSession::<Alarms>::new(
+        &mut storage,
+        Model::new(536),
+        FontSet::single(font),
+        Size::new(240, 536),
+        InstantMs(0),
+        true,
+    )
+    .unwrap();
+    let mut lines = trace.lines();
+    assert_eq!(lines.next(), Some("liuli-trace 1"));
+    let mut play = |app: &mut AppSession<'_, '_, Alarms>, count: usize| {
+        let mut part = String::from("liuli-trace 1\n");
+        for _ in 0..count {
+            let line = lines.next().expect("complete raw pointer gesture");
+            assert!(line.split_once(' ').unwrap().1.starts_with("kind="));
+            part.push_str(line);
+            part.push('\n');
+        }
+        replay_trace(app, &part).unwrap();
+    };
+    play(&mut app, 3);
+    let offset = app.engine().model().offset;
+    assert_eq!(offset, 320);
+    play(&mut app, 2);
+    assert_eq!(app.engine().model().routes.current(), Page::Detail(11));
+    play(&mut app, 2);
+    assert_eq!(app.engine().model().routes.current(), Page::Edit(11));
+    play(&mut app, 3);
+    assert_eq!(app.engine().model().draft, 75);
+    play(&mut app, 2);
+    assert!(app.engine().model().confirm);
+    play(&mut app, 2);
+    assert!(
+        !app.engine().model().confirm,
+        "confirm hit rect {:?}",
+        app.engine()
+            .active_tree()
+            .node_by_key(Key(32))
+            .map(|n| n.visible_rect)
+    );
+    assert_eq!(app.engine().model().routes.current(), Page::Detail(11));
+    assert_eq!(app.engine().model().threshold, 75);
+    play(&mut app, 2);
+    assert!(lines.next().is_none());
+    assert_eq!(app.engine().model().routes.current(), Page::List);
+    assert_eq!(app.engine().model().offset, offset);
+    assert_eq!(
+        app.engine()
+            .active_tree()
+            .node_by_key(Key(10))
+            .unwrap()
+            .scroll_y,
+        offset
+    );
+    assert_eq!(app.engine().focus().focused_key(), Some(Key(111)));
+    // Reopen both records by touch to verify the stored values independently of the editor.
+    let tap = |app: &mut AppSession<'_, '_, Alarms>, ms: u64, y: i32| {
+        replay_trace(
+            app,
+            &format!(
+                "liuli-trace 1\n{ms} kind=down&v=1&x=100&y={y}\n{} kind=up&v=1&x=100&y={y}\n",
+                ms + 16
+            ),
+        )
+        .unwrap();
+    };
+    tap(&mut app, 460, 80);
+    assert_eq!(app.engine().model().routes.current(), Page::Detail(11));
+    assert_eq!(app.engine().model().threshold, 75);
+    tap(&mut app, 500, 92);
+    tap(&mut app, 550, 112);
+    assert_eq!(app.engine().model().routes.current(), Page::Detail(12));
+    assert_eq!(app.engine().model().threshold, 50);
+}
 #[test]
 fn bounded_scroll_edit_and_return() {
     let font = Lf4Font::from_bytes(include_bytes!("../assets/body.lf4")).unwrap();

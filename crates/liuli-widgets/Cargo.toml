@@ -9,4 +9,4 @@ license.workspace = true
 liuli.workspace = true
 
 [dev-dependencies]
-liuli-sim={version="=1.0.0-rc.1",path="../../host/liuli-sim",default-features=false}
+liuli-sim={version="=1.0.0",path="../../host/liuli-sim",default-features=false}

@@ -10,7 +10,7 @@ embedded-graphics-core.workspace = true
 liuli-core.workspace = true
 liuli-text.workspace = true
 liuli-render.workspace = true
-liuli-enhanced = { version = "=1.0.0-rc.1", path = "../liuli-enhanced", optional = true }
+liuli-enhanced = { version = "=1.0.0", path = "../liuli-enhanced", optional = true }
 
 [features]
 default = []

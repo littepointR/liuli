@@ -1,0 +1,17 @@
+liuli-trace 1
+10 kind=down&v=1&x=120&y=440
+30 kind=move&v=1&x=120&y=120
+48 kind=up&v=1&x=120&y=120
+80 kind=down&v=1&x=100&y=80
+96 kind=up&v=1&x=100&y=80
+140 kind=down&v=1&x=120&y=60
+156 kind=up&v=1&x=120&y=60
+200 kind=down&v=1&x=120&y=60
+216 kind=move&v=1&x=178&y=60
+232 kind=up&v=1&x=178&y=60
+280 kind=down&v=1&x=120&y=92
+296 kind=up&v=1&x=120&y=92
+340 kind=down&v=1&x=120&y=18
+356 kind=up&v=1&x=120&y=18
+400 kind=down&v=1&x=120&y=92
+416 kind=up&v=1&x=120&y=92

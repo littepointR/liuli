@@ -378,6 +378,7 @@ pub fn emit_commands_with(
     };
     sp += 1;
 
+    let mut outline_layer = None;
     while sp > 0 {
         let top = sp - 1;
         let frame = stack[top];
@@ -865,35 +866,61 @@ pub fn emit_commands_with(
                 }
             }
 
-            if focus.ring_visible
-                && focus.focused_slot == Some(frame.slot)
-                && !rect.intersect(clip).is_empty()
-            {
-                let ring_rect = rect.expand(2);
-                let ring_clip = clip.intersect(screen);
-                if !ring_rect.intersect(ring_clip).is_empty() {
-                    out.push(PaintCmd::StrokeRect {
-                        rect: ring_rect,
-                        clip: ring_clip,
-                        color: node.props.focus_color,
-                        width: 2,
-                    })?;
-                    if focus.editing {
-                        let inner_ring = rect.expand(1);
-                        out.push(PaintCmd::StrokeRect {
-                            rect: inner_ring,
-                            clip: ring_clip,
-                            color: node.props.accent,
-                            width: 1,
-                        })?;
+            if focus.ring_visible && focus.focused_slot == Some(frame.slot) {
+                // Paint above adjacent controls and scrollbars in this flow, but below
+                // the next overlay sibling (for example a toast or a modal).
+                let mut layer = frame.slot;
+                while let Some(parent) = tree.nodes[usize::from(layer)].parent.get_u16() {
+                    if matches!(
+                        tree.nodes[usize::from(parent)].kind,
+                        NodeKind::Stack | NodeKind::Root | NodeKind::Modal
+                    ) {
+                        break;
                     }
+                    layer = parent;
                 }
+                outline_layer = Some(layer);
             }
-
+            if outline_layer == Some(frame.slot)
+                && let Some(slot) = focus.focused_slot
+            {
+                let focused = &tree.nodes[usize::from(slot)];
+                emit_focus_outline(focused, screen, focus.editing, out)?;
+                outline_layer = None;
+            }
             sp -= 1;
         }
     }
+    Ok(())
+}
 
+fn emit_focus_outline(
+    node: &crate::node::RetainedNode,
+    screen: Rect,
+    editing: bool,
+    out: &mut CommandList,
+) -> Result<(), BuildError> {
+    let rect = node.layout_rect;
+    let ring_clip = node.clip_rect.intersect(screen);
+    if !rect.intersect(ring_clip).is_empty() {
+        // Fit the outward stroke on sides that reach a container edge. Keeping
+        // the widget's full bounds avoids inventing a border at a scroll cut.
+        let ring_rect = rect.union(rect.expand(2).intersect(ring_clip));
+        out.push(PaintCmd::StrokeRect {
+            rect: ring_rect,
+            clip: ring_clip,
+            color: node.props.focus_color,
+            width: 2,
+        })?;
+        if editing {
+            out.push(PaintCmd::StrokeRect {
+                rect: ring_rect.inset(1, 1, 1, 1),
+                clip: ring_clip,
+                color: node.props.accent,
+                width: 1,
+            })?;
+        }
+    }
     Ok(())
 }
 

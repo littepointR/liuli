@@ -11,6 +11,8 @@ cargo run --offline --manifest-path device-ui/Cargo.toml --example preview
 
 ## 控件与主题
 
+安装包内的 liuli-widget-demo 是完整交互控件目录。运行 tools/bin/liuli-widget-demo（Windows 使用 .exe），打开终端打印的网址即可操作八个分类。示例源码位于包根目录的 liuli-widget-demo。板级固件使用同一份应用代码。[控件清单和运行方法](widget-demo.md)
+
 用下面的命令启动控件目录，切换 Controls / Meter，操作选择器、数值编辑器和确认框。控件目录可独立从供应的控件包构建。
 
 ~~~
@@ -89,11 +91,11 @@ try_message、try_dispatch 和 try_advance 提供事务结果。Busy 会交还�
 
 ## 版本与兼容性
 
-1.0.0-rc.1 冻结本候选版的应用、组件和资源接口，正式发布以实板验收记录为准。应用、控件、模拟器、资源工具和参考板使用同一个 SDK 版本。升级时先保留原 LF4 和应用回放，再在新 SDK 的供应目录中构建并核对它们。安装包自带 liuli-sim 命令，可在空目录内重放两个 v0.2 应用。打包验收会把 12 幅输出和原始 PPM 逐字节比较。
+1.0.0 沿用 RC1 已冻结的应用、组件与资源接口。应用、控件、模拟器、资源工具和参考板使用同一个 SDK 版本。升级时先保留原 LF4 和应用回放，再在新 SDK 的供应目录中构建并核对它们。安装包自带 liuli-sim 命令，可在空目录内重放两个 v0.2 应用。打包验收会把 12 幅输出和原始 PPM 逐字节比较。
 
 ~~~
-tools/bin/liuli-sim replay vendor/liuli-sim-1.0.0-rc.1/tests/fixtures/settings.events --out shots/settings --format ppm
-tools/bin/liuli-sim replay vendor/liuli-sim-1.0.0-rc.1/tests/fixtures/terminal.events --out shots/terminal --format ppm
+tools/bin/liuli-sim replay vendor/liuli-sim-1.0.0/tests/fixtures/settings.events --out shots/settings --format ppm
+tools/bin/liuli-sim replay vendor/liuli-sim-1.0.0/tests/fixtures/terminal.events --out shots/terminal --format ppm
 ~~~
 
 | 接口或数据 | 1.0 兼容约定 |
