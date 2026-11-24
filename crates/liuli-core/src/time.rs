@@ -81,6 +81,22 @@ pub enum AnimProp {
     #[default]
     ToggleKnob = 0,
     PressDepth = 1,
+    Custom0 = 2,
+    Custom1 = 3,
+    Custom2 = 4,
+    Custom3 = 5,
+}
+
+impl AnimProp {
+    #[inline]
+    pub const fn custom(channel: u8) -> Self {
+        match channel & 0b11 {
+            1 => Self::Custom1,
+            2 => Self::Custom2,
+            3 => Self::Custom3,
+            _ => Self::Custom0,
+        }
+    }
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]

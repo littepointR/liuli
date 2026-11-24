@@ -1,10 +1,11 @@
 use crate::capacity::{BuildError, MAX_COMMANDS, MAX_DEPTH, MAX_NODES};
 use crate::geometry::{Point, Rect, Rgb565};
-use crate::node::RetainedTree;
+use crate::node::{RetainedNode, RetainedTree};
+use crate::part_style::{IconPosition, WidgetPartStyle};
 use crate::time::{ANIM_SCALE, AnimPool, AnimProp};
 use crate::view::{
-    Align, BUTTON_ICON_GAP, BUTTON_ICON_SIZE, BUTTON_ICON_SPAN, FontId, IconKind, NodeKind,
-    SlotLink, TextAlign, TextStyleFlags,
+    Align, BUTTON_ICON_GAP, BUTTON_ICON_SIZE, FontId, IconKind, Key, NodeKind, PaintMode, SlotLink,
+    StoredProps, TextAlign, TextStyleFlags,
 };
 
 #[repr(transparent)]
@@ -103,6 +104,32 @@ pub enum PaintCmd {
         max: i16,
         stroke_width: u8,
     } = 7,
+    Line {
+        p0: Point,
+        p1: Point,
+        clip: Rect,
+        color: Rgb565,
+        width: u8,
+        aa: bool,
+    } = 13,
+    Circle {
+        center: Point,
+        clip: Rect,
+        radius: u16,
+        fill: Option<Rgb565>,
+        border_color: Option<Rgb565>,
+        border_width: u8,
+    } = 14,
+    Arc {
+        center: Point,
+        clip: Rect,
+        radius: u16,
+        start_deg: i16,
+        sweep_deg: i16,
+        color: Rgb565,
+        width: u8,
+        cap_round: bool,
+    } = 15,
 }
 
 const _: () = assert!(core::mem::size_of::<PaintCmd>() <= 48);
@@ -188,6 +215,60 @@ impl PaintCmd {
             | Self::Icon { rect, clip, .. }
             | Self::Sparkline { rect, clip, .. } => rect.intersect(clip),
             Self::Text { clip, .. } => clip,
+            Self::Line {
+                p0,
+                p1,
+                clip,
+                width,
+                ..
+            } => {
+                let pad = i32::from(width.max(1)) / 2 + 2;
+                let x0 = p0.x.min(p1.x).saturating_sub(pad);
+                let y0 = p0.y.min(p1.y).saturating_sub(pad);
+                let x1 = p0.x.max(p1.x).saturating_add(pad + 1);
+                let y1 = p0.y.max(p1.y).saturating_add(pad + 1);
+                Rect::new(
+                    x0,
+                    y0,
+                    x1.saturating_sub(x0).max(0) as u32,
+                    y1.saturating_sub(y0).max(0) as u32,
+                )
+                .intersect(clip)
+            }
+            Self::Circle {
+                center,
+                clip,
+                radius,
+                border_width,
+                ..
+            } => {
+                let r = i32::from(radius) + i32::from(border_width) + 2;
+                let size = (r * 2 + 1).max(0) as u32;
+                Rect::new(
+                    center.x.saturating_sub(r),
+                    center.y.saturating_sub(r),
+                    size,
+                    size,
+                )
+                .intersect(clip)
+            }
+            Self::Arc {
+                center,
+                clip,
+                radius,
+                width,
+                ..
+            } => {
+                let r = i32::from(radius) + i32::from(width) + 2;
+                let size = (r * 2 + 1).max(0) as u32;
+                Rect::new(
+                    center.x.saturating_sub(r),
+                    center.y.saturating_sub(r),
+                    size,
+                    size,
+                )
+                .intersect(clip)
+            }
         }
     }
 }
@@ -382,17 +463,106 @@ struct PaintDepthFrame {
     next_child: SlotLink,
 }
 
-/// Coordinates supplied to fill are relative to the widget.
+/// Current interaction and animation state delivered to `App::paint_override` and `paint_custom`.
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
+pub struct PaintState {
+    pub pressed: bool,
+    pub focused: bool,
+    pub editing: bool,
+    pub checked: bool,
+    pub enabled: bool,
+    pub anim_progress: i32,
+}
+
+/// Result returned by `App::paint_override`.
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
+#[repr(u8)]
+pub enum PaintOverride {
+    /// Proceed with the widget's default painting after the hook returns.
+    #[default]
+    Default = 0,
+    /// Skip default widget painting (override handled everything).
+    Handled = 1,
+}
+
+#[derive(Copy, Clone)]
+struct BuiltinPaintCtx<'a> {
+    node: &'a RetainedNode,
+    anims: &'a AnimPool,
+    focus: PaintFocusInfo,
+    screen: Rect,
+    part: WidgetPartStyle,
+    slot: u16,
+    root_bg: Rgb565,
+}
+
+const MAX_CLIP_DEPTH: usize = 4;
+
+/// Coordinates supplied to drawing methods are relative to the widget's `bounds`.
 pub struct WidgetCanvas<'a> {
     bounds: Rect,
-    clip: Rect,
+    clip_stack: [Rect; MAX_CLIP_DEPTH],
+    clip_depth: u8,
     commands: &'a mut CommandList,
     pub pressed: bool,
+    pub state: PaintState,
+    slot: u16,
+    builtin: Option<BuiltinPaintCtx<'a>>,
 }
+
 impl WidgetCanvas<'_> {
+    #[inline]
     pub fn size(&self) -> crate::geometry::Size {
         self.bounds.size()
     }
+
+    #[inline]
+    fn current_clip(&self) -> Rect {
+        let idx = (self.clip_depth as usize)
+            .saturating_sub(1)
+            .min(MAX_CLIP_DEPTH - 1);
+        self.clip_stack[idx]
+    }
+
+    /// Push a widget-local sub-clip rectangle onto the 4-level clip stack.
+    pub fn push_clip(&mut self, rect: Rect) -> bool {
+        let depth = self.clip_depth as usize;
+        if depth >= MAX_CLIP_DEPTH {
+            return false;
+        }
+        let next = rect
+            .translate(self.bounds.x, self.bounds.y)
+            .intersect(self.current_clip());
+        self.clip_stack[depth] = next;
+        self.clip_depth += 1;
+        true
+    }
+
+    /// Pop the top sub-clip pushed by `push_clip`.
+    pub fn pop_clip(&mut self) {
+        if self.clip_depth > 1 {
+            self.clip_depth -= 1;
+        }
+    }
+
+    #[inline]
+    fn to_global(&self, rect: Rect) -> Rect {
+        Rect::new(
+            self.bounds.x.saturating_add(rect.x),
+            self.bounds.y.saturating_add(rect.y),
+            rect.w,
+            rect.h,
+        )
+    }
+
+    #[inline]
+    fn point_global(&self, p: Point) -> Point {
+        Point::new(
+            self.bounds.x.saturating_add(p.x),
+            self.bounds.y.saturating_add(p.y),
+        )
+    }
+
     #[cfg(feature = "owned-images")]
     pub fn surface(
         &mut self,
@@ -401,8 +571,9 @@ impl WidgetCanvas<'_> {
         angle: u8,
         alpha: u8,
     ) -> Result<(), BuildError> {
+        let clip = self.current_clip();
         let rect = rect.translate(self.bounds.x, self.bounds.y);
-        if alpha == 0 || !rect.intersects(self.clip) {
+        if alpha == 0 || !rect.intersects(clip) {
             return Ok(());
         }
         if self.commands.count >= MAX_COMMANDS {
@@ -416,12 +587,13 @@ impl WidgetCanvas<'_> {
         surfaces.push(source);
         self.commands.push(PaintCmd::Surface {
             rect,
-            clip: self.clip,
+            clip,
             index,
             alpha: alpha.min(15),
             angle,
         })
     }
+
     pub fn bitmap(
         &mut self,
         rect: Rect,
@@ -429,16 +601,12 @@ impl WidgetCanvas<'_> {
         angle: u8,
         alpha: u8,
     ) -> Result<(), BuildError> {
-        let rect = Rect::new(
-            self.bounds.x.saturating_add(rect.x),
-            self.bounds.y.saturating_add(rect.y),
-            rect.w,
-            rect.h,
-        );
-        if alpha != 0 && rect.intersects(self.clip) {
+        let clip = self.current_clip();
+        let rect = self.to_global(rect);
+        if alpha != 0 && rect.intersects(clip) {
             self.commands.push(PaintCmd::Bitmap {
                 rect,
-                clip: self.clip,
+                clip,
                 source,
                 angle,
                 alpha: alpha.min(15),
@@ -446,20 +614,310 @@ impl WidgetCanvas<'_> {
         }
         Ok(())
     }
+
     pub fn fill(&mut self, rect: Rect, color: Rgb565) -> Result<(), BuildError> {
-        let rect = Rect::new(
-            self.bounds.x.saturating_add(rect.x),
-            self.bounds.y.saturating_add(rect.y),
-            rect.w,
-            rect.h,
-        )
-        .intersect(self.clip);
+        let clip = self.current_clip();
+        let rect = self.to_global(rect).intersect(clip);
         if !rect.is_empty() {
-            self.commands.push(PaintCmd::FillRect {
-                rect,
-                clip: self.clip,
+            self.commands
+                .push(PaintCmd::FillRect { rect, clip, color })?;
+        }
+        Ok(())
+    }
+
+    pub fn rounded_rect(
+        &mut self,
+        rect: Rect,
+        color: Rgb565,
+        radius: u8,
+        border_color: Option<Rgb565>,
+        border_width: u8,
+    ) -> Result<(), BuildError> {
+        let clip = self.current_clip();
+        let g = self.to_global(rect);
+        if !g.intersect(clip).is_empty() {
+            self.commands.push(PaintCmd::FillRoundedRect {
+                rect: g,
+                clip,
+                color,
+                radius,
+                border_color,
+                border_width,
+            })?;
+        }
+        Ok(())
+    }
+
+    pub fn stroke_rect(&mut self, rect: Rect, color: Rgb565, width: u8) -> Result<(), BuildError> {
+        if width == 0 {
+            return Ok(());
+        }
+        let clip = self.current_clip();
+        let g = self.to_global(rect);
+        if !g.intersect(clip).is_empty() {
+            self.commands.push(PaintCmd::StrokeRect {
+                rect: g,
+                clip,
+                color,
+                width,
+            })?;
+        }
+        Ok(())
+    }
+
+    pub fn stroke_rounded_rect(
+        &mut self,
+        rect: Rect,
+        color: Rgb565,
+        width: u8,
+        radius: u8,
+    ) -> Result<(), BuildError> {
+        if width == 0 {
+            return Ok(());
+        }
+        let clip = self.current_clip();
+        let g = self.to_global(rect);
+        if !g.intersect(clip).is_empty() {
+            self.commands.push(PaintCmd::StrokeRoundedRect {
+                rect: g,
+                clip,
+                color,
+                width,
+                radius,
+            })?;
+        }
+        Ok(())
+    }
+
+    pub fn overlay(&mut self, rect: Rect, color: Rgb565, alpha: u8) -> Result<(), BuildError> {
+        let clip = self.current_clip();
+        let g = self.to_global(rect).intersect(clip);
+        if alpha != 0 && !g.is_empty() {
+            self.commands.push(PaintCmd::Overlay {
+                rect: g,
+                clip,
+                color,
+                alpha: alpha.min(15),
+            })?;
+        }
+        Ok(())
+    }
+
+    pub fn icon(&mut self, rect: Rect, kind: IconKind, color: Rgb565) -> Result<(), BuildError> {
+        if kind == IconKind::None {
+            return Ok(());
+        }
+        let clip = self.current_clip();
+        let g = self.to_global(rect);
+        if !g.intersect(clip).is_empty() {
+            self.commands.push(PaintCmd::Icon {
+                rect: g,
+                clip,
+                kind,
                 color,
             })?;
+        }
+        Ok(())
+    }
+
+    pub fn shadow(
+        &mut self,
+        rect: Rect,
+        radius: u8,
+        shadow: crate::effects::Shadow,
+    ) -> Result<(), BuildError> {
+        if shadow.opacity == 0 {
+            return Ok(());
+        }
+        let clip = self.current_clip();
+        let g = self.to_global(rect);
+        if !g.is_empty() && shadow.bounds(g).intersects(clip) {
+            self.commands.push(PaintCmd::Shadow {
+                rect: g,
+                clip,
+                shadow,
+                projection: crate::effects::Projection(0),
+                radius,
+            })?;
+        }
+        Ok(())
+    }
+
+    pub fn line(
+        &mut self,
+        p0: Point,
+        p1: Point,
+        color: Rgb565,
+        width: u8,
+        aa: bool,
+    ) -> Result<(), BuildError> {
+        if width == 0 {
+            return Ok(());
+        }
+        let cmd = PaintCmd::Line {
+            p0: self.point_global(p0),
+            p1: self.point_global(p1),
+            clip: self.current_clip(),
+            color,
+            width,
+            aa,
+        };
+        if !cmd.bounds().is_empty() {
+            self.commands.push(cmd)?;
+        }
+        Ok(())
+    }
+
+    pub fn circle(
+        &mut self,
+        center: Point,
+        radius: u16,
+        fill: Option<Rgb565>,
+        border_color: Option<Rgb565>,
+        border_width: u8,
+    ) -> Result<(), BuildError> {
+        if fill.is_none() && (border_color.is_none() || border_width == 0) {
+            return Ok(());
+        }
+        let cmd = PaintCmd::Circle {
+            center: self.point_global(center),
+            clip: self.current_clip(),
+            radius,
+            fill,
+            border_color,
+            border_width,
+        };
+        if !cmd.bounds().is_empty() {
+            self.commands.push(cmd)?;
+        }
+        Ok(())
+    }
+
+    pub fn arc(
+        &mut self,
+        center: Point,
+        radius: u16,
+        start_deg: i16,
+        sweep_deg: i16,
+        width: u8,
+        cap_round: bool,
+        color: Rgb565,
+    ) -> Result<(), BuildError> {
+        if width == 0 || sweep_deg == 0 {
+            return Ok(());
+        }
+        let cmd = PaintCmd::Arc {
+            center: self.point_global(center),
+            clip: self.current_clip(),
+            radius,
+            start_deg,
+            sweep_deg,
+            color,
+            width,
+            cap_round,
+        };
+        if !cmd.bounds().is_empty() {
+            self.commands.push(cmd)?;
+        }
+        Ok(())
+    }
+
+    /// Draw the node's own text (`props.text`) inside a widget-local `rect`.
+    pub fn node_text(
+        &mut self,
+        rect: Rect,
+        props: &StoredProps,
+        color: Rgb565,
+        align: TextAlign,
+    ) -> Result<(), BuildError> {
+        if matches!(props.text(), crate::view::TextRef::Static("")) {
+            return Ok(());
+        }
+        let clip = self.current_clip();
+        let g = self.to_global(rect);
+        let eff_clip = g.intersect(clip);
+        if eff_clip.is_empty() {
+            return Ok(());
+        }
+        self.commands.push(PaintCmd::text_styled(
+            Point::new(g.x, g.y),
+            eff_clip,
+            TextId(self.slot),
+            color,
+            g.w,
+            props.max_lines,
+            props.ellipsis(),
+            props.font(),
+            align,
+            props.text_style(),
+            props.letter_spacing,
+            props.line_spacing,
+        ))
+    }
+
+    /// Paint the full default appearance of the current built-in node (valid inside `paint_override`).
+    pub fn paint_default(&mut self) -> Result<(), BuildError> {
+        if let Some(ctx) = self.builtin {
+            paint_builtin_node(ctx, self.commands)?;
+        }
+        Ok(())
+    }
+
+    pub fn paint_box_bg(&mut self) -> Result<(), BuildError> {
+        if let Some(ctx) = self.builtin {
+            emit_box_bg_and_border(
+                ctx.node,
+                ctx.part,
+                ctx.node.layout_rect,
+                ctx.node.clip_rect,
+                ctx.root_bg,
+                self.commands,
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn paint_slider_track(&mut self) -> Result<(), BuildError> {
+        if let Some(ctx) = self.builtin
+            && ctx.node.kind == NodeKind::Slider
+        {
+            paint_slider_parts(ctx, true, false, self.commands)?;
+        }
+        Ok(())
+    }
+
+    pub fn paint_slider_knob(&mut self) -> Result<(), BuildError> {
+        if let Some(ctx) = self.builtin
+            && ctx.node.kind == NodeKind::Slider
+        {
+            paint_slider_parts(ctx, false, true, self.commands)?;
+        }
+        Ok(())
+    }
+
+    pub fn paint_toggle_track(&mut self) -> Result<(), BuildError> {
+        if let Some(ctx) = self.builtin
+            && ctx.node.kind == NodeKind::Toggle
+        {
+            paint_toggle_parts(ctx, true, false, self.commands)?;
+        }
+        Ok(())
+    }
+
+    pub fn paint_toggle_knob(&mut self) -> Result<(), BuildError> {
+        if let Some(ctx) = self.builtin
+            && ctx.node.kind == NodeKind::Toggle
+        {
+            paint_toggle_parts(ctx, false, true, self.commands)?;
+        }
+        Ok(())
+    }
+
+    pub fn paint_progress_bar(&mut self) -> Result<(), BuildError> {
+        if let Some(ctx) = self.builtin
+            && ctx.node.kind == NodeKind::ProgressBar
+        {
+            paint_progress_bar_node(ctx, self.commands)?;
         }
         Ok(())
     }
@@ -481,11 +939,27 @@ pub fn emit_commands_with(
     focus: PaintFocusInfo,
     screen: Rect,
     out: &mut CommandList,
-    mut custom: impl FnMut(
-        crate::view::Key,
-        &crate::view::StoredProps,
+    custom: impl FnMut(Key, &StoredProps, &mut WidgetCanvas<'_>) -> Result<(), BuildError>,
+) -> Result<(), BuildError> {
+    emit_commands_with_override(tree, anims, focus, screen, out, custom, |_, _, _, _, _| {
+        Ok(PaintOverride::Default)
+    })
+}
+
+pub fn emit_commands_with_override(
+    tree: &RetainedTree,
+    anims: &AnimPool,
+    focus: PaintFocusInfo,
+    screen: Rect,
+    out: &mut CommandList,
+    mut custom: impl FnMut(Key, &StoredProps, &mut WidgetCanvas<'_>) -> Result<(), BuildError>,
+    mut override_cb: impl FnMut(
+        Key,
+        NodeKind,
+        &StoredProps,
+        PaintState,
         &mut WidgetCanvas<'_>,
-    ) -> Result<(), BuildError>,
+    ) -> Result<PaintOverride, BuildError>,
 ) -> Result<(), BuildError> {
     out.reset();
     out.screen = screen;
@@ -574,447 +1048,66 @@ pub fn emit_commands_with(
                 }
             }
             if visible || node.kind == NodeKind::Modal {
-                match node.kind {
-                    NodeKind::Custom => {
+                let part = tree.part_styles.get(node.key);
+                let is_focused = focus.focused_slot == Some(frame.slot);
+                let anim_progress = if node.kind == NodeKind::Toggle {
+                    anims
+                        .cached_value(node.key, AnimProp::ToggleKnob)
+                        .unwrap_or(if node.props.checked() { ANIM_SCALE } else { 0 })
+                        .clamp(0, ANIM_SCALE)
+                } else {
+                    anims.cached_value(node.key, AnimProp::Custom0).unwrap_or(0)
+                };
+                let state = PaintState {
+                    pressed: node.pressed,
+                    focused: is_focused && focus.ring_visible,
+                    editing: is_focused && focus.editing,
+                    checked: node.props.checked(),
+                    enabled: node.props.enabled(),
+                    anim_progress,
+                };
+                let root_bg = out.root_bg;
+                let init_clip = clip.intersect(rect);
+                let clip_stack = [init_clip, Rect::ZERO, Rect::ZERO, Rect::ZERO];
+                if node.kind == NodeKind::Custom {
+                    let mut canvas = WidgetCanvas {
+                        bounds: rect,
+                        clip_stack,
+                        clip_depth: 1,
+                        commands: out,
+                        pressed: node.pressed,
+                        state,
+                        slot: frame.slot,
+                        builtin: None,
+                    };
+                    custom(node.key, &node.props, &mut canvas)?;
+                } else {
+                    let ctx = BuiltinPaintCtx {
+                        node,
+                        anims,
+                        focus,
+                        screen,
+                        part,
+                        slot: frame.slot,
+                        root_bg,
+                    };
+                    let mode = if node.props.paint_mode() == PaintMode::Override {
                         let mut canvas = WidgetCanvas {
                             bounds: rect,
-                            clip: clip.intersect(rect),
+                            clip_stack,
+                            clip_depth: 1,
                             commands: out,
                             pressed: node.pressed,
+                            state,
+                            slot: frame.slot,
+                            builtin: Some(ctx),
                         };
-                        custom(node.key, &node.props, &mut canvas)?;
-                    }
-                    NodeKind::Root => {
-                        if let Some(bg) = node.props.bg() {
-                            out.push(PaintCmd::FillRect {
-                                rect,
-                                clip,
-                                color: bg,
-                            })?;
-                        }
-                    }
-                    NodeKind::Row | NodeKind::Column | NodeKind::Stack | NodeKind::ScrollY => {
-                        emit_box_bg_and_border(node, rect, clip, out)?;
-                    }
-                    NodeKind::Modal => {
-                        if node.props.overlay_alpha > 0 {
-                            out.push(PaintCmd::Overlay {
-                                rect: screen,
-                                clip: screen,
-                                color: node.props.overlay_color,
-                                alpha: node.props.overlay_alpha.min(15),
-                            })?;
-                        }
-                        emit_box_bg_and_border(node, rect, clip, out)?;
-                    }
-                    NodeKind::Label => {
-                        emit_box_bg_and_border(node, rect, clip, out)?;
-                        let inner = rect.inset(
-                            node.props.padding.left as u32,
-                            node.props.padding.top as u32,
-                            node.props.padding.right as u32,
-                            node.props.padding.bottom as u32,
-                        );
-                        let text_x = inner.x;
-                        let mut text_y = inner.y;
-                        let align = node.props.text_align();
-                        let font = node.props.font();
-                        let text_style = node.props.text_style();
-                        let mut text_clip = clip;
-                        if node.text_cache.valid {
-                            let text_size = node.text_cache.size;
-                            if node.props.align_cross == Align::Center && inner.h > text_size.height
-                            {
-                                text_y += ((inner.h - text_size.height) / 2) as i32;
-                            } else if node.props.align_cross == Align::End
-                                && inner.h > text_size.height
-                            {
-                                text_y += (inner.h - text_size.height) as i32;
-                            }
-                            if node.text_cache.align == align
-                                && (align == TextAlign::Start
-                                    || node.text_cache.wrap_width == inner.w)
-                            {
-                                let mut rel_ink = node.text_cache.rel_ink;
-                                if text_style.underline() || text_style.strikethrough() {
-                                    rel_ink = rel_ink.union(Rect::new(
-                                        0,
-                                        0,
-                                        text_size.width.max(1),
-                                        text_size.height.saturating_add(3),
-                                    ));
-                                }
-                                text_clip = clip.intersect(rel_ink.translate(text_x, text_y));
-                            }
-                        }
-                        if !text_clip.is_empty() {
-                            out.push(PaintCmd::text_styled(
-                                Point::new(text_x, text_y),
-                                text_clip,
-                                TextId(frame.slot),
-                                node.props.fg,
-                                inner.w,
-                                node.props.max_lines,
-                                node.props.ellipsis(),
-                                font,
-                                align,
-                                text_style,
-                                node.props.letter_spacing,
-                                node.props.line_spacing,
-                            ))?;
-                        }
-                    }
-                    NodeKind::Button => {
-                        let bg = if node.pressed {
-                            match (node.props.bg(), node.props.press_feedback()) {
-                                (Some(c), fb) => {
-                                    Some(apply_press_feedback(c, node.props.accent, fb))
-                                }
-                                (None, crate::view::PressFeedback::None) => None,
-                                (None, fb) => {
-                                    Some(apply_press_feedback(out.root_bg, node.props.accent, fb))
-                                }
-                            }
-                        } else {
-                            node.props.bg()
-                        };
-                        if let Some(bg_col) = bg {
-                            if node.props.radius > 0 || node.props.border_color().is_some() {
-                                out.push(PaintCmd::FillRoundedRect {
-                                    rect,
-                                    clip,
-                                    color: bg_col,
-                                    radius: node.props.radius,
-                                    border_color: node.props.border_color(),
-                                    border_width: node.props.border_width,
-                                })?;
-                            } else {
-                                out.push(PaintCmd::FillRect {
-                                    rect,
-                                    clip,
-                                    color: bg_col,
-                                })?;
-                            }
-                        } else if let Some(bc) = node.props.border_color()
-                            && node.props.border_width > 0
-                        {
-                            if node.props.radius > 0 {
-                                out.push(PaintCmd::StrokeRoundedRect {
-                                    rect,
-                                    clip,
-                                    color: bc,
-                                    width: node.props.border_width,
-                                    radius: node.props.radius,
-                                })?;
-                            } else {
-                                out.push(PaintCmd::StrokeRect {
-                                    rect,
-                                    clip,
-                                    color: bc,
-                                    width: node.props.border_width,
-                                })?;
-                            }
-                        }
-
-                        let inner = rect.inset(
-                            node.props.padding.left as u32,
-                            node.props.padding.top as u32,
-                            node.props.padding.right as u32,
-                            node.props.padding.bottom as u32,
-                        );
-                        let has_icon = node.props.icon != IconKind::None;
-                        let icon_w = if has_icon { BUTTON_ICON_SIZE } else { 0 };
-                        let gap_w = if has_icon { BUTTON_ICON_GAP } else { 0 };
-                        let icon_span = if has_icon { BUTTON_ICON_SPAN } else { 0 };
-                        let text_w = if node.text_cache.valid {
-                            node.text_cache.size.width
-                        } else {
-                            0
-                        };
-                        let text_h = if node.text_cache.valid {
-                            node.text_cache.size.height
-                        } else {
-                            16
-                        };
-                        let mut text_y = inner.y;
-                        if inner.h > text_h {
-                            text_y = inner.y + ((inner.h - text_h) / 2) as i32;
-                        }
-                        let wrap_w = inner.w.saturating_sub(icon_span);
-                        let align = node.props.text_align();
-                        let font = node.props.font();
-                        let text_x;
-                        let cmd_align;
-                        if align == TextAlign::Start {
-                            let total_w = icon_w + gap_w + text_w;
-                            let start_x = if inner.w > total_w {
-                                inner.x + ((inner.w - total_w) / 2) as i32
-                            } else {
-                                inner.x
-                            };
-                            if has_icon {
-                                let iy = inner.y
-                                    + ((inner.h.saturating_sub(BUTTON_ICON_SIZE)) / 2) as i32;
-                                out.push(PaintCmd::Icon {
-                                    rect: Rect::new(
-                                        start_x,
-                                        iy,
-                                        BUTTON_ICON_SIZE,
-                                        BUTTON_ICON_SIZE,
-                                    ),
-                                    clip,
-                                    kind: node.props.icon,
-                                    color: node.props.fg,
-                                })?;
-                                text_x = start_x + BUTTON_ICON_SPAN as i32;
-                            } else {
-                                text_x = start_x;
-                            }
-                            cmd_align = TextAlign::Start;
-                        } else {
-                            if has_icon {
-                                let iy = inner.y
-                                    + ((inner.h.saturating_sub(BUTTON_ICON_SIZE)) / 2) as i32;
-                                out.push(PaintCmd::Icon {
-                                    rect: Rect::new(
-                                        inner.x,
-                                        iy,
-                                        BUTTON_ICON_SIZE,
-                                        BUTTON_ICON_SIZE,
-                                    ),
-                                    clip,
-                                    kind: node.props.icon,
-                                    color: node.props.fg,
-                                })?;
-                            }
-                            text_x = inner.x + icon_span as i32;
-                            cmd_align = align;
-                        }
-                        let text_style = node.props.text_style();
-                        let text_clip = if node.text_cache.valid
-                            && node.text_cache.align == cmd_align
-                            && (cmd_align == TextAlign::Start
-                                || node.text_cache.wrap_width == wrap_w)
-                        {
-                            let mut rel_ink = node.text_cache.rel_ink;
-                            if text_style.underline() || text_style.strikethrough() {
-                                rel_ink = rel_ink.union(Rect::new(
-                                    0,
-                                    0,
-                                    node.text_cache.size.width.max(1),
-                                    node.text_cache.size.height.saturating_add(3),
-                                ));
-                            }
-                            clip.intersect(rel_ink.translate(text_x, text_y))
-                        } else {
-                            clip
-                        };
-                        if !text_clip.is_empty() {
-                            out.push(PaintCmd::text_styled(
-                                Point::new(text_x, text_y),
-                                text_clip,
-                                TextId(frame.slot),
-                                node.props.fg,
-                                wrap_w,
-                                node.props.max_lines.max(1),
-                                node.props.ellipsis(),
-                                font,
-                                cmd_align,
-                                text_style,
-                                node.props.letter_spacing,
-                                node.props.line_spacing,
-                            ))?;
-                        }
-                    }
-                    NodeKind::Toggle => {
-                        if !rect.is_empty() {
-                            let track_w = rect.w.min(48);
-                            let track_h = rect.h.min(26);
-                            let track_x = rect.x + ((rect.w - track_w) / 2) as i32;
-                            let track_y = rect.y + ((rect.h - track_h) / 2) as i32;
-                            let track_rect = Rect::new(track_x, track_y, track_w, track_h);
-
-                            let default_progress =
-                                if node.props.checked() { ANIM_SCALE } else { 0 };
-                            let progress = anims
-                                .cached_value(node.key, AnimProp::ToggleKnob)
-                                .unwrap_or(default_progress)
-                                .clamp(0, ANIM_SCALE);
-
-                            let track_off = node.props.bg().unwrap_or(Rgb565::new(10, 20, 10));
-                            let track_on = node.props.accent;
-                            let track_color =
-                                blend_rgb565_scale(track_off, track_on, progress, ANIM_SCALE);
-
-                            let r = (track_h / 2) as u8;
-                            out.push(PaintCmd::FillRoundedRect {
-                                rect: track_rect,
-                                clip,
-                                color: track_color,
-                                radius: r,
-                                border_color: node.props.border_color(),
-                                border_width: node.props.border_width,
-                            })?;
-
-                            let inset = (track_h / 4).min(2);
-                            let knob_size = track_h.saturating_sub(inset * 2).min(track_w);
-                            if knob_size > 0 {
-                                let travel = track_w
-                                    .saturating_sub(knob_size.saturating_add(inset * 2))
-                                    as i32;
-                                let knob_x = track_x
-                                    + inset as i32
-                                    + ((travel * progress + ANIM_SCALE / 2) / ANIM_SCALE);
-                                let knob_y =
-                                    track_y + ((track_h.saturating_sub(knob_size)) / 2) as i32;
-                                let knob_rect = Rect::new(knob_x, knob_y, knob_size, knob_size);
-                                out.push(PaintCmd::FillRoundedRect {
-                                    rect: knob_rect,
-                                    clip,
-                                    color: node.props.fg,
-                                    radius: (knob_size / 2) as u8,
-                                    border_color: None,
-                                    border_width: 0,
-                                })?;
-                            }
-                        }
-                    }
-                    NodeKind::Slider => {
-                        if !rect.is_empty() {
-                            let track_h = rect.h.min(6).max(1);
-                            let knob_w = rect.w.min(12);
-                            let knob_h = rect.h.min(20);
-                            let pad_x = (knob_w / 2) as i32;
-                            let usable_w = rect.w.saturating_sub(knob_w);
-                            let track_x = rect.x + pad_x;
-                            let track_y = rect.y + ((rect.h.saturating_sub(track_h)) / 2) as i32;
-                            let track_bg = node.props.bg().unwrap_or(Rgb565::new(10, 20, 10));
-
-                            let min = node.props.min as i64;
-                            let max = node.props.max as i64;
-                            let span = (max - min).max(1);
-                            let clamped = (node.props.value as i64).clamp(min, max.max(min));
-                            let rel = (clamped - min).max(0);
-                            let fill_w = ((usable_w as i64 * rel) / span) as u32;
-
-                            if usable_w > 0 {
-                                let track_rect = Rect::new(track_x, track_y, usable_w, track_h);
-                                out.push(PaintCmd::FillRoundedRect {
-                                    rect: track_rect,
-                                    clip,
-                                    color: track_bg,
-                                    radius: (track_h / 2) as u8,
-                                    border_color: None,
-                                    border_width: 0,
-                                })?;
-
-                                if fill_w > 0 {
-                                    out.push(PaintCmd::FillRoundedRect {
-                                        rect: Rect::new(track_x, track_y, fill_w, track_h),
-                                        clip,
-                                        color: node.props.accent,
-                                        radius: (track_h / 2) as u8,
-                                        border_color: None,
-                                        border_width: 0,
-                                    })?;
-                                }
-                            }
-
-                            if knob_w > 0 && knob_h > 0 {
-                                let knob_x = if usable_w > 0 {
-                                    track_x + fill_w as i32 - pad_x
-                                } else {
-                                    rect.x + ((rect.w.saturating_sub(knob_w)) / 2) as i32
-                                };
-                                let knob_y = rect.y + ((rect.h.saturating_sub(knob_h)) / 2) as i32;
-                                let is_editing =
-                                    focus.editing && focus.focused_slot == Some(frame.slot);
-                                out.push(PaintCmd::FillRoundedRect {
-                                    rect: Rect::new(knob_x, knob_y, knob_w, knob_h),
-                                    clip,
-                                    color: node.props.fg,
-                                    radius: 4u8.min((knob_h / 2) as u8),
-                                    border_color: Some(if is_editing {
-                                        node.props.focus_color
-                                    } else {
-                                        node.props.accent
-                                    }),
-                                    border_width: if is_editing { 2 } else { 1 },
-                                })?;
-                            }
-                        }
-                    }
-                    NodeKind::ProgressBar => {
-                        if !rect.is_empty() && !rect.intersect(clip).is_empty() {
-                            let track_bg = node.props.bg().unwrap_or(Rgb565::new(10, 20, 10));
-                            let radius = node.props.radius.min((rect.h / 2).min(255) as u8);
-                            let border_color = node.props.border_color();
-                            let border_width = node.props.border_width;
-                            out.push(PaintCmd::FillRoundedRect {
-                                rect,
-                                clip,
-                                color: track_bg,
-                                radius,
-                                border_color,
-                                border_width,
-                            })?;
-
-                            let bw = if border_color.is_some() && border_width > 0 {
-                                border_width as u32
-                            } else {
-                                0
-                            };
-                            let inner = rect.inset(bw, bw, bw, bw);
-                            if !inner.is_empty() {
-                                let min = node.props.min as i64;
-                                let max = node.props.max as i64;
-                                let fill_w = if min >= max {
-                                    inner.w
-                                } else {
-                                    let clamped = (node.props.value as i64).clamp(min, max);
-                                    let span = max - min;
-                                    (((inner.w as i64) * (clamped - min) + span / 2) / span)
-                                        .clamp(0, inner.w as i64)
-                                        as u32
-                                };
-                                if fill_w > 0 {
-                                    let fill_rect = Rect::new(inner.x, inner.y, fill_w, inner.h);
-                                    let fill_r = radius
-                                        .saturating_sub(bw as u8)
-                                        .min((fill_rect.h / 2).min(255) as u8)
-                                        .min((fill_rect.w / 2).min(255) as u8);
-                                    out.push(PaintCmd::FillRoundedRect {
-                                        rect: fill_rect,
-                                        clip: clip.intersect(inner),
-                                        color: node.props.accent,
-                                        radius: fill_r,
-                                        border_color: None,
-                                        border_width: 0,
-                                    })?;
-                                }
-                            }
-                        }
-                    }
-                    NodeKind::Sparkline => {
-                        emit_box_bg_and_border(node, rect, clip, out)?;
-                        let inner = rect.inset(
-                            node.props.padding.left as u32,
-                            node.props.padding.top as u32,
-                            node.props.padding.right as u32,
-                            node.props.padding.bottom as u32,
-                        );
-                        let eff_clip = clip.intersect(inner);
-                        if !eff_clip.is_empty() {
-                            out.push(PaintCmd::Sparkline {
-                                rect: inner,
-                                clip: eff_clip,
-                                color: node.props.accent,
-                                series: node.props.series,
-                                min: node.props.min,
-                                max: node.props.max,
-                                stroke_width: 1,
-                            })?;
-                        }
+                        override_cb(node.key, node.kind, &node.props, state, &mut canvas)?
+                    } else {
+                        PaintOverride::Default
+                    };
+                    if mode == PaintOverride::Default {
+                        paint_builtin_node(ctx, out)?;
                     }
                 }
             }
@@ -1057,26 +1150,39 @@ pub fn emit_commands_with(
                 && rect.h > 8
                 && rect.w > 6
             {
-                let track_h = rect.h.saturating_sub(4);
-                let min_thumb = 12.min(track_h) as u64;
-                let thumb_h = ((track_h as u64 * rect.h as u64) / node.content_height as u64)
-                    .clamp(min_thumb, track_h as u64) as u32;
-                let max_scroll = node.content_height.saturating_sub(rect.h).max(1);
-                let thumb_travel = track_h.saturating_sub(thumb_h);
-                let thumb_y = rect.y
-                    + 2
-                    + ((thumb_travel as u64 * (node.scroll_y.max(0) as u64)) / max_scroll as u64)
-                        as i32;
-                let thumb_rect = Rect::new(rect.x + rect.w as i32 - 4, thumb_y, 3, thumb_h);
-                if !thumb_rect.intersect(clip).is_empty() {
-                    out.push(PaintCmd::FillRoundedRect {
-                        rect: thumb_rect,
-                        clip,
-                        color: node.props.accent,
-                        radius: 1,
-                        border_color: None,
-                        border_width: 0,
-                    })?;
+                let sb_part = tree.part_styles.get(node.key);
+                if !sb_part.scrollbar_hidden() {
+                    let sb_w = sb_part
+                        .knob_size()
+                        .map(|(w, _)| u32::from(w.max(1)))
+                        .unwrap_or(3)
+                        .min(rect.w.saturating_sub(2));
+                    let track_h = rect.h.saturating_sub(4);
+                    let min_thumb = 12.min(track_h) as u64;
+                    let thumb_h = ((track_h as u64 * rect.h as u64) / node.content_height as u64)
+                        .clamp(min_thumb, track_h as u64) as u32;
+                    let max_scroll = node.content_height.saturating_sub(rect.h).max(1);
+                    let thumb_travel = track_h.saturating_sub(thumb_h);
+                    let thumb_y = rect.y
+                        + 2
+                        + ((thumb_travel as u64 * (node.scroll_y.max(0) as u64))
+                            / max_scroll as u64) as i32;
+                    let thumb_rect = Rect::new(
+                        rect.x + rect.w as i32 - (sb_w as i32 + 1),
+                        thumb_y,
+                        sb_w,
+                        thumb_h,
+                    );
+                    if !thumb_rect.intersect(clip).is_empty() {
+                        out.push(PaintCmd::FillRoundedRect {
+                            rect: thumb_rect,
+                            clip,
+                            color: sb_part.knob_color().unwrap_or(node.props.accent),
+                            radius: sb_part.knob_radius().unwrap_or(1),
+                            border_color: None,
+                            border_width: 0,
+                        })?;
+                    }
                 }
             }
 
@@ -1105,7 +1211,8 @@ pub fn emit_commands_with(
                 && let Some(slot) = focus.focused_slot
             {
                 let focused = &tree.nodes[usize::from(slot)];
-                emit_focus_outline(focused, screen, focus.editing, out)?;
+                let part = tree.part_styles.get(focused.key);
+                emit_focus_outline(focused, part, screen, focus.editing, out)?;
                 outline_layer = None;
             }
             #[cfg(feature = "layers")]
@@ -1125,8 +1232,590 @@ pub fn emit_commands_with(
     Ok(())
 }
 
+fn resolve_state_fg(node: &RetainedNode, part: WidgetPartStyle) -> Rgb565 {
+    if !node.props.enabled()
+        && let Some(c) = part.disabled_fg()
+    {
+        return c;
+    }
+    if node.pressed
+        && let Some(c) = part.pressed_fg()
+    {
+        return c;
+    }
+    if node.props.checked()
+        && let Some(c) = part.checked_fg()
+    {
+        return c;
+    }
+    node.props.fg
+}
+
+fn resolve_state_bg(node: &RetainedNode, part: WidgetPartStyle, root_bg: Rgb565) -> Option<Rgb565> {
+    if !node.props.enabled()
+        && let Some(c) = part.disabled_bg()
+    {
+        return Some(c);
+    }
+    if node.pressed
+        && let Some(c) = part.pressed_bg()
+    {
+        return Some(c);
+    }
+    if node.props.checked()
+        && let Some(c) = part.checked_bg()
+    {
+        return Some(c);
+    }
+    if node.pressed {
+        match (node.props.bg(), node.props.press_feedback()) {
+            (Some(c), fb) => Some(apply_press_feedback(c, node.props.accent, fb)),
+            (None, crate::view::PressFeedback::None) => None,
+            (None, fb) if node.kind == NodeKind::Button => {
+                Some(apply_press_feedback(root_bg, node.props.accent, fb))
+            }
+            (None, _) => None,
+        }
+    } else {
+        node.props.bg()
+    }
+}
+
+fn paint_builtin_node(ctx: BuiltinPaintCtx<'_>, out: &mut CommandList) -> Result<(), BuildError> {
+    let node = ctx.node;
+    let rect = node.layout_rect;
+    let clip = node.clip_rect;
+    match node.kind {
+        NodeKind::Custom => Ok(()),
+        NodeKind::Root => {
+            if let Some(bg) = node.props.bg() {
+                out.push(PaintCmd::FillRect {
+                    rect,
+                    clip,
+                    color: bg,
+                })?;
+            }
+            Ok(())
+        }
+        NodeKind::Row
+        | NodeKind::Column
+        | NodeKind::Stack
+        | NodeKind::ScrollY
+        | NodeKind::Wrap
+        | NodeKind::CustomContainer => {
+            emit_box_bg_and_border(node, ctx.part, rect, clip, ctx.root_bg, out)
+        }
+        NodeKind::Modal => {
+            if node.props.overlay_alpha > 0 {
+                out.push(PaintCmd::Overlay {
+                    rect: ctx.screen,
+                    clip: ctx.screen,
+                    color: node.props.overlay_color,
+                    alpha: node.props.overlay_alpha.min(15),
+                })?;
+            }
+            emit_box_bg_and_border(node, ctx.part, rect, clip, ctx.root_bg, out)
+        }
+        NodeKind::Label => {
+            emit_box_bg_and_border(node, ctx.part, rect, clip, ctx.root_bg, out)?;
+            let inner = rect.inset(
+                node.props.padding.left as u32,
+                node.props.padding.top as u32,
+                node.props.padding.right as u32,
+                node.props.padding.bottom as u32,
+            );
+            let text_x = inner.x;
+            let mut text_y = inner.y;
+            let align = node.props.text_align();
+            let font = node.props.font();
+            let text_style = node.props.text_style();
+            let mut text_clip = clip;
+            if node.text_cache.valid {
+                let text_size = node.text_cache.size;
+                if node.props.align_cross == Align::Center && inner.h > text_size.height {
+                    text_y += ((inner.h - text_size.height) / 2) as i32;
+                } else if node.props.align_cross == Align::End && inner.h > text_size.height {
+                    text_y += (inner.h - text_size.height) as i32;
+                }
+                if node.text_cache.align == align
+                    && (align == TextAlign::Start || node.text_cache.wrap_width == inner.w)
+                {
+                    let mut rel_ink = node.text_cache.rel_ink;
+                    if text_style.underline() || text_style.strikethrough() {
+                        rel_ink = rel_ink.union(Rect::new(
+                            0,
+                            0,
+                            text_size.width.max(1),
+                            text_size.height.saturating_add(3),
+                        ));
+                    }
+                    text_clip = clip.intersect(rel_ink.translate(text_x, text_y));
+                }
+            }
+            if !text_clip.is_empty() {
+                out.push(PaintCmd::text_styled(
+                    Point::new(text_x, text_y),
+                    text_clip,
+                    TextId(ctx.slot),
+                    resolve_state_fg(node, ctx.part),
+                    inner.w,
+                    node.props.max_lines,
+                    node.props.ellipsis(),
+                    font,
+                    align,
+                    text_style,
+                    node.props.letter_spacing,
+                    node.props.line_spacing,
+                ))?;
+            }
+            Ok(())
+        }
+        NodeKind::Button => paint_button_node(ctx, out),
+        NodeKind::Toggle => paint_toggle_parts(ctx, true, true, out),
+        NodeKind::Slider => paint_slider_parts(ctx, true, true, out),
+        NodeKind::ProgressBar => paint_progress_bar_node(ctx, out),
+        NodeKind::Sparkline => {
+            emit_box_bg_and_border(node, ctx.part, rect, clip, ctx.root_bg, out)?;
+            let inner = rect.inset(
+                node.props.padding.left as u32,
+                node.props.padding.top as u32,
+                node.props.padding.right as u32,
+                node.props.padding.bottom as u32,
+            );
+            let eff_clip = clip.intersect(inner);
+            if !eff_clip.is_empty() {
+                out.push(PaintCmd::Sparkline {
+                    rect: inner,
+                    clip: eff_clip,
+                    color: ctx.part.indicator_color().unwrap_or(node.props.accent),
+                    series: node.props.series,
+                    min: node.props.min,
+                    max: node.props.max,
+                    stroke_width: ctx.part.sparkline_width().unwrap_or(1).max(1),
+                })?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn paint_button_node(ctx: BuiltinPaintCtx<'_>, out: &mut CommandList) -> Result<(), BuildError> {
+    let node = ctx.node;
+    let rect = node.layout_rect;
+    let clip = node.clip_rect;
+    let part = ctx.part;
+    emit_box_bg_and_border(node, part, rect, clip, ctx.root_bg, out)?;
+
+    let inner = rect.inset(
+        node.props.padding.left as u32,
+        node.props.padding.top as u32,
+        node.props.padding.right as u32,
+        node.props.padding.bottom as u32,
+    );
+    let fg_col = resolve_state_fg(node, part);
+    let icon_col = part.icon_color().unwrap_or(fg_col);
+    let has_icon = node.props.icon != IconKind::None;
+    let icon_sz = if has_icon {
+        u32::from(part.icon_size().unwrap_or(BUTTON_ICON_SIZE as u8))
+    } else {
+        0
+    };
+    let gap_w = if has_icon {
+        u32::from(part.icon_gap().unwrap_or(BUTTON_ICON_GAP as u8))
+    } else {
+        0
+    };
+    let icon_pos = part.icon_pos().unwrap_or(IconPosition::Left);
+    let icon_span = if has_icon { icon_sz + gap_w } else { 0 };
+    let text_w = if node.text_cache.valid {
+        node.text_cache.size.width
+    } else {
+        0
+    };
+    let text_h = if node.text_cache.valid {
+        node.text_cache.size.height
+    } else {
+        16
+    };
+    let align = node.props.text_align();
+    let font = node.props.font();
+
+    let (text_x, text_y, wrap_w, cmd_align, icon_pt) = match icon_pos {
+        IconPosition::Left | IconPosition::Right => {
+            let ty = if inner.h > text_h {
+                inner.y + ((inner.h - text_h) / 2) as i32
+            } else {
+                inner.y
+            };
+            let iy = inner.y + ((inner.h.saturating_sub(icon_sz)) / 2) as i32;
+            let ww = inner.w.saturating_sub(icon_span);
+            if align == TextAlign::Start {
+                let total_w = icon_sz + gap_w + text_w;
+                let start_x = if inner.w > total_w {
+                    inner.x + ((inner.w - total_w) / 2) as i32
+                } else {
+                    inner.x
+                };
+                if has_icon && icon_pos == IconPosition::Right {
+                    let ix = start_x + text_w as i32 + gap_w as i32;
+                    (start_x, ty, ww, TextAlign::Start, Some(Point::new(ix, iy)))
+                } else if has_icon {
+                    (
+                        start_x + icon_span as i32,
+                        ty,
+                        ww,
+                        TextAlign::Start,
+                        Some(Point::new(start_x, iy)),
+                    )
+                } else {
+                    (start_x, ty, ww, TextAlign::Start, None)
+                }
+            } else if has_icon && icon_pos == IconPosition::Right {
+                let ix = inner.x + inner.w.saturating_sub(icon_sz) as i32;
+                (inner.x, ty, ww, align, Some(Point::new(ix, iy)))
+            } else if has_icon {
+                (
+                    inner.x + icon_span as i32,
+                    ty,
+                    ww,
+                    align,
+                    Some(Point::new(inner.x, iy)),
+                )
+            } else {
+                (inner.x, ty, ww, align, None)
+            }
+        }
+        IconPosition::Top | IconPosition::Bottom => {
+            let total_h = icon_sz + gap_w + text_h;
+            let top_y = if inner.h > total_h {
+                inner.y + ((inner.h - total_h) / 2) as i32
+            } else {
+                inner.y
+            };
+            let ix = inner.x + ((inner.w.saturating_sub(icon_sz)) / 2) as i32;
+            let (iy, ty) = if icon_pos == IconPosition::Top {
+                (top_y, top_y + (icon_sz + gap_w) as i32)
+            } else {
+                (top_y + (text_h + gap_w) as i32, top_y)
+            };
+            (
+                inner.x,
+                ty,
+                inner.w,
+                align,
+                has_icon.then_some(Point::new(ix, iy)),
+            )
+        }
+    };
+
+    if let Some(ip) = icon_pt {
+        out.push(PaintCmd::Icon {
+            rect: Rect::new(ip.x, ip.y, icon_sz, icon_sz),
+            clip,
+            kind: node.props.icon,
+            color: icon_col,
+        })?;
+    }
+    let text_style = node.props.text_style();
+    let text_clip = if node.text_cache.valid
+        && node.text_cache.align == cmd_align
+        && (cmd_align == TextAlign::Start || node.text_cache.wrap_width == wrap_w)
+    {
+        let mut rel_ink = node.text_cache.rel_ink;
+        if text_style.underline() || text_style.strikethrough() {
+            rel_ink = rel_ink.union(Rect::new(
+                0,
+                0,
+                node.text_cache.size.width.max(1),
+                node.text_cache.size.height.saturating_add(3),
+            ));
+        }
+        clip.intersect(rel_ink.translate(text_x, text_y))
+    } else {
+        clip
+    };
+    if !text_clip.is_empty() {
+        out.push(PaintCmd::text_styled(
+            Point::new(text_x, text_y),
+            text_clip,
+            TextId(ctx.slot),
+            fg_col,
+            wrap_w,
+            node.props.max_lines.max(1),
+            node.props.ellipsis(),
+            font,
+            cmd_align,
+            text_style,
+            node.props.letter_spacing,
+            node.props.line_spacing,
+        ))?;
+    }
+    Ok(())
+}
+
+fn paint_toggle_parts(
+    ctx: BuiltinPaintCtx<'_>,
+    draw_track: bool,
+    draw_knob: bool,
+    out: &mut CommandList,
+) -> Result<(), BuildError> {
+    let node = ctx.node;
+    let rect = node.layout_rect;
+    let clip = node.clip_rect;
+    let part = ctx.part;
+    if rect.is_empty() {
+        return Ok(());
+    }
+    let track_w = rect.w.min(48);
+    let track_h = part
+        .track_thickness()
+        .map(|t| rect.h.min(u32::from(t.max(4))))
+        .unwrap_or_else(|| rect.h.min(26));
+    let track_x = rect.x + ((rect.w - track_w) / 2) as i32;
+    let track_y = rect.y + ((rect.h - track_h) / 2) as i32;
+    let track_rect = Rect::new(track_x, track_y, track_w, track_h);
+
+    let default_progress = if node.props.checked() { ANIM_SCALE } else { 0 };
+    let progress = ctx
+        .anims
+        .cached_value(node.key, AnimProp::ToggleKnob)
+        .unwrap_or(default_progress)
+        .clamp(0, ANIM_SCALE);
+
+    if draw_track {
+        let track_off = part
+            .track_color()
+            .or_else(|| node.props.bg())
+            .unwrap_or(Rgb565::new(10, 20, 10));
+        let track_on = part
+            .indicator_color()
+            .or_else(|| part.checked_bg())
+            .unwrap_or(node.props.accent);
+        let track_color = blend_rgb565_scale(track_off, track_on, progress, ANIM_SCALE);
+        let r = part.track_radius().unwrap_or((track_h / 2) as u8);
+        out.push(PaintCmd::FillRoundedRect {
+            rect: track_rect,
+            clip,
+            color: track_color,
+            radius: r,
+            border_color: part
+                .track_border_color()
+                .or_else(|| node.props.border_color()),
+            border_width: part.track_border_width().unwrap_or(node.props.border_width),
+        })?;
+    }
+
+    if draw_knob {
+        let inset = u32::from(
+            part.indicator_inset()
+                .unwrap_or(((track_h / 4).min(2)) as u8),
+        );
+        let default_knob = track_h.saturating_sub(inset * 2).min(track_w);
+        let (kw, kh) = part
+            .knob_size()
+            .map(|(w, h)| {
+                (
+                    rect.w.min(u32::from(w.max(2))),
+                    rect.h.min(u32::from(h.max(2))),
+                )
+            })
+            .unwrap_or((default_knob, default_knob));
+        if kw > 0 && kh > 0 {
+            let travel = track_w.saturating_sub(kw.saturating_add(inset * 2)) as i32;
+            let knob_x =
+                track_x + inset as i32 + ((travel * progress + ANIM_SCALE / 2) / ANIM_SCALE);
+            let knob_y = track_y + ((track_h as i32 - kh as i32) / 2);
+            let knob_rect = Rect::new(knob_x, knob_y, kw, kh);
+            let knob_col = part
+                .knob_color()
+                .unwrap_or_else(|| resolve_state_fg(node, part));
+            out.push(PaintCmd::FillRoundedRect {
+                rect: knob_rect,
+                clip,
+                color: knob_col,
+                radius: part.knob_radius().unwrap_or((kh / 2) as u8),
+                border_color: part.knob_border_color(),
+                border_width: part.knob_border_width().unwrap_or(
+                    if part.knob_border_color().is_some() {
+                        1
+                    } else {
+                        0
+                    },
+                ),
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn paint_slider_parts(
+    ctx: BuiltinPaintCtx<'_>,
+    draw_track: bool,
+    draw_knob: bool,
+    out: &mut CommandList,
+) -> Result<(), BuildError> {
+    let node = ctx.node;
+    let rect = node.layout_rect;
+    let clip = node.clip_rect;
+    let part = ctx.part;
+    if rect.is_empty() {
+        return Ok(());
+    }
+    let track_h = part
+        .track_thickness()
+        .map(|t| rect.h.min(u32::from(t.max(1))))
+        .unwrap_or_else(|| rect.h.min(6).max(1));
+    let (knob_w, knob_h) = part
+        .knob_size()
+        .map(|(w, h)| {
+            (
+                rect.w.min(u32::from(w.max(2))),
+                rect.h.min(u32::from(h.max(2))),
+            )
+        })
+        .unwrap_or((rect.w.min(12), rect.h.min(20)));
+    let pad_x = (knob_w / 2) as i32;
+    let usable_w = rect.w.saturating_sub(knob_w);
+    let track_x = rect.x + pad_x;
+    let track_y = rect.y + ((rect.h.saturating_sub(track_h)) / 2) as i32;
+    let track_bg = part
+        .track_color()
+        .or_else(|| node.props.bg())
+        .unwrap_or(Rgb565::new(10, 20, 10));
+
+    let min = node.props.min as i64;
+    let max = node.props.max as i64;
+    let span = (max - min).max(1);
+    let clamped = (node.props.value as i64).clamp(min, max.max(min));
+    let rel = (clamped - min).max(0);
+    let fill_w = ((usable_w as i64 * rel) / span) as u32;
+
+    if draw_track && usable_w > 0 {
+        let track_rect = Rect::new(track_x, track_y, usable_w, track_h);
+        out.push(PaintCmd::FillRoundedRect {
+            rect: track_rect,
+            clip,
+            color: track_bg,
+            radius: part.track_radius().unwrap_or((track_h / 2) as u8),
+            border_color: part.track_border_color(),
+            border_width: part.track_border_width().unwrap_or(0),
+        })?;
+
+        if fill_w > 0 {
+            out.push(PaintCmd::FillRoundedRect {
+                rect: Rect::new(track_x, track_y, fill_w, track_h),
+                clip,
+                color: part.indicator_color().unwrap_or(node.props.accent),
+                radius: part.indicator_radius().unwrap_or((track_h / 2) as u8),
+                border_color: None,
+                border_width: 0,
+            })?;
+        }
+    }
+
+    if draw_knob && knob_w > 0 && knob_h > 0 {
+        let knob_x = if usable_w > 0 {
+            track_x + fill_w as i32 - pad_x
+        } else {
+            rect.x + ((rect.w.saturating_sub(knob_w)) / 2) as i32
+        };
+        let knob_y = rect.y + ((rect.h.saturating_sub(knob_h)) / 2) as i32;
+        let is_editing = ctx.focus.editing && ctx.focus.focused_slot == Some(ctx.slot);
+        let knob_col = part
+            .knob_color()
+            .unwrap_or_else(|| resolve_state_fg(node, part));
+        let default_border_w = part.knob_border_width().unwrap_or(1);
+        out.push(PaintCmd::FillRoundedRect {
+            rect: Rect::new(knob_x, knob_y, knob_w, knob_h),
+            clip,
+            color: knob_col,
+            radius: part
+                .knob_radius()
+                .unwrap_or_else(|| 4u8.min((knob_h / 2) as u8)),
+            border_color: Some(if is_editing {
+                part.focused_border().unwrap_or(node.props.focus_color)
+            } else {
+                part.knob_border_color().unwrap_or(node.props.accent)
+            }),
+            border_width: if is_editing { 2 } else { default_border_w },
+        })?;
+    }
+    Ok(())
+}
+
+fn paint_progress_bar_node(
+    ctx: BuiltinPaintCtx<'_>,
+    out: &mut CommandList,
+) -> Result<(), BuildError> {
+    let node = ctx.node;
+    let rect = node.layout_rect;
+    let clip = node.clip_rect;
+    let part = ctx.part;
+    if rect.is_empty() || rect.intersect(clip).is_empty() {
+        return Ok(());
+    }
+    let track_bg = part
+        .track_color()
+        .or_else(|| node.props.bg())
+        .unwrap_or(Rgb565::new(10, 20, 10));
+    let radius = part
+        .track_radius()
+        .unwrap_or(node.props.radius)
+        .min((rect.h / 2).min(255) as u8);
+    let border_color = part
+        .track_border_color()
+        .or_else(|| node.props.border_color());
+    let border_width = part.track_border_width().unwrap_or(node.props.border_width);
+    out.push(PaintCmd::FillRoundedRect {
+        rect,
+        clip,
+        color: track_bg,
+        radius,
+        border_color,
+        border_width,
+    })?;
+
+    let bw = part.indicator_inset().map(u32::from).unwrap_or_else(|| {
+        if border_color.is_some() && border_width > 0 {
+            border_width as u32
+        } else {
+            0
+        }
+    });
+    let inner = rect.inset(bw, bw, bw, bw);
+    if !inner.is_empty() {
+        let min = node.props.min as i64;
+        let max = node.props.max as i64;
+        let fill_w = if min >= max {
+            inner.w
+        } else {
+            let clamped = (node.props.value as i64).clamp(min, max);
+            let span = max - min;
+            (((inner.w as i64) * (clamped - min) + span / 2) / span).clamp(0, inner.w as i64) as u32
+        };
+        if fill_w > 0 {
+            let fill_rect = Rect::new(inner.x, inner.y, fill_w, inner.h);
+            let fill_r = part
+                .indicator_radius()
+                .unwrap_or_else(|| radius.saturating_sub(bw as u8))
+                .min((fill_rect.h / 2).min(255) as u8)
+                .min((fill_rect.w / 2).min(255) as u8);
+            out.push(PaintCmd::FillRoundedRect {
+                rect: fill_rect,
+                clip: clip.intersect(inner),
+                color: part.indicator_color().unwrap_or(node.props.accent),
+                radius: fill_r,
+                border_color: None,
+                border_width: 0,
+            })?;
+        }
+    }
+    Ok(())
+}
+
 fn emit_focus_outline(
-    node: &crate::node::RetainedNode,
+    node: &RetainedNode,
+    part: WidgetPartStyle,
     screen: Rect,
     editing: bool,
     out: &mut CommandList,
@@ -1145,11 +1834,12 @@ fn emit_focus_outline(
         let ring_rect = rect.union(rect.expand(offset).intersect(ring_clip));
         let use_rounded = ring.rounded && node.props.radius > 0;
         let ring_radius = node.props.radius.saturating_add(ring.offset);
+        let ring_col = part.focused_border().unwrap_or(node.props.focus_color);
         if use_rounded {
             out.push(PaintCmd::StrokeRoundedRect {
                 rect: ring_rect,
                 clip: ring_clip,
-                color: node.props.focus_color,
+                color: ring_col,
                 width,
                 radius: ring_radius,
             })?;
@@ -1157,7 +1847,7 @@ fn emit_focus_outline(
             out.push(PaintCmd::StrokeRect {
                 rect: ring_rect,
                 clip: ring_clip,
-                color: node.props.focus_color,
+                color: ring_col,
                 width,
             })?;
         }
@@ -1185,24 +1875,21 @@ fn emit_focus_outline(
 }
 
 fn emit_box_bg_and_border(
-    node: &crate::node::RetainedNode,
+    node: &RetainedNode,
+    part: WidgetPartStyle,
     rect: Rect,
     clip: Rect,
+    root_bg: Rgb565,
     out: &mut CommandList,
 ) -> Result<(), BuildError> {
     if rect.intersect(clip).is_empty() {
         return Ok(());
     }
-    let bg = if node.pressed {
-        node.props
-            .bg()
-            .map(|c| apply_press_feedback(c, node.props.accent, node.props.press_feedback()))
-    } else {
-        node.props.bg()
-    };
+    let bg = resolve_state_bg(node, part, root_bg);
     if let Some(color) = bg {
         if node.props.radius > 0
-            || (node.props.border_color().is_some() && node.props.border_width > 0)
+            || (node.props.border_color().is_some()
+                && (node.kind == NodeKind::Button || node.props.border_width > 0))
         {
             out.push(PaintCmd::FillRoundedRect {
                 rect,

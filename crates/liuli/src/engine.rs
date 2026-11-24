@@ -7,16 +7,17 @@ use liuli_core::capacity::{
 use liuli_core::damage::DamageSet;
 use liuli_core::focus::{
     CaptureKind, FocusState, PointerState, RepeatSource, RepeatState, adjust_slider_by_steps_pub,
-    dispatch_input, is_valid_repeat_target, pointer_hits_id_in_scope,
+    dispatch_input_ext, is_interactive_leaf_or_row, is_valid_repeat_target,
+    pointer_hits_id_in_scope,
 };
 use liuli_core::geometry::Rect;
 use liuli_core::input::{ActionKind, HoldKey, RawInput, UiAction};
 use liuli_core::layout::{ensure_visible, relayout_scroll_subtree};
 use liuli_core::node::{NodeId, RetainedTree};
-use liuli_core::paint::{CommandList, PaintFocusInfo, emit_commands_with};
+use liuli_core::paint::{CommandList, PaintFocusInfo, emit_commands_with_override};
 use liuli_core::reconcile::reconcile_into;
 use liuli_core::time::{
-    AnimProp, InstantMs, MAX_REPEAT_STEPS_PER_ADVANCE, NextWakeup, REPEAT_DELAY_MS,
+    AnimProp, Easing, InstantMs, MAX_REPEAT_STEPS_PER_ADVANCE, NextWakeup, REPEAT_DELAY_MS,
     REPEAT_PERIOD_MS,
 };
 use liuli_core::view::{App, Change, Key, NodeKind, ViewBuilder};
@@ -32,6 +33,15 @@ struct AppMeasure<'a, A, F>(&'a F, core::marker::PhantomData<A>);
 impl<A: App, F: TextMeasurer> TextMeasurer for AppMeasure<'_, A, F> {
     fn custom_size(&self, key: Key, font: FontId, available: Size) -> Size {
         A::measure_custom(key, font, available)
+    }
+    fn layout_custom(
+        &self,
+        key: Key,
+        child_sizes: &[Size],
+        available: Size,
+        out_rects: &mut [Rect],
+    ) -> Size {
+        A::layout_custom(key, child_sizes, available, out_rects)
     }
     fn line_height(&self, font: FontId) -> u32 {
         self.0.line_height(font)
@@ -269,6 +279,49 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
     #[inline]
     pub fn font_cache_stats(&self) -> FontCacheStats {
         self.fonts.cache_stats()
+    }
+
+    /// Trigger a built-in `AnimPool` interpolation for a custom/overridden control.
+    pub fn start_custom_anim(
+        &mut self,
+        key: Key,
+        channel: u8,
+        from: i32,
+        to: i32,
+        duration_ms: u32,
+        easing: Easing,
+        now: InstantMs,
+    ) -> Result<(), TransactionError<()>> {
+        if self.is_dma_busy() {
+            return Err(TransactionError::Busy(()));
+        }
+        self.storage.clock.advance_to(now)?;
+        let tree = self.storage.active_tree();
+        let rect = tree
+            .find_slot_by_key(key)
+            .map(|s| tree.nodes[s as usize].visible_rect)
+            .unwrap_or(self.screen);
+        self.storage.anims.start_with_easing(
+            key,
+            AnimProp::custom(channel),
+            from,
+            to,
+            now,
+            duration_ms,
+            rect,
+            easing,
+        );
+        self.reemit_commands_inner()
+            .map_err(TransactionError::Build)?;
+        self.storage.damage.add(rect, self.screen);
+        Ok(())
+    }
+
+    #[inline]
+    pub fn custom_anim_value(&self, key: Key, channel: u8) -> Option<i32> {
+        self.storage
+            .anims
+            .cached_value(key, AnimProp::custom(channel))
     }
 
     /// Hot-swaps the active font provider, marks all text nodes for re-measurement, and redraws.
@@ -685,13 +738,16 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
         };
 
         cand_tree.sync_press_depth(&mut self.storage.cand_anims, now);
-        if let Err(err) = emit_commands_with(
+        if let Err(err) = emit_commands_with_override(
             cand_tree,
             &self.storage.cand_anims,
             focus_info,
             self.screen,
             &mut self.storage.cmds[cand_c_idx],
             |key, props, canvas| A::paint_model(&self.model, key, props, canvas),
+            |key, kind, props, state, canvas| {
+                A::paint_override(&self.model, key, kind, props, state, canvas)
+            },
         ) {
             self.build_key = self.storage.cmds[cand_c_idx].effect_error_key;
             self.view_pending = true;
@@ -779,13 +835,16 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
             &mut self.storage.cand_anims,
             self.storage.clock.last().unwrap_or_default(),
         );
-        if let Err(err) = emit_commands_with(
+        if let Err(err) = emit_commands_with_override(
             tree,
             &self.storage.cand_anims,
             focus_info,
             self.screen,
             &mut self.storage.cmds[cand_c_idx],
             |key, props, canvas| A::paint_model(&self.model, key, props, canvas),
+            |key, kind, props, state, canvas| {
+                A::paint_override(&self.model, key, kind, props, state, canvas)
+            },
         ) {
             self.build_key = self.storage.cmds[cand_c_idx].effect_error_key;
             self.last_build_error = Some(err);
@@ -966,7 +1025,7 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
         }
         self.storage.cand_damage.clear();
 
-        let (consumed, action) = dispatch_input(
+        let (consumed, action, pointer_ev) = dispatch_input_ext(
             &mut self.storage.trees[active_t_idx],
             &mut self.storage.focus,
             &mut self.storage.pointer,
@@ -981,12 +1040,13 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
                 if self.storage.pointer.active_id() == Some(id) {
                     let target_id = match self.storage.pointer.capture {
                         CaptureKind::Button(id)
-                        | CaptureKind::ScrollCandidate { candidate: id, .. } => Some(id),
+                        | CaptureKind::ScrollCandidate { candidate: id, .. }
+                        | CaptureKind::CustomPointer { id, .. } => Some(id),
                         _ => None,
                     };
                     if let Some(tid) = target_id
                         && cur_tree.is_id_valid(tid)
-                        && cur_tree.nodes[tid.slot() as usize].kind == NodeKind::Button
+                        && is_interactive_leaf_or_row(&cur_tree.nodes[tid.slot() as usize])
                         && (cur_tree.nodes[tid.slot() as usize].props.repeatable()
                             || cur_tree.nodes[tid.slot() as usize].props.long_press())
                     {
@@ -1034,7 +1094,8 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
                     let n = &cur_tree.nodes[slot as usize];
                     match hold_key {
                         HoldKey::AdjustPrev | HoldKey::AdjustNext
-                            if self.storage.focus.editing && n.kind == NodeKind::Slider =>
+                            if self.storage.focus.editing
+                                && (n.kind == NodeKind::Slider || n.props.editable()) =>
                         {
                             self.storage.repeat = RepeatState {
                                 source: RepeatSource::Key,
@@ -1051,7 +1112,9 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
                                 next_fire_ms: now.saturating_add(REPEAT_DELAY_MS),
                             };
                         }
-                        HoldKey::Activate if n.kind == NodeKind::Button && n.props.repeatable() => {
+                        HoldKey::Activate
+                            if is_interactive_leaf_or_row(n) && n.props.repeatable() =>
+                        {
                             self.storage.repeat = RepeatState {
                                 source: RepeatSource::Key,
                                 pointer_id: liuli_core::input::PointerId(0),
@@ -1096,6 +1159,7 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
 
         let message = effective_action
             .and_then(|act| A::on_action(&self.model, act))
+            .or_else(|| pointer_ev.and_then(|(k, ev)| A::on_pointer(&self.model, k, ev)))
             .or_else(|| {
                 cur_tree.nodes.iter().enumerate().find_map(|(index, node)| {
                     if node.occupied
@@ -1273,13 +1337,25 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
                             .adjust_delta
                             .saturating_mul(steps as i16);
                         self.storage.cand_damage.clear();
-                        let (_, act_opt) = adjust_slider_by_steps_pub(
-                            &mut self.storage.trees[active_t_idx],
-                            slot,
-                            delta,
-                            &mut self.storage.cand_damage,
-                            self.screen,
-                        );
+                        let act_opt = if self.storage.trees[active_t_idx].nodes[slot as usize].kind
+                            == NodeKind::Slider
+                        {
+                            let (_, act) = adjust_slider_by_steps_pub(
+                                &mut self.storage.trees[active_t_idx],
+                                slot,
+                                delta,
+                                &mut self.storage.cand_damage,
+                                self.screen,
+                            );
+                            act
+                        } else {
+                            let node = &self.storage.trees[active_t_idx].nodes[slot as usize];
+                            self.storage.cand_damage.add(node.visible_rect, self.screen);
+                            Some(UiAction {
+                                key: node.key,
+                                kind: ActionKind::Adjust(delta),
+                            })
+                        };
                         if let Some(act) = act_opt
                             && let Some(msg) = A::on_action(&self.model, act)
                             && A::update(&mut self.model, msg, now) == Change::View
@@ -1362,13 +1438,16 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
                 ring_visible: self.storage.focus.ring_visible,
                 editing: self.storage.focus.editing,
             };
-            if let Err(err) = emit_commands_with(
+            if let Err(err) = emit_commands_with_override(
                 tree,
                 &self.storage.cand_anims,
                 focus_info,
                 self.screen,
                 &mut self.storage.cmds[cand_c_idx],
                 |key, props, canvas| A::paint_model(&self.model, key, props, canvas),
+                |key, kind, props, state, canvas| {
+                    A::paint_override(&self.model, key, kind, props, state, canvas)
+                },
             ) {
                 self.build_key = self.storage.cmds[cand_c_idx].effect_error_key;
                 self.storage.cand_damage.clear();

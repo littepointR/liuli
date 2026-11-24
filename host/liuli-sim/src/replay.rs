@@ -465,6 +465,7 @@ fn check_expectation(
                 CaptureKind::Slider { .. } => "slider",
                 CaptureKind::ScrollCandidate { .. } => "candidate",
                 CaptureKind::Scrolling { .. } => "scrolling",
+                CaptureKind::CustomPointer { .. } => "custom_pointer",
             };
             if actual != expected {
                 return Err(format!(

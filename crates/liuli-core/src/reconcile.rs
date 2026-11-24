@@ -40,6 +40,8 @@ pub fn reconcile_into(
 
     candidate.reset();
     candidate.effects = draft.effects;
+    candidate.part_styles = draft.part_styles;
+    candidate.layout_extras = draft.layout_extras;
     candidate.generation_hwm = active.generation_hwm;
     let tlen = draft.text_len as usize;
     candidate.text_buf[..tlen].copy_from_slice(&draft.text_buf[..tlen]);
@@ -212,6 +214,15 @@ pub fn reconcile_into(
             || old_next_key != new_next_key
             || old_first_key != new_first_key;
 
+        let (part_changed, part_btn_measure) = crate::part_style::PartStyles::diff_key(
+            &active.part_styles,
+            &candidate.part_styles,
+            node.key,
+        );
+        let old_extra = active.layout_extras.get(node.key);
+        let new_extra = candidate.layout_extras.get(node.key);
+        let button_part_measure = node.kind == NodeKind::Button && part_btn_measure;
+
         let op = &old.props;
         let np = &node.props;
         let structural_changed = op.width != np.width
@@ -229,7 +240,12 @@ pub fn reconcile_into(
             || op.text_align() != np.text_align()
             || op.wrap() != np.wrap()
             || op.letter_spacing != np.letter_spacing
-            || op.line_spacing != np.line_spacing;
+            || op.line_spacing != np.line_spacing
+            || op.stack_align() != np.stack_align()
+            || op.paint_mode() != np.paint_mode()
+            || old_extra.offset_x != new_extra.offset_x
+            || old_extra.offset_y != new_extra.offset_y
+            || button_part_measure;
 
         let mut text_changed_measure = false;
         let old_text = active.text_str(op.text());
@@ -307,6 +323,11 @@ pub fn reconcile_into(
             || op.press_feedback_raw != np.press_feedback_raw
             || op.text_style() != np.text_style()
             || op.theme_id != np.theme_id
+            || op.paint_mode() != np.paint_mode()
+            || op.editable() != np.editable()
+            || op.pointer_capture() != np.pointer_capture()
+            || part_changed
+            || old_extra.custom_rev != new_extra.custom_rev
             || sparkline_changed;
 
         let toggle_changed = node.kind == NodeKind::Toggle && op.checked() != np.checked();
@@ -389,10 +410,18 @@ pub fn reconcile_into(
     outcome.measured_nodes =
         layout_tree(candidate, screen, measurer).map_err(BuildError::Layout)?;
 
-    // Update any running toggle animation dirty_rect to new visible_rect.
+    // Update running animation dirty_rect to new visible_rect.
     for n in &candidate.nodes {
-        if n.occupied && n.kind == NodeKind::Toggle {
+        if !n.occupied {
+            continue;
+        }
+        if n.kind == NodeKind::Toggle {
             anims.update_rect(n.key, AnimProp::ToggleKnob, n.visible_rect);
+        }
+        if n.kind == NodeKind::Custom || n.props.paint_mode() == crate::view::PaintMode::Override {
+            for ch in 0..4u8 {
+                anims.update_rect(n.key, AnimProp::custom(ch), n.visible_rect);
+            }
         }
     }
 

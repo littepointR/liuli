@@ -1,7 +1,10 @@
 use crate::capacity::{MAX_DEPTH, MAX_NODES};
 use crate::damage::DamageSet;
 use crate::geometry::{Point, Rect};
-use crate::input::{ActionKind, HoldKey, NavDir, PointerId, RawInput, UiAction};
+use crate::input::{
+    ActionKind, HoldKey, NavDir, PointerCaptureMode, PointerEvent, PointerId, PointerPhase,
+    RawInput, UiAction,
+};
 use crate::layout::{ensure_visible, relayout_scroll_subtree};
 use crate::node::{NodeId, RetainedTree};
 use crate::time::{InstantMs, NextWakeup};
@@ -30,6 +33,10 @@ pub enum CaptureKind {
         start_pos: Point,
         start_offset: i32,
     } = 4,
+    CustomPointer {
+        id: NodeId,
+        start_pos: Point,
+    } = 5,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
@@ -74,8 +81,9 @@ impl PointerState {
     }
 
     pub fn clear(&mut self, tree: &mut RetainedTree, damage: &mut DamageSet, screen: Rect) {
-        if let CaptureKind::Button(id) | CaptureKind::ScrollCandidate { candidate: id, .. } =
-            self.capture
+        if let CaptureKind::Button(id)
+        | CaptureKind::ScrollCandidate { candidate: id, .. }
+        | CaptureKind::CustomPointer { id, .. } = self.capture
             && tree.is_id_valid(id)
             && tree.nodes[id.slot() as usize].pressed
         {
@@ -92,7 +100,8 @@ impl PointerState {
             CaptureKind::None => None,
             CaptureKind::Button(id)
             | CaptureKind::Slider { id }
-            | CaptureKind::Scrolling { scroll: id, .. } => Some(id),
+            | CaptureKind::Scrolling { scroll: id, .. }
+            | CaptureKind::CustomPointer { id, .. } => Some(id),
             CaptureKind::ScrollCandidate { candidate, .. } => Some(candidate),
         }
     }
@@ -493,6 +502,29 @@ fn first_focusable_in_scope(tree: &RetainedTree, scope_root: u16) -> Option<u16>
     None
 }
 
+#[inline]
+fn build_pointer_event(
+    tree: &RetainedTree,
+    slot: u16,
+    phase: PointerPhase,
+    pos: Point,
+    start_pos: Point,
+) -> (Key, PointerEvent) {
+    let n = &tree.nodes[slot as usize];
+    let projected = tree.local_point(slot, pos).unwrap_or(pos);
+    let local = Point::new(projected.x - n.layout_rect.x, projected.y - n.layout_rect.y);
+    let delta = Point::new(pos.x - start_pos.x, pos.y - start_pos.y);
+    (
+        n.key,
+        PointerEvent {
+            phase,
+            local,
+            delta,
+            size: n.layout_rect.size(),
+        },
+    )
+}
+
 pub fn dispatch_input(
     tree: &mut RetainedTree,
     focus: &mut FocusState,
@@ -501,25 +533,51 @@ pub fn dispatch_input(
     screen: Rect,
     damage: &mut DamageSet,
 ) -> (bool, Option<UiAction>) {
+    let (consumed, action, _) = dispatch_input_ext(tree, focus, pointer, input, screen, damage);
+    (consumed, action)
+}
+
+pub fn dispatch_input_ext(
+    tree: &mut RetainedTree,
+    focus: &mut FocusState,
+    pointer: &mut PointerState,
+    input: RawInput,
+    screen: Rect,
+    damage: &mut DamageSet,
+) -> (bool, Option<UiAction>, Option<(Key, PointerEvent)>) {
     focus.ensure_valid(tree);
     let Some(scope_root) = active_scope_root(tree) else {
-        return (false, None);
+        return (false, None, None);
     };
 
     match input {
         RawInput::Nav(dir) => {
             if focus.editing
                 && let Some(slot) = focus.focused_slot(tree)
-                && tree.nodes[slot as usize].kind == NodeKind::Slider
             {
-                let delta = if dir == NavDir::Next { 1 } else { -1 };
-                return adjust_slider_by_steps(tree, focus, slot, delta, damage, screen);
+                let node = &tree.nodes[slot as usize];
+                if node.kind == NodeKind::Slider {
+                    let delta = if dir == NavDir::Next { 1 } else { -1 };
+                    let (c, a) = adjust_slider_by_steps(tree, focus, slot, delta, damage, screen);
+                    return (c, a, None);
+                } else if node.props.editable() {
+                    let delta = if dir == NavDir::Next { 1 } else { -1 };
+                    damage.add(node.visible_rect, screen);
+                    return (
+                        true,
+                        Some(UiAction {
+                            key: node.key,
+                            kind: ActionKind::Adjust(delta),
+                        }),
+                        None,
+                    );
+                }
             }
 
             let mut list = [0u16; MAX_NODES];
             let cnt = collect_focusables_in_scope(tree, scope_root, &mut list);
             if cnt == 0 {
-                return (false, None);
+                return (false, None, None);
             }
 
             let old_slot = focus.focused_slot(tree);
@@ -545,17 +603,34 @@ pub fn dispatch_input(
                 damage.add(tree.nodes[scroll_slot as usize].visible_rect, screen);
             }
             damage.add(tree.nodes[next_slot as usize].visible_rect, screen);
-            (true, None)
+            (true, None, None)
         }
         RawInput::Adjust(steps) => {
             let Some(slot) = focus.focused_slot(tree) else {
-                return (false, None);
+                return (false, None, None);
             };
-            if focus.editing && tree.nodes[slot as usize].kind == NodeKind::Slider {
-                return adjust_slider_by_steps(tree, focus, slot, steps, damage, screen);
+            if focus.editing {
+                let node = &tree.nodes[slot as usize];
+                if node.kind == NodeKind::Slider {
+                    let (c, a) = adjust_slider_by_steps(tree, focus, slot, steps, damage, screen);
+                    return (c, a, None);
+                } else if node.props.editable() {
+                    if steps == 0 {
+                        return (true, None, None);
+                    }
+                    damage.add(node.visible_rect, screen);
+                    return (
+                        true,
+                        Some(UiAction {
+                            key: node.key,
+                            kind: ActionKind::Adjust(steps),
+                        }),
+                        None,
+                    );
+                }
             }
             if steps == 0 {
-                return (true, None);
+                return (true, None, None);
             }
             let dir = if steps > 0 {
                 NavDir::Next
@@ -565,46 +640,50 @@ pub fn dispatch_input(
             let count = steps.unsigned_abs();
             let mut consumed = false;
             for _ in 0..count {
-                let (c, _) =
-                    dispatch_input(tree, focus, pointer, RawInput::Nav(dir), screen, damage);
+                let (c, _, _) =
+                    dispatch_input_ext(tree, focus, pointer, RawInput::Nav(dir), screen, damage);
                 consumed |= c;
             }
-            (consumed, None)
+            (consumed, None, None)
         }
         RawInput::Activate => {
             let Some(slot) = focus.focused_slot(tree) else {
-                return (false, None);
+                return (false, None, None);
             };
             if !focus.ring_visible {
                 focus.ring_visible = true;
                 damage.add(tree.nodes[slot as usize].visible_rect, screen);
             }
             let node = &tree.nodes[slot as usize];
+            if node.kind == NodeKind::Slider || node.props.editable() {
+                focus.editing = !focus.editing;
+                damage.add(node.visible_rect, screen);
+                return (true, None, None);
+            }
             match node.kind {
-                NodeKind::Slider => {
-                    focus.editing = !focus.editing;
-                    damage.add(node.visible_rect, screen);
-                    (true, None)
-                }
                 NodeKind::Toggle => (
                     true,
                     Some(UiAction {
                         key: node.key,
                         kind: ActionKind::Toggle,
                     }),
+                    None,
                 ),
                 NodeKind::Button
                 | NodeKind::Row
                 | NodeKind::Column
                 | NodeKind::Stack
+                | NodeKind::Wrap
+                | NodeKind::CustomContainer
                 | NodeKind::Custom => (
                     true,
                     Some(UiAction {
                         key: node.key,
                         kind: ActionKind::Activate,
                     }),
+                    None,
                 ),
-                _ => (false, None),
+                _ => (false, None, None),
             }
         }
         RawInput::Back => {
@@ -613,7 +692,7 @@ pub fn dispatch_input(
                 if let Some(slot) = focus.focused_slot(tree) {
                     damage.add(tree.nodes[slot as usize].visible_rect, screen);
                 }
-                return (true, None);
+                return (true, None, None);
             }
             if tree.modal.get_u16() == Some(scope_root) {
                 return (
@@ -622,6 +701,7 @@ pub fn dispatch_input(
                         key: tree.nodes[scope_root as usize].key,
                         kind: ActionKind::Dismiss,
                     }),
+                    None,
                 );
             }
             if let Some(root_slot) = tree.root.get_u16() {
@@ -631,25 +711,26 @@ pub fn dispatch_input(
                         key: tree.nodes[root_slot as usize].key,
                         kind: ActionKind::Dismiss,
                     }),
+                    None,
                 );
             }
-            (false, None)
+            (false, None, None)
         }
         RawInput::KeyDown(hold_key) => match hold_key {
             HoldKey::AdjustPrev => {
-                dispatch_input(tree, focus, pointer, RawInput::Adjust(-1), screen, damage)
+                dispatch_input_ext(tree, focus, pointer, RawInput::Adjust(-1), screen, damage)
             }
             HoldKey::AdjustNext => {
-                dispatch_input(tree, focus, pointer, RawInput::Adjust(1), screen, damage)
+                dispatch_input_ext(tree, focus, pointer, RawInput::Adjust(1), screen, damage)
             }
             HoldKey::Activate => {
-                dispatch_input(tree, focus, pointer, RawInput::Activate, screen, damage)
+                dispatch_input_ext(tree, focus, pointer, RawInput::Activate, screen, damage)
             }
         },
-        RawInput::KeyUp(_) => (true, None),
+        RawInput::KeyUp(_) => (true, None, None),
         RawInput::PointerDown { id, pos } => {
             if pointer.active_id().is_some() {
-                return (false, None);
+                return (false, None, None);
             }
 
             let is_modal_scope = tree.modal.get_u16() == Some(scope_root);
@@ -658,9 +739,9 @@ pub fn dispatch_input(
                 if is_modal_scope {
                     pointer.set_active_id(Some(id));
                     pointer.capture = CaptureKind::None;
-                    return (true, None);
+                    return (true, None, None);
                 }
-                return (false, None);
+                return (false, None, None);
             };
 
             pointer.set_active_id(Some(id));
@@ -680,6 +761,7 @@ pub fn dispatch_input(
             }
 
             let hit_kind = tree.nodes[hit_slot as usize].kind;
+            let hit_cap = tree.nodes[hit_slot as usize].props.pointer_capture();
             let scroll_anc = if hit_kind == NodeKind::ScrollY {
                 Some(hit_slot)
             } else {
@@ -689,10 +771,23 @@ pub fn dispatch_input(
 
             if hit_kind == NodeKind::Modal {
                 pointer.capture = CaptureKind::None;
-                return (true, None);
+                return (true, None, None);
             }
 
             if let Some(scroll_slot) = scroll_anc {
+                if hit_cap == PointerCaptureMode::Free {
+                    if tree.nodes[hit_slot as usize].props.focusable() {
+                        focus.set_focused_key(Some(tree.nodes[hit_slot as usize].key));
+                    }
+                    tree.nodes[hit_slot as usize].pressed = true;
+                    damage.add(tree.nodes[hit_slot as usize].visible_rect, screen);
+                    pointer.capture = CaptureKind::CustomPointer {
+                        id: hit_id,
+                        start_pos: pos,
+                    };
+                    let pev = build_pointer_event(tree, hit_slot, PointerPhase::Down, pos, pos);
+                    return (true, None, Some(pev));
+                }
                 let scroll_id = tree.nodes[scroll_slot as usize].id(scroll_slot);
                 let is_slider = hit_kind == NodeKind::Slider;
                 if is_interactive_leaf_or_row(&tree.nodes[hit_slot as usize]) {
@@ -709,14 +804,26 @@ pub fn dispatch_input(
                     start_offset: tree.nodes[scroll_slot as usize].scroll_y,
                     slider_candidate: is_slider,
                 };
-                (true, None)
+                (true, None, None)
+            } else if hit_cap != PointerCaptureMode::None {
+                if tree.nodes[hit_slot as usize].props.focusable() {
+                    focus.set_focused_key(Some(tree.nodes[hit_slot as usize].key));
+                }
+                tree.nodes[hit_slot as usize].pressed = true;
+                damage.add(tree.nodes[hit_slot as usize].visible_rect, screen);
+                pointer.capture = CaptureKind::CustomPointer {
+                    id: hit_id,
+                    start_pos: pos,
+                };
+                let pev = build_pointer_event(tree, hit_slot, PointerPhase::Down, pos, pos);
+                (true, None, Some(pev))
             } else if hit_kind == NodeKind::Slider {
                 if tree.nodes[hit_slot as usize].props.focusable() {
                     focus.set_focused_key(Some(tree.nodes[hit_slot as usize].key));
                 }
                 pointer.capture = CaptureKind::Slider { id: hit_id };
                 let (_, action) = update_slider_from_pos(tree, hit_slot, pos, damage, screen);
-                (true, action)
+                (true, action, None)
             } else if is_interactive_leaf_or_row(&tree.nodes[hit_slot as usize]) {
                 if tree.nodes[hit_slot as usize].props.focusable() {
                     focus.set_focused_key(Some(tree.nodes[hit_slot as usize].key));
@@ -724,38 +831,49 @@ pub fn dispatch_input(
                 tree.nodes[hit_slot as usize].pressed = true;
                 damage.add(tree.nodes[hit_slot as usize].visible_rect, screen);
                 pointer.capture = CaptureKind::Button(hit_id);
-                (true, None)
+                (true, None, None)
             } else {
                 pointer.capture = CaptureKind::None;
-                (is_modal_scope, None)
+                (is_modal_scope, None, None)
             }
         }
         RawInput::PointerMove { id, pos } => {
             if pointer.active_id() != Some(id) {
-                return (false, None);
+                return (false, None, None);
             }
 
             match pointer.capture {
-                CaptureKind::None => (false, None),
+                CaptureKind::None => (false, None, None),
                 CaptureKind::Button(target_id) => {
                     let Some(slot) = capture_id_in_scope(tree, target_id, scope_root) else {
                         pointer.clear(tree, damage, screen);
-                        return (false, None);
+                        return (false, None, None);
                     };
                     let inside = pointer_hits_slot(tree, slot, pos);
                     if tree.nodes[slot as usize].pressed != inside {
                         tree.nodes[slot as usize].pressed = inside;
                         damage.add(tree.nodes[slot as usize].visible_rect, screen);
                     }
-                    (true, None)
+                    (true, None, None)
+                }
+                CaptureKind::CustomPointer {
+                    id: target_id,
+                    start_pos,
+                } => {
+                    let Some(slot) = capture_id_in_scope(tree, target_id, scope_root) else {
+                        pointer.clear(tree, damage, screen);
+                        return (false, None, None);
+                    };
+                    let pev = build_pointer_event(tree, slot, PointerPhase::Move, pos, start_pos);
+                    (true, None, Some(pev))
                 }
                 CaptureKind::Slider { id: target_id } => {
                     let Some(slot) = capture_id_in_scope(tree, target_id, scope_root) else {
                         pointer.clear(tree, damage, screen);
-                        return (false, None);
+                        return (false, None, None);
                     };
                     let (_, action) = update_slider_from_pos(tree, slot, pos, damage, screen);
-                    (true, action)
+                    (true, action, None)
                 }
                 CaptureKind::ScrollCandidate {
                     candidate,
@@ -767,11 +885,11 @@ pub fn dispatch_input(
                     let Some(candidate_slot) = capture_id_in_scope(tree, candidate, scope_root)
                     else {
                         pointer.clear(tree, damage, screen);
-                        return (false, None);
+                        return (false, None, None);
                     };
                     let Some(scroll_slot) = capture_id_in_scope(tree, scroll, scope_root) else {
                         pointer.clear(tree, damage, screen);
-                        return (false, None);
+                        return (false, None, None);
                     };
 
                     let dx = pos.x.saturating_sub(start_pos.x);
@@ -795,7 +913,28 @@ pub fn dispatch_input(
                                     ActionKind::SwipeRight
                                 },
                             }),
+                            None,
                         );
+                    }
+                    let cap_mode = tree.nodes[candidate_slot as usize].props.pointer_capture();
+                    let want_custom_lock = match cap_mode {
+                        PointerCaptureMode::LockX => adx >= DRAG_THRESHOLD_PX && adx > ady,
+                        PointerCaptureMode::LockY => ady >= DRAG_THRESHOLD_PX && ady >= adx,
+                        _ => false,
+                    };
+                    if want_custom_lock {
+                        pointer.capture = CaptureKind::CustomPointer {
+                            id: candidate,
+                            start_pos,
+                        };
+                        let pev = build_pointer_event(
+                            tree,
+                            candidate_slot,
+                            PointerPhase::Down,
+                            pos,
+                            start_pos,
+                        );
+                        return (true, None, Some(pev));
                     }
                     if slider_candidate && adx >= DRAG_THRESHOLD_PX && adx > ady {
                         if tree.nodes[candidate_slot as usize].pressed {
@@ -805,7 +944,7 @@ pub fn dispatch_input(
                         pointer.capture = CaptureKind::Slider { id: candidate };
                         let (_, action) =
                             update_slider_from_pos(tree, candidate_slot, pos, damage, screen);
-                        return (true, action);
+                        return (true, action, None);
                     }
 
                     if ady >= DRAG_THRESHOLD_PX && ady >= adx {
@@ -825,7 +964,7 @@ pub fn dispatch_input(
                             screen,
                             damage,
                         );
-                        return (true, None);
+                        return (true, None, None);
                     }
 
                     if is_interactive_leaf_or_row(&tree.nodes[candidate_slot as usize]) {
@@ -835,7 +974,7 @@ pub fn dispatch_input(
                             damage.add(tree.nodes[candidate_slot as usize].visible_rect, screen);
                         }
                     }
-                    (true, None)
+                    (true, None, None)
                 }
                 CaptureKind::Scrolling {
                     scroll,
@@ -844,7 +983,7 @@ pub fn dispatch_input(
                 } => {
                     let Some(scroll_slot) = capture_id_in_scope(tree, scroll, scope_root) else {
                         pointer.clear(tree, damage, screen);
-                        return (false, None);
+                        return (false, None, None);
                     };
                     let dy = pos.y.saturating_sub(start_pos.y);
                     apply_scroll_drag(
@@ -854,64 +993,111 @@ pub fn dispatch_input(
                         screen,
                         damage,
                     );
-                    (true, None)
+                    (true, None, None)
                 }
             }
         }
         RawInput::PointerUp { id, pos } => {
             if pointer.active_id() != Some(id) {
-                return (false, None);
+                return (false, None, None);
             }
             let cap = pointer.capture;
             pointer.set_active_id(None);
             pointer.capture = CaptureKind::None;
 
             match cap {
-                CaptureKind::None => (false, None),
+                CaptureKind::None => (false, None, None),
                 CaptureKind::Button(target_id) => {
                     if let Some(slot) = capture_id_in_scope(tree, target_id, scope_root) {
-                        activate_if_hit_on_up(tree, slot, pos, damage, screen)
+                        let (c, a) = activate_if_hit_on_up(tree, slot, pos, damage, screen);
+                        (c, a, None)
                     } else {
                         release_pressed_if_valid(tree, target_id, damage, screen);
-                        (false, None)
+                        (false, None, None)
+                    }
+                }
+                CaptureKind::CustomPointer {
+                    id: target_id,
+                    start_pos,
+                } => {
+                    if let Some(slot) = capture_id_in_scope(tree, target_id, scope_root) {
+                        tree.nodes[slot as usize].pressed = false;
+                        damage.add(tree.nodes[slot as usize].visible_rect, screen);
+                        let pev = build_pointer_event(tree, slot, PointerPhase::Up, pos, start_pos);
+                        (true, None, Some(pev))
+                    } else {
+                        release_pressed_if_valid(tree, target_id, damage, screen);
+                        (false, None, None)
                     }
                 }
                 CaptureKind::Slider { id: target_id } => {
                     let Some(slot) = capture_id_in_scope(tree, target_id, scope_root) else {
-                        return (false, None);
+                        return (false, None, None);
                     };
                     let (_, action) = update_slider_from_pos(tree, slot, pos, damage, screen);
-                    (true, action)
+                    (true, action, None)
                 }
                 CaptureKind::ScrollCandidate { candidate, .. } => {
                     if let Some(candidate_slot) = capture_id_in_scope(tree, candidate, scope_root) {
                         if tree.nodes[candidate_slot as usize].kind == NodeKind::Slider {
                             let (_, action) =
                                 update_slider_from_pos(tree, candidate_slot, pos, damage, screen);
-                            (true, action)
+                            (true, action, None)
+                        } else if !tree.nodes[candidate_slot as usize].props.clickable()
+                            && tree.nodes[candidate_slot as usize].props.pointer_capture()
+                                != PointerCaptureMode::None
+                        {
+                            tree.nodes[candidate_slot as usize].pressed = false;
+                            damage.add(tree.nodes[candidate_slot as usize].visible_rect, screen);
+                            let pev = build_pointer_event(
+                                tree,
+                                candidate_slot,
+                                PointerPhase::Up,
+                                pos,
+                                pos,
+                            );
+                            (true, None, Some(pev))
                         } else {
-                            activate_if_hit_on_up(tree, candidate_slot, pos, damage, screen)
+                            let (c, a) =
+                                activate_if_hit_on_up(tree, candidate_slot, pos, damage, screen);
+                            (c, a, None)
                         }
                     } else {
                         release_pressed_if_valid(tree, candidate, damage, screen);
-                        (false, None)
+                        (false, None, None)
                     }
                 }
                 CaptureKind::Scrolling { scroll, .. } => {
                     if capture_id_in_scope(tree, scroll, scope_root).is_some() {
-                        (true, None)
+                        (true, None, None)
                     } else {
-                        (false, None)
+                        (false, None, None)
                     }
                 }
             }
         }
         RawInput::PointerCancel { id } => {
             if pointer.active_id() != Some(id) {
-                return (false, None);
+                return (false, None, None);
             }
+            let cancel_ev = if let CaptureKind::CustomPointer {
+                id: target_id,
+                start_pos,
+            } = pointer.capture
+                && let Some(slot) = capture_id_in_scope(tree, target_id, scope_root)
+            {
+                Some(build_pointer_event(
+                    tree,
+                    slot,
+                    PointerPhase::Cancel,
+                    start_pos,
+                    start_pos,
+                ))
+            } else {
+                None
+            };
             pointer.clear(tree, damage, screen);
-            (true, None)
+            (true, None, cancel_ev)
         }
     }
 }
@@ -986,7 +1172,7 @@ pub fn is_valid_repeat_target(
             n.occupied
                 && n.pressed
                 && n.key == repeat.key
-                && n.kind == NodeKind::Button
+                && is_interactive_leaf_or_row(n)
                 && (n.props.repeatable() || n.props.long_press())
                 && tree.is_effectively_enabled_and_visible(slot)
         }
@@ -1002,9 +1188,9 @@ pub fn is_valid_repeat_target(
             }
             let n = &tree.nodes[slot as usize];
             if repeat.adjust_delta != 0 {
-                focus.editing && n.kind == NodeKind::Slider
+                focus.editing && (n.kind == NodeKind::Slider || n.props.editable())
             } else {
-                n.kind == NodeKind::Button && n.props.repeatable()
+                is_interactive_leaf_or_row(n) && n.props.repeatable()
             }
         }
     }
@@ -1128,11 +1314,13 @@ fn apply_scroll_drag(
     }
 }
 
-fn is_interactive_leaf_or_row(n: &crate::node::RetainedNode) -> bool {
+pub fn is_interactive_leaf_or_row(n: &crate::node::RetainedNode) -> bool {
     matches!(
         n.kind,
         NodeKind::Button | NodeKind::Toggle | NodeKind::Slider
     ) || n.props.clickable()
+        || n.props.pointer_capture() != PointerCaptureMode::None
+        || n.props.editable()
 }
 
 fn pointer_hits_slot(tree: &RetainedTree, slot: u16, pos: Point) -> bool {

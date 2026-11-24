@@ -7,8 +7,9 @@ use crate::capacity::{
 pub const BUTTON_ICON_SIZE: u32 = 14;
 pub const BUTTON_ICON_GAP: u32 = 4;
 pub const BUTTON_ICON_SPAN: u32 = BUTTON_ICON_SIZE + BUTTON_ICON_GAP;
-use crate::geometry::Rgb565;
-use crate::input::UiAction;
+use crate::geometry::{Rect, Rgb565, Size};
+use crate::input::{PointerCaptureMode, PointerEvent, UiAction};
+use crate::paint::{PaintOverride, PaintState};
 use crate::time::{Easing, InstantMs};
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
@@ -73,6 +74,33 @@ pub trait App {
         canvas: &mut crate::paint::WidgetCanvas<'_>,
     ) -> Result<(), BuildError> {
         Self::paint_custom(key, props, canvas)
+    }
+
+    /// Override or augment rendering of a built-in widget when `paint_mode == PaintMode::Override`.
+    fn paint_override(
+        _model: &Self::Model,
+        _key: Key,
+        _kind: NodeKind,
+        _props: &StoredProps,
+        _state: PaintState,
+        _canvas: &mut crate::paint::WidgetCanvas<'_>,
+    ) -> Result<PaintOverride, BuildError> {
+        Ok(PaintOverride::Default)
+    }
+
+    /// Receive widget-local pointer down/move/up/cancel coordinates for nodes with `pointer_capture`.
+    fn on_pointer(_model: &Self::Model, _key: Key, _event: PointerEvent) -> Option<Self::Msg> {
+        None
+    }
+
+    /// Compute custom child rectangles and container size for `NodeKind::CustomContainer`.
+    fn layout_custom(
+        _key: Key,
+        _child_sizes: &[Size],
+        _available: Size,
+        _out_rects: &mut [Rect],
+    ) -> Size {
+        Size::zero()
     }
     /// Opt this node into two-contact gesture arbitration.
     fn accepts_transform(_model: &Self::Model, _key: Key) -> bool {
@@ -426,6 +454,56 @@ pub enum IconKind {
     Diagnostics = 11,
 }
 
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Default)]
+#[repr(u8)]
+pub enum StackAlign {
+    #[default]
+    TopStart = 0,
+    TopCenter = 1,
+    TopEnd = 2,
+    CenterStart = 3,
+    Center = 4,
+    CenterEnd = 5,
+    BottomStart = 6,
+    BottomCenter = 7,
+    BottomEnd = 8,
+}
+
+impl StackAlign {
+    #[inline]
+    pub const fn from_raw(raw: u8) -> Self {
+        match raw & 0x0F {
+            1 => Self::TopCenter,
+            2 => Self::TopEnd,
+            3 => Self::CenterStart,
+            4 => Self::Center,
+            5 => Self::CenterEnd,
+            6 => Self::BottomStart,
+            7 => Self::BottomCenter,
+            8 => Self::BottomEnd,
+            _ => Self::TopStart,
+        }
+    }
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Default)]
+#[repr(u8)]
+pub enum PaintMode {
+    #[default]
+    Default = 0,
+    Override = 1,
+}
+
+impl PaintMode {
+    #[inline]
+    pub const fn from_raw(raw: u8) -> Self {
+        match raw & 0b11 {
+            1 => Self::Override,
+            _ => Self::Default,
+        }
+    }
+}
+
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
 #[repr(u8)]
 pub enum NodeKind {
@@ -443,13 +521,22 @@ pub enum NodeKind {
     ProgressBar = 10,
     Sparkline = 11,
     Custom = 12,
+    Wrap = 13,
+    CustomContainer = 14,
 }
 
 impl NodeKind {
     pub const fn is_container(self) -> bool {
         matches!(
             self,
-            Self::Root | Self::Row | Self::Column | Self::Stack | Self::ScrollY | Self::Modal
+            Self::Root
+                | Self::Row
+                | Self::Column
+                | Self::Stack
+                | Self::ScrollY
+                | Self::Modal
+                | Self::Wrap
+                | Self::CustomContainer
         )
     }
 }
@@ -608,6 +695,10 @@ pub struct NodeProps {
     pub repeatable: bool,
     pub swipeable: bool,
     pub long_press: bool,
+    pub pointer_capture: PointerCaptureMode,
+    pub editable: bool,
+    pub paint_mode: PaintMode,
+    pub stack_align: StackAlign,
 }
 
 impl Default for NodeProps {
@@ -665,9 +756,20 @@ impl NodeProps {
             repeatable: false,
             swipeable: false,
             long_press: false,
+            pointer_capture: PointerCaptureMode::None,
+            editable: false,
+            paint_mode: PaintMode::Default,
+            stack_align: StackAlign::TopStart,
         }
     }
 }
+
+const EXT_POINTER_CAPTURE_MASK: u16 = 0b11;
+const EXT_FLAG_EDITABLE: u16 = 1 << 2;
+const EXT_PAINT_MODE_SHIFT: u16 = 3;
+const EXT_PAINT_MODE_MASK: u16 = 0b11 << EXT_PAINT_MODE_SHIFT;
+const EXT_STACK_ALIGN_SHIFT: u16 = 5;
+const EXT_STACK_ALIGN_MASK: u16 = 0x0F << EXT_STACK_ALIGN_SHIFT;
 
 const FLAG_HAS_BG: u16 = 1 << 0;
 const FLAG_HAS_BORDER: u16 = 1 << 1;
@@ -718,6 +820,7 @@ pub struct StoredProps {
     pub series: u8,
     pub theme_id: u16,
     pub flags: u16,
+    pub ext_flags: u16,
 }
 
 impl StoredProps {
@@ -752,6 +855,7 @@ impl StoredProps {
         series: 0,
         theme_id: 0,
         flags: 0,
+        ext_flags: 0,
     };
 
     pub fn from_props(p: NodeProps) -> Self {
@@ -818,6 +922,12 @@ impl StoredProps {
                 if s.is_empty() { None } else { Some(s) },
             ),
         };
+        let mut ext_flags = (p.pointer_capture as u16) & EXT_POINTER_CAPTURE_MASK;
+        if p.editable {
+            ext_flags |= EXT_FLAG_EDITABLE;
+        }
+        ext_flags |= ((p.paint_mode as u16) << EXT_PAINT_MODE_SHIFT) & EXT_PAINT_MODE_MASK;
+        ext_flags |= ((p.stack_align as u16) << EXT_STACK_ALIGN_SHIFT) & EXT_STACK_ALIGN_MASK;
         Self {
             width: p.width,
             height: p.height,
@@ -849,6 +959,7 @@ impl StoredProps {
             series: p.series,
             theme_id: p.theme_id,
             flags,
+            ext_flags,
         }
     }
 
@@ -993,6 +1104,28 @@ impl StoredProps {
     #[inline]
     pub const fn press_feedback(&self) -> PressFeedback {
         PressFeedback::from_raw(self.press_feedback_raw)
+    }
+
+    #[inline]
+    pub const fn pointer_capture(&self) -> PointerCaptureMode {
+        PointerCaptureMode::from_raw((self.ext_flags & EXT_POINTER_CAPTURE_MASK) as u8)
+    }
+
+    #[inline]
+    pub const fn editable(&self) -> bool {
+        (self.ext_flags & EXT_FLAG_EDITABLE) != 0
+    }
+
+    #[inline]
+    pub const fn paint_mode(&self) -> PaintMode {
+        PaintMode::from_raw(((self.ext_flags & EXT_PAINT_MODE_MASK) >> EXT_PAINT_MODE_SHIFT) as u8)
+    }
+
+    #[inline]
+    pub const fn stack_align(&self) -> StackAlign {
+        StackAlign::from_raw(
+            ((self.ext_flags & EXT_STACK_ALIGN_MASK) >> EXT_STACK_ALIGN_SHIFT) as u8,
+        )
     }
 }
 
@@ -1171,6 +1304,8 @@ impl DraftNode {
 
 pub struct ViewDraft {
     pub effects: crate::effects::Effects,
+    pub part_styles: crate::part_style::PartStyles,
+    pub layout_extras: crate::part_style::LayoutExtras,
     #[cfg(feature = "inspector")]
     pub inspection: Option<alloc::boxed::Box<crate::style_source::StyleInspection>>,
     pub nodes: [DraftNode; MAX_NODES],
@@ -1185,6 +1320,8 @@ pub struct ViewDraft {
 impl ViewDraft {
     pub const ZERO: Self = Self {
         effects: crate::effects::Effects::EMPTY,
+        part_styles: crate::part_style::PartStyles::EMPTY,
+        layout_extras: crate::part_style::LayoutExtras::EMPTY,
         #[cfg(feature = "inspector")]
         inspection: None,
         nodes: [DraftNode::EMPTY; MAX_NODES],
@@ -1209,6 +1346,8 @@ impl ViewDraft {
         self.text_len = 0;
         self.sparklines.reset();
         self.effects = crate::effects::Effects::EMPTY;
+        self.part_styles = crate::part_style::PartStyles::EMPTY;
+        self.layout_extras = crate::part_style::LayoutExtras::EMPTY;
         self.root = SlotLink::NONE;
         self.modal = SlotLink::NONE;
     }
@@ -1305,12 +1444,8 @@ pub struct Children<'a, 'b> {
 }
 
 impl<'a, 'b> Children<'a, 'b> {
-    /// Decorate an already declared node without changing its layout or order.
-    pub fn decorate(
-        &mut self,
-        key: Key,
-        style: crate::effects::SurfaceStyle,
-    ) -> Result<(), BuildError> {
+    #[inline]
+    fn ensure_key(&mut self, key: Key) -> Result<(), BuildError> {
         let b = &mut self.builder;
         b.operation_key = Some(key);
         if !b.draft.nodes[..usize::from(b.draft.count)]
@@ -1319,7 +1454,77 @@ impl<'a, 'b> Children<'a, 'b> {
         {
             return Err(b.fail(BuildError::InvalidRange));
         }
-        b.draft.effects.add(key, style).map_err(|err| b.fail(err))
+        Ok(())
+    }
+
+    /// Decorate an already declared node without changing its layout or order.
+    pub fn decorate(
+        &mut self,
+        key: Key,
+        style: crate::effects::SurfaceStyle,
+    ) -> Result<(), BuildError> {
+        self.ensure_key(key)?;
+        self.builder
+            .draft
+            .effects
+            .add(key, style)
+            .map_err(|err| self.builder.fail(err))
+    }
+
+    /// Attach or merge part-level and state-aware style overrides on an already declared node.
+    pub fn style_parts(
+        &mut self,
+        key: Key,
+        style: crate::part_style::WidgetPartStyle,
+    ) -> Result<(), BuildError> {
+        self.ensure_key(key)?;
+        self.builder
+            .draft
+            .part_styles
+            .set(key, style)
+            .map_err(|err| self.builder.fail(err))
+    }
+
+    /// Apply a signed layout pixel offset on an already declared child (typically inside `Stack`).
+    pub fn set_offset(&mut self, key: Key, dx: i16, dy: i16) -> Result<(), BuildError> {
+        self.ensure_key(key)?;
+        self.builder
+            .draft
+            .layout_extras
+            .set_offset(key, dx, dy)
+            .map_err(|err| self.builder.fail(err))
+    }
+
+    /// Set a clean invalidation revision token for custom/overridden widgets.
+    pub fn set_custom_rev(&mut self, key: Key, rev: u32) -> Result<(), BuildError> {
+        self.ensure_key(key)?;
+        self.builder
+            .draft
+            .layout_extras
+            .set_custom_rev(key, rev)
+            .map_err(|err| self.builder.fail(err))
+    }
+
+    #[inline]
+    pub fn wrap<F>(&mut self, key: Key, props: NodeProps, f: F) -> Result<(), BuildError>
+    where
+        F: FnOnce(&mut Children<'a, '_>) -> Result<(), BuildError>,
+    {
+        self.builder.scoped_container(key, NodeKind::Wrap, props, f)
+    }
+
+    #[inline]
+    pub fn custom_container<F>(
+        &mut self,
+        key: Key,
+        props: NodeProps,
+        f: F,
+    ) -> Result<(), BuildError>
+    where
+        F: FnOnce(&mut Children<'a, '_>) -> Result<(), BuildError>,
+    {
+        self.builder
+            .scoped_container(key, NodeKind::CustomContainer, props, f)
     }
 
     #[inline]

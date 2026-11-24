@@ -31,18 +31,24 @@ pub mod prelude {
     pub use liuli_core::geometry::Rect;
     pub use liuli_core::input::TextInput;
     pub use liuli_core::input::{
-        ActionKind, GesturePhase, HoldKey, NavDir, PointerId, RawInput, TransformGesture, UiAction,
+        ActionKind, GesturePhase, HoldKey, NavDir, PointerCaptureMode, PointerEvent, PointerId,
+        PointerPhase, RawInput, TransformGesture, UiAction,
     };
-    pub use liuli_core::paint::{SceneResources, SliceSceneResources, TextId, WidgetCanvas};
+    pub use liuli_core::paint::{
+        PaintOverride, PaintState, SceneResources, SliceSceneResources, TextId, WidgetCanvas,
+    };
+    pub use liuli_core::part_style::{
+        IconPosition, LayoutExtra, VisualState, WidgetPart, WidgetPartStyle,
+    };
     pub use liuli_core::time::{
-        Easing, InstantMs, MAX_REPEAT_STEPS_PER_ADVANCE, NextWakeup, REPEAT_DELAY_MS,
+        AnimProp, Easing, InstantMs, MAX_REPEAT_STEPS_PER_ADVANCE, NextWakeup, REPEAT_DELAY_MS,
         REPEAT_PERIOD_MS, Tween,
     };
     pub use liuli_core::view::StoredProps;
     pub use liuli_core::view::{
         Align, App, Change, Children, EdgeInsets, FocusRingStyle, FontId, IconKind, Key, Length,
-        NodeKind, NodeProps, PageRestore, PressFeedback, SampleRing, SubpixelOrder, TextAlign,
-        TextGamma, TextRef, TextStyleFlags, ViewBuilder, WrapMode,
+        NodeKind, NodeProps, PageRestore, PaintMode, PressFeedback, SampleRing, StackAlign,
+        SubpixelOrder, TextAlign, TextGamma, TextRef, TextStyleFlags, ViewBuilder, WrapMode,
     };
     pub use liuli_render::{
         AlignedBand, BandSlot, BufferTooSmall, ByteOrder, CACHE_LINE_BYTES, DmaCacheOps,

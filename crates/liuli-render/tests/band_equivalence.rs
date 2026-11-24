@@ -691,3 +691,148 @@ fn streaming_font_and_hybrid_font_set_match_xip_pixel_exact_across_band_heights(
     let stats = pure_streaming.cache_stats();
     assert!(stats.metrics_hits > 0 && stats.bitmap_hits > 0);
 }
+
+#[test]
+fn vector_line_circle_arc_match_reference_across_band_heights() {
+    let fonts = FontSet::single(Lf4Font::from_bytes(SETTINGS_LF4).unwrap());
+    let resources = SliceSceneResources {
+        texts: &[],
+        sparklines: &[],
+    };
+    let screen = Rect::new(0, 0, 200, 120);
+    let mut cmds = CommandList::new();
+    cmds.screen = screen;
+    cmds.root_bg = Rgb565::new(2, 4, 2);
+
+    // Anti-aliased and non-AA lines, diagonal, vertical/horizontal, thin & thick, partial clip.
+    cmds.push(PaintCmd::Line {
+        p0: Point::new(8, 8),
+        p1: Point::new(72, 44),
+        clip: Rect::new(10, 10, 56, 36),
+        color: Rgb565::new(31, 63, 0),
+        width: 3,
+        aa: true,
+    })
+    .unwrap();
+    cmds.push(PaintCmd::Line {
+        p0: Point::new(80, 12),
+        p1: Point::new(18, 52),
+        clip: screen,
+        color: Rgb565::new(0, 63, 31),
+        width: 1,
+        aa: false,
+    })
+    .unwrap();
+
+    // Filled circle, hollow circle border, and combined fill+border crossing band boundaries.
+    cmds.push(PaintCmd::Circle {
+        center: Point::new(40, 82),
+        clip: screen,
+        radius: 22,
+        fill: Some(Rgb565::new(28, 12, 6)),
+        border_color: Some(Rgb565::new(31, 63, 31)),
+        border_width: 2,
+    })
+    .unwrap();
+    cmds.push(PaintCmd::Circle {
+        center: Point::new(86, 82),
+        clip: screen,
+        radius: 16,
+        fill: None,
+        border_color: Some(Rgb565::new(8, 56, 16)),
+        border_width: 3,
+    })
+    .unwrap();
+
+    // Positive sweep arc (round caps), negative sweep arc (flat caps), and full 360 ring.
+    cmds.push(PaintCmd::Arc {
+        center: Point::new(132, 42),
+        clip: screen,
+        radius: 24,
+        start_deg: 135,
+        sweep_deg: 240,
+        color: Rgb565::new(4, 48, 31),
+        width: 6,
+        cap_round: true,
+    })
+    .unwrap();
+    cmds.push(PaintCmd::Arc {
+        center: Point::new(132, 86),
+        clip: screen,
+        radius: 18,
+        start_deg: -45,
+        sweep_deg: -160,
+        color: Rgb565::new(31, 40, 0),
+        width: 4,
+        cap_round: false,
+    })
+    .unwrap();
+    cmds.push(PaintCmd::Arc {
+        center: Point::new(174, 62),
+        clip: Rect::new(152, 30, 44, 64),
+        radius: 16,
+        start_deg: 0,
+        sweep_deg: 360,
+        color: Rgb565::new(24, 63, 24),
+        width: 3,
+        cap_round: false,
+    })
+    .unwrap();
+
+    let ref_full = render_with_band_height(&cmds, &resources, &fonts, 120);
+    // Ensure full-screen vector direct sink matches band renderer output as well.
+    let mut direct_vec = vec![liuli_core::geometry::rgb565_to_u16(cmds.root_bg); 200 * 120];
+    let mut sink: &mut [u16] = &mut direct_vec;
+    for cmd in cmds.as_slice() {
+        match *cmd {
+            PaintCmd::Line {
+                p0,
+                p1,
+                clip,
+                color,
+                width,
+                aa,
+            } => liuli_render::vector::draw_line(&mut sink, screen, p0, p1, clip, color, width, aa),
+            PaintCmd::Circle {
+                center,
+                clip,
+                radius,
+                fill,
+                border_color,
+                border_width,
+            } => liuli_render::vector::draw_circle(
+                &mut sink,
+                screen,
+                center,
+                radius,
+                clip,
+                fill,
+                border_color,
+                border_width,
+            ),
+            PaintCmd::Arc {
+                center,
+                clip,
+                radius,
+                start_deg,
+                sweep_deg,
+                color,
+                width,
+                cap_round,
+            } => liuli_render::vector::draw_arc(
+                &mut sink, screen, center, radius, start_deg, sweep_deg, width, cap_round, clip,
+                color,
+            ),
+            _ => {}
+        }
+    }
+    assert_eq!(ref_full, direct_vec);
+
+    let bg_raw = liuli_core::geometry::rgb565_to_u16(cmds.root_bg);
+    assert!(ref_full.iter().any(|&px| px != bg_raw));
+
+    for bh in [1u32, 3, 8, 17] {
+        let got = render_with_band_height(&cmds, &resources, &fonts, bh);
+        assert_eq!(got, ref_full, "vector mismatch at band_h={bh}");
+    }
+}

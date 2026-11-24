@@ -954,6 +954,50 @@ fn render_range<R: SceneResources + ?Sized, T: BandTextSource>(
                     stroke_width,
                 );
             }
+            PaintCmd::Line {
+                p0,
+                p1,
+                clip,
+                color,
+                width,
+                aa,
+            } => {
+                crate::vector::draw_line(target, band_rect, p0, p1, clip, color, width, aa);
+            }
+            PaintCmd::Circle {
+                center,
+                clip,
+                radius,
+                fill,
+                border_color,
+                border_width,
+            } => {
+                crate::vector::draw_circle(
+                    target,
+                    band_rect,
+                    center,
+                    radius,
+                    clip,
+                    fill,
+                    border_color,
+                    border_width,
+                );
+            }
+            PaintCmd::Arc {
+                center,
+                clip,
+                radius,
+                start_deg,
+                sweep_deg,
+                color,
+                width,
+                cap_round,
+            } => {
+                crate::vector::draw_arc(
+                    target, band_rect, center, radius, start_deg, sweep_deg, width, cap_round,
+                    clip, color,
+                );
+            }
         }
     }
 

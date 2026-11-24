@@ -141,6 +141,18 @@ impl<'a> BandTarget<'a> {
     }
 }
 
+impl crate::vector::PixelSink for BandTarget<'_> {
+    #[inline(always)]
+    fn put_opaque(&mut self, idx: usize, fg_raw: u16) {
+        self.put_opaque(idx, fg_raw);
+    }
+
+    #[inline(always)]
+    fn blend_a4(&mut self, idx: usize, fg_raw: u16, cov: u8) {
+        self.blend_pixel_a4(idx, fg_raw, cov);
+    }
+}
+
 impl OriginDimensions for BandTarget<'_> {
     #[inline]
     fn size(&self) -> Size {

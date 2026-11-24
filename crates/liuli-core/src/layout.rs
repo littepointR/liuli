@@ -1,8 +1,10 @@
 use crate::capacity::MAX_DEPTH;
 use crate::geometry::{Point, Rect, Size};
 use crate::node::{RetainedNode, RetainedTree, TextCache};
+use crate::part_style::IconPosition;
 use crate::view::{
-    Align, BUTTON_ICON_SPAN, FontId, IconKind, Length, NodeKind, SlotLink, TextAlign,
+    Align, BUTTON_ICON_GAP, BUTTON_ICON_SIZE, FontId, IconKind, Length, NodeKind, SlotLink,
+    StackAlign, TextAlign,
 };
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
@@ -59,6 +61,16 @@ pub trait TextMeasurer {
         Size::zero()
     }
 
+    fn layout_custom(
+        &self,
+        _key: crate::view::Key,
+        _child_sizes: &[Size],
+        _available: Size,
+        _out_rects: &mut [Rect],
+    ) -> Size {
+        Size::zero()
+    }
+
     fn line_height(&self, font: FontId) -> u32;
     fn measure_text(
         &self,
@@ -101,7 +113,7 @@ pub fn layout_tree(
     if tree.nodes[root as usize].dirty_measure {
         let root_c = Constraints::tight(screen.w, screen.h);
         measured_nodes = measure_iterative(tree, root, root_c, measurer);
-        arrange_iterative(tree, root, screen, screen, screen);
+        arrange_iterative(tree, root, screen, screen, screen, Some(measurer));
     }
 
     for node in &mut tree.nodes {
@@ -119,7 +131,7 @@ pub fn relayout_scroll_subtree(tree: &mut RetainedTree, scroll_slot: u16, screen
     }
     let rect = tree.nodes[scroll_slot as usize].layout_rect;
     let clip = tree.nodes[scroll_slot as usize].clip_rect;
-    arrange_iterative(tree, scroll_slot, rect, clip, screen);
+    arrange_iterative(tree, scroll_slot, rect, clip, screen, None);
 }
 
 #[inline]
@@ -229,12 +241,31 @@ fn measure_leaf(
             c.clamp_size(Size::new(w, h))
         }
         NodeKind::Button => {
+            let part = tree.part_styles.get_ref(n.key);
             let avail_w = resolve_axis_max(width_prop, c.max_w);
-            let icon_space = if icon != IconKind::None {
-                BUTTON_ICON_SPAN
+            let (icon_w, icon_gap, icon_pos) = if icon != IconKind::None {
+                let sz = u32::from(
+                    part.and_then(|p| p.icon_size())
+                        .unwrap_or(BUTTON_ICON_SIZE as u8),
+                );
+                let gp = u32::from(
+                    part.and_then(|p| p.icon_gap())
+                        .unwrap_or(BUTTON_ICON_GAP as u8),
+                );
+                (
+                    sz,
+                    gp,
+                    part.and_then(|p| p.icon_pos())
+                        .unwrap_or(IconPosition::Left),
+                )
             } else {
-                0
+                (0, 0, IconPosition::Left)
             };
+            let horiz_icon = icon != IconKind::None
+                && matches!(icon_pos, IconPosition::Left | IconPosition::Right);
+            let vert_icon = icon != IconKind::None
+                && matches!(icon_pos, IconPosition::Top | IconPosition::Bottom);
+            let icon_space = if horiz_icon { icon_w + icon_gap } else { 0 };
             let wrap_w = avail_w.saturating_sub(pad_w + icon_space);
             let eff_max_lines = max_lines.max(1);
             let text_str = tree.text_str(text_ref);
@@ -261,8 +292,16 @@ fn measure_leaf(
                 ellipsis,
             };
 
-            let content_w = tm.size.width.saturating_add(pad_w + icon_space);
-            let content_h = tm.size.height.max(14).saturating_add(pad_h);
+            let content_w = if vert_icon {
+                tm.size.width.max(icon_w).saturating_add(pad_w)
+            } else {
+                tm.size.width.saturating_add(pad_w + icon_space)
+            };
+            let content_h = if vert_icon {
+                tm.size.height.saturating_add(icon_w + icon_gap + pad_h)
+            } else {
+                tm.size.height.max(icon_w.max(14)).saturating_add(pad_h)
+            };
             let w = resolve_axis_size(width_prop, content_w, c.max_w);
             let h = resolve_axis_size(height_prop, content_h, c.max_h);
             c.clamp_size(Size::new(w, h))
@@ -508,14 +547,18 @@ fn measure_iterative(
                         sp += 1;
                     }
                 }
-                NodeKind::Root | NodeKind::Stack | NodeKind::Modal => {
+                NodeKind::Root
+                | NodeKind::Stack
+                | NodeKind::Modal
+                | NodeKind::Wrap
+                | NodeKind::CustomContainer => {
                     if let Some(first) = first_visible_child(tree, first_child) {
                         stack[top].phase = 2;
                         stack[top].active_child =
                             SlotLink::from_slot_u16(first).unwrap_or(SlotLink::NONE);
                         let ch_c = child_constraints_stack(
-                            inner_max_w,
-                            inner_max_h,
+                            stack[top].inner_max_w,
+                            stack[top].inner_max_h,
                             &tree.nodes[first as usize],
                         );
                         stack[sp] = MeasureFrame {
@@ -731,7 +774,11 @@ fn measure_iterative(
                         sp -= 1;
                     }
                 }
-                NodeKind::Root | NodeKind::Stack | NodeKind::Modal => {
+                NodeKind::Root
+                | NodeKind::Stack
+                | NodeKind::Modal
+                | NodeKind::Wrap
+                | NodeKind::CustomContainer => {
                     stack[top].non_fill_used = stack[top].non_fill_used.max(prev_sz.width);
                     stack[top].cross_max = stack[top].cross_max.max(prev_sz.height);
                     let next = next_visible_sibling(tree, prev);
@@ -750,21 +797,38 @@ fn measure_iterative(
                         };
                         sp += 1;
                     } else {
-                        let pad_w = tree.nodes[slot as usize].props.padding.horizontal();
-                        let pad_h = tree.nodes[slot as usize].props.padding.vertical();
-                        let width_prop = tree.nodes[slot as usize].props.width;
-                        let height_prop = tree.nodes[slot as usize].props.height;
-                        let w = resolve_axis_size(
-                            width_prop,
-                            stack[top].non_fill_used.saturating_add(pad_w),
-                            c.max_w,
-                        );
-                        let h = resolve_axis_size(
-                            height_prop,
-                            stack[top].cross_max.saturating_add(pad_h),
-                            c.max_h,
-                        );
-                        tree.nodes[slot as usize].measured_size = c.clamp_size(Size::new(w, h));
+                        match n_kind {
+                            NodeKind::Wrap => {
+                                finalize_wrap_measure(tree, slot, c, stack[top].inner_max_w);
+                            }
+                            NodeKind::CustomContainer => {
+                                finalize_custom_measure(
+                                    tree,
+                                    slot,
+                                    c,
+                                    Size::new(stack[top].inner_max_w, stack[top].inner_max_h),
+                                    measurer,
+                                );
+                            }
+                            _ => {
+                                let pad_w = tree.nodes[slot as usize].props.padding.horizontal();
+                                let pad_h = tree.nodes[slot as usize].props.padding.vertical();
+                                let width_prop = tree.nodes[slot as usize].props.width;
+                                let height_prop = tree.nodes[slot as usize].props.height;
+                                let w = resolve_axis_size(
+                                    width_prop,
+                                    stack[top].non_fill_used.saturating_add(pad_w),
+                                    c.max_w,
+                                );
+                                let h = resolve_axis_size(
+                                    height_prop,
+                                    stack[top].cross_max.saturating_add(pad_h),
+                                    c.max_h,
+                                );
+                                tree.nodes[slot as usize].measured_size =
+                                    c.clamp_size(Size::new(w, h));
+                            }
+                        }
                         sp -= 1;
                     }
                 }
@@ -898,6 +962,191 @@ fn child_constraints_stack(
     }
 }
 
+const MAX_CUSTOM_CHILDREN: usize = 16;
+
+#[inline(never)]
+fn finalize_wrap_measure(tree: &mut RetainedTree, slot: u16, c: Constraints, inner_max_w: u32) {
+    let n = &tree.nodes[slot as usize];
+    let gap_h = u32::from(n.props.gap);
+    let row_gap = if n.props.line_spacing > 0 {
+        n.props.line_spacing as u32
+    } else {
+        gap_h
+    };
+    let pad_w = n.props.padding.horizontal();
+    let pad_h = n.props.padding.vertical();
+    let width_prop = n.props.width;
+    let height_prop = n.props.height;
+    let mut row_w = 0u32;
+    let mut row_h = 0u32;
+    let mut max_row_w = 0u32;
+    let mut total_h = 0u32;
+    let mut ch = first_visible_child(tree, n.first_child);
+    while let Some(idx) = ch {
+        let cs = tree.nodes[idx as usize].measured_size;
+        if row_w > 0 && row_w.saturating_add(gap_h).saturating_add(cs.width) > inner_max_w {
+            max_row_w = max_row_w.max(row_w);
+            total_h = total_h.saturating_add(row_h).saturating_add(row_gap);
+            row_w = cs.width;
+            row_h = cs.height;
+        } else {
+            row_w = if row_w > 0 {
+                row_w.saturating_add(gap_h).saturating_add(cs.width)
+            } else {
+                cs.width
+            };
+            row_h = row_h.max(cs.height);
+        }
+        ch = next_visible_sibling(tree, idx);
+    }
+    max_row_w = max_row_w.max(row_w);
+    total_h = total_h.saturating_add(row_h);
+    let w = resolve_axis_size(width_prop, max_row_w.saturating_add(pad_w), c.max_w);
+    let h = resolve_axis_size(height_prop, total_h.saturating_add(pad_h), c.max_h);
+    tree.nodes[slot as usize].measured_size = c.clamp_size(Size::new(w, h));
+}
+
+#[inline(never)]
+fn finalize_custom_measure(
+    tree: &mut RetainedTree,
+    slot: u16,
+    c: Constraints,
+    avail: Size,
+    measurer: &dyn TextMeasurer,
+) {
+    let mut child_sizes = [Size::zero(); MAX_CUSTOM_CHILDREN];
+    let mut out_rects = [Rect::ZERO; MAX_CUSTOM_CHILDREN];
+    let mut count = 0usize;
+    let first_child = tree.nodes[slot as usize].first_child;
+    let key = tree.nodes[slot as usize].key;
+    let pad_w = tree.nodes[slot as usize].props.padding.horizontal();
+    let pad_h = tree.nodes[slot as usize].props.padding.vertical();
+    let width_prop = tree.nodes[slot as usize].props.width;
+    let height_prop = tree.nodes[slot as usize].props.height;
+    let mut ch = first_visible_child(tree, first_child);
+    while let Some(idx) = ch {
+        if count < MAX_CUSTOM_CHILDREN {
+            child_sizes[count] = tree.nodes[idx as usize].measured_size;
+            count += 1;
+        }
+        ch = next_visible_sibling(tree, idx);
+    }
+    let content_sz =
+        measurer.layout_custom(key, &child_sizes[..count], avail, &mut out_rects[..count]);
+    let w = resolve_axis_size(width_prop, content_sz.width.saturating_add(pad_w), c.max_w);
+    let h = resolve_axis_size(
+        height_prop,
+        content_sz.height.saturating_add(pad_h),
+        c.max_h,
+    );
+    tree.nodes[slot as usize].measured_size = c.clamp_size(Size::new(w, h));
+}
+
+#[inline(never)]
+fn arrange_custom_children(
+    tree: &mut RetainedTree,
+    slot: u16,
+    prev_rect: Rect,
+    content: Rect,
+    measurer: Option<&dyn TextMeasurer>,
+) {
+    let first_child = tree.nodes[slot as usize].first_child;
+    let Some(m) = measurer else {
+        let padding = tree.nodes[slot as usize].props.padding;
+        let dx = content.x - prev_rect.x - padding.left as i32;
+        let dy = content.y - prev_rect.y - padding.top as i32;
+        let mut ch = first_visible_child(tree, first_child);
+        while let Some(idx) = ch {
+            tree.nodes[idx as usize].ink_rect =
+                tree.nodes[idx as usize].layout_rect.translate(dx, dy);
+            ch = next_visible_sibling(tree, idx);
+        }
+        return;
+    };
+    let mut child_sizes = [Size::zero(); MAX_CUSTOM_CHILDREN];
+    let mut out_rects = [Rect::ZERO; MAX_CUSTOM_CHILDREN];
+    let mut child_slots = [0u16; MAX_CUSTOM_CHILDREN];
+    let mut count = 0usize;
+    let key = tree.nodes[slot as usize].key;
+    let mut ch = first_visible_child(tree, first_child);
+    while let Some(idx) = ch {
+        if count < MAX_CUSTOM_CHILDREN {
+            child_sizes[count] = tree.nodes[idx as usize].measured_size;
+            child_slots[count] = idx;
+            count += 1;
+        }
+        ch = next_visible_sibling(tree, idx);
+    }
+    let _ = m.layout_custom(
+        key,
+        &child_sizes[..count],
+        content.size(),
+        &mut out_rects[..count],
+    );
+    for i in 0..count {
+        tree.nodes[child_slots[i] as usize].ink_rect = out_rects[i].translate(content.x, content.y);
+    }
+    // Overflow children beyond MAX_CUSTOM_CHILDREN collapse cleanly to zero size.
+    let mut extra = if count > 0 {
+        next_visible_sibling(tree, child_slots[count - 1])
+    } else {
+        None
+    };
+    while let Some(idx) = extra {
+        tree.nodes[idx as usize].ink_rect = Rect::ZERO;
+        extra = next_visible_sibling(tree, idx);
+    }
+}
+
+fn stack_child_origin(
+    content: Rect,
+    cw: u32,
+    ch: u32,
+    is_modal: bool,
+    parent_align: Align,
+    child_align: StackAlign,
+    extra: crate::part_style::LayoutExtra,
+) -> (i32, i32) {
+    if is_modal {
+        return (
+            content.x + ((content.w.saturating_sub(cw)) / 2) as i32 + i32::from(extra.offset_x),
+            content.y + ((content.h.saturating_sub(ch)) / 2) as i32 + i32::from(extra.offset_y),
+        );
+    }
+    let (x, y) = if child_align == StackAlign::TopStart {
+        let ax = match parent_align {
+            Align::Center => content.x + ((content.w.saturating_sub(cw)) / 2) as i32,
+            Align::End => content.x + content.w.saturating_sub(cw) as i32,
+            _ => content.x,
+        };
+        (ax, content.y)
+    } else {
+        let x = match child_align {
+            StackAlign::TopStart | StackAlign::CenterStart | StackAlign::BottomStart => content.x,
+            StackAlign::TopCenter | StackAlign::Center | StackAlign::BottomCenter => {
+                content.x + ((content.w as i32 - cw as i32) / 2)
+            }
+            StackAlign::TopEnd | StackAlign::CenterEnd | StackAlign::BottomEnd => {
+                content.x + (content.w as i32 - cw as i32)
+            }
+        };
+        let y = match child_align {
+            StackAlign::TopStart | StackAlign::TopCenter | StackAlign::TopEnd => content.y,
+            StackAlign::CenterStart | StackAlign::Center | StackAlign::CenterEnd => {
+                content.y + ((content.h as i32 - ch as i32) / 2)
+            }
+            StackAlign::BottomStart | StackAlign::BottomCenter | StackAlign::BottomEnd => {
+                content.y + (content.h as i32 - ch as i32)
+            }
+        };
+        (x, y)
+    };
+    (
+        x.saturating_add(i32::from(extra.offset_x)),
+        y.saturating_add(i32::from(extra.offset_y)),
+    )
+}
+
 fn finalize_flex_measure(tree: &mut RetainedTree, slot: u16, frame: &MeasureFrame, c: Constraints) {
     let n = &tree.nodes[slot as usize];
     let pad_w = n.props.padding.horizontal();
@@ -966,6 +1215,7 @@ fn arrange_iterative(
     start_rect: Rect,
     start_clip: Rect,
     screen: Rect,
+    measurer: Option<&dyn TextMeasurer>,
 ) {
     let mut stack = [ArrangeDepthFrame::EMPTY; MAX_DEPTH + 2];
     let mut sp = 0usize;
@@ -998,6 +1248,7 @@ fn arrange_iterative(
             }
 
             let kind = tree.nodes[slot as usize].kind;
+            let prev_rect = tree.nodes[slot as usize].layout_rect;
             let rect = frame.rect_or_content;
             let own_clip = match kind {
                 NodeKind::Root | NodeKind::Modal => screen,
@@ -1142,6 +1393,26 @@ fn arrange_iterative(
                     stack[top].rect_or_content = content;
                     stack[top].clip = child_clip;
                 }
+                NodeKind::Wrap => {
+                    stack[top].phase = 1;
+                    stack[top].next_child = first_visible_child(tree, first_child)
+                        .and_then(SlotLink::from_slot_u16)
+                        .unwrap_or(SlotLink::NONE);
+                    stack[top].rect_or_content = content;
+                    stack[top].clip = child_clip;
+                    stack[top].cursor = 0;
+                    stack[top].remaining = 0;
+                    stack[top].w_total = 0;
+                }
+                NodeKind::CustomContainer => {
+                    arrange_custom_children(tree, slot, prev_rect, content, measurer);
+                    stack[top].phase = 1;
+                    stack[top].next_child = first_visible_child(tree, first_child)
+                        .and_then(SlotLink::from_slot_u16)
+                        .unwrap_or(SlotLink::NONE);
+                    stack[top].rect_or_content = content;
+                    stack[top].clip = child_clip;
+                }
                 _ => {
                     sp -= 1;
                 }
@@ -1248,6 +1519,37 @@ fn arrange_iterative(
                     stack[top].cursor += ch_h as i64 + gap;
                     rect
                 }
+                NodeKind::Wrap => {
+                    let cn = &tree.nodes[ch as usize];
+                    let cw = cn.measured_size.width;
+                    let ch_h = cn.measured_size.height;
+                    let gap_h = gap.max(0) as u32;
+                    let row_gap = if tree.nodes[slot as usize].props.line_spacing > 0 {
+                        tree.nodes[slot as usize].props.line_spacing as i64
+                    } else {
+                        gap.max(0)
+                    };
+                    let mut rx = frame.remaining;
+                    let mut ry = frame.cursor;
+                    let mut rh = frame.w_total;
+                    if rx > 0 && rx.saturating_add(gap_h).saturating_add(cw) > content.w {
+                        ry += rh as i64 + row_gap;
+                        rx = 0;
+                        rh = 0;
+                    }
+                    let x_off = if rx > 0 { rx.saturating_add(gap_h) } else { 0 };
+                    let rect = Rect::new(
+                        content.x.saturating_add(x_off as i32),
+                        (content.y as i64 + ry).clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+                        cw,
+                        ch_h,
+                    );
+                    stack[top].remaining = x_off.saturating_add(cw);
+                    stack[top].cursor = ry;
+                    stack[top].w_total = rh.max(ch_h);
+                    rect
+                }
+                NodeKind::CustomContainer => tree.nodes[ch as usize].ink_rect,
                 _ => {
                     let cn = &tree.nodes[ch as usize];
                     let cw = if matches!(cn.props.width, Length::Fill(_)) {
@@ -1260,21 +1562,16 @@ fn arrange_iterative(
                     } else {
                         cn.measured_size.height
                     };
-                    let (cx, cy) = if frame.is_modal {
-                        (
-                            content.x + ((content.w.saturating_sub(cw)) / 2) as i32,
-                            content.y + ((content.h.saturating_sub(ch_h)) / 2) as i32,
-                        )
-                    } else {
-                        let ax = match align_cross {
-                            Align::Center => {
-                                content.x + ((content.w.saturating_sub(cw)) / 2) as i32
-                            }
-                            Align::End => content.x + content.w.saturating_sub(cw) as i32,
-                            _ => content.x,
-                        };
-                        (ax, content.y)
-                    };
+                    let extra = tree.layout_extras.get(cn.key);
+                    let (cx, cy) = stack_child_origin(
+                        content,
+                        cw,
+                        ch_h,
+                        frame.is_modal,
+                        align_cross,
+                        cn.props.stack_align(),
+                        extra,
+                    );
                     Rect::new(cx, cy, cw, ch_h)
                 }
             };

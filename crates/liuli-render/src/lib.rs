@@ -10,6 +10,7 @@ mod effects;
 pub mod raster;
 pub mod spi;
 pub mod sync;
+pub mod vector;
 pub mod wire;
 
 pub use band::{BandIter, BandTarget};

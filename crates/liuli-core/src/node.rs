@@ -143,6 +143,8 @@ impl RetainedNode {
 
 pub struct RetainedTree {
     pub effects: crate::effects::Effects,
+    pub part_styles: crate::part_style::PartStyles,
+    pub layout_extras: crate::part_style::LayoutExtras,
     pub nodes: [RetainedNode; MAX_NODES],
     pub text_buf: [u8; MAX_TEXT_BYTES],
     pub text_len: u16,
@@ -156,6 +158,8 @@ pub struct RetainedTree {
 impl RetainedTree {
     pub const ZERO: Self = Self {
         effects: crate::effects::Effects::EMPTY,
+        part_styles: crate::part_style::PartStyles::EMPTY,
+        layout_extras: crate::part_style::LayoutExtras::EMPTY,
         nodes: [RetainedNode::EMPTY; MAX_NODES],
         text_buf: [0; MAX_TEXT_BYTES],
         text_len: 0,
@@ -185,6 +189,8 @@ impl RetainedTree {
         self.text_len = 0;
         self.sparklines.reset();
         self.effects = crate::effects::Effects::EMPTY;
+        self.part_styles = crate::part_style::PartStyles::EMPTY;
+        self.layout_extras = crate::part_style::LayoutExtras::EMPTY;
         self.root = SlotLink::NONE;
         self.modal = SlotLink::NONE;
         self.active_count = 0;

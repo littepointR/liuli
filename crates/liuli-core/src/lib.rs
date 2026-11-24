@@ -15,6 +15,7 @@ pub mod layers;
 pub mod layout;
 pub mod node;
 pub mod paint;
+pub mod part_style;
 pub mod reconcile;
 pub mod style_source;
 pub mod time;

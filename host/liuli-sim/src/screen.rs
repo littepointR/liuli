@@ -65,7 +65,21 @@ impl MemoryScreen {
             self.pixels[idx] = blend_rgb565_a4_u16(fg_raw, self.pixels[idx], cov);
         }
     }
+}
 
+impl liuli::render::vector::PixelSink for MemoryScreen {
+    #[inline(always)]
+    fn put_opaque(&mut self, idx: usize, fg_raw: u16) {
+        MemoryScreen::put_opaque(self, idx, fg_raw);
+    }
+
+    #[inline(always)]
+    fn blend_a4(&mut self, idx: usize, fg_raw: u16, cov: u8) {
+        self.blend_pixel_a4(idx, fg_raw, cov);
+    }
+}
+
+impl MemoryScreen {
     #[inline]
     pub fn width(&self) -> u32 {
         self.w
@@ -1051,6 +1065,58 @@ fn reference_range_with_source<S: SimTextSource>(
                         prev = next;
                     }
                 }
+            }
+            PaintCmd::Line {
+                p0,
+                p1,
+                clip,
+                color,
+                width,
+                aa,
+            } => {
+                liuli::render::vector::draw_line(&mut screen, full, p0, p1, clip, color, width, aa);
+            }
+            PaintCmd::Circle {
+                center,
+                clip,
+                radius,
+                fill,
+                border_color,
+                border_width,
+            } => {
+                liuli::render::vector::draw_circle(
+                    &mut screen,
+                    full,
+                    center,
+                    radius,
+                    clip,
+                    fill,
+                    border_color,
+                    border_width,
+                );
+            }
+            PaintCmd::Arc {
+                center,
+                clip,
+                radius,
+                start_deg,
+                sweep_deg,
+                color,
+                width,
+                cap_round,
+            } => {
+                liuli::render::vector::draw_arc(
+                    &mut screen,
+                    full,
+                    center,
+                    radius,
+                    start_deg,
+                    sweep_deg,
+                    width,
+                    cap_round,
+                    clip,
+                    color,
+                );
             }
         }
     }
