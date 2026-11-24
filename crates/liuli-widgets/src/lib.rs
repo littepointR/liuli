@@ -1,6 +1,20 @@
 #![no_std]
 #![forbid(unsafe_code)]
+
+pub mod style;
+pub mod theme;
+pub mod tokens;
+pub mod ui;
+
 use liuli::prelude::*;
+
+pub use style::{ButtonVariant, Compositor, Elevation, Material, ResolvedSurface, SurfaceSpec};
+pub use theme::{Style, Theme, ThemePreset};
+pub use tokens::{
+    ColorScheme, Density, EffectTier, EffectsConfig, ElevationLevel, ElevationScale, GlassStyle,
+    InteractionStyle, Motion, Shape, Typography, contrast_ratio_x10, rgb8,
+};
+pub use ui::ThemedUi;
 
 /// Typed route stack. Route variants carry parameters and per-page state.
 /// The root always remains present; a failed push gives ownership back.
@@ -143,59 +157,6 @@ pub fn virtual_list(
     })
 }
 
-#[derive(Clone, Copy)]
-pub struct Theme {
-    pub source: liuli::core::style_source::StyleSource,
-    pub background: Rgb565,
-    pub surface: Rgb565,
-    pub text: Rgb565,
-    pub accent: Rgb565,
-    pub focus: Rgb565,
-    pub spacing: u16,
-    pub control_height: u16,
-    pub font: FontId,
-}
-impl Theme {
-    pub const DARK: Self = Self {
-        source: liuli::core::style_source::StyleSource::named("Theme::DARK"),
-        background: Rgb565::new(2, 6, 4),
-        surface: Rgb565::new(4, 13, 7),
-        text: Rgb565::new(30, 62, 28),
-        accent: Rgb565::new(1, 49, 20),
-        focus: Rgb565::new(30, 48, 4),
-        spacing: 4,
-        control_height: 32,
-        font: FontId::Body16,
-    };
-    pub const LIGHT: Self = Self {
-        source: liuli::core::style_source::StyleSource::named("Theme::LIGHT"),
-        background: Rgb565::new(30, 61, 29),
-        surface: Rgb565::new(26, 57, 26),
-        text: Rgb565::new(2, 7, 3),
-        accent: Rgb565::new(2, 29, 14),
-        focus: Rgb565::new(21, 18, 1),
-        spacing: 4,
-        control_height: 32,
-        font: FontId::Body16,
-    };
-    #[track_caller]
-    pub fn control(self) -> NodeProps {
-        NodeProps {
-            style_source: self.source.declared(),
-            bg: Some(self.surface),
-            fg: self.text,
-            accent: self.accent,
-            focus_color: self.focus,
-            font: self.font,
-            width: Length::Fill(1),
-            height: Length::Px(self.control_height.into()),
-            clickable: true,
-            focusable: true,
-            ..NodeProps::new()
-        }
-    }
-}
-
 /// A threshold meter rendered entirely through the public custom-widget API.
 pub fn paint_meter(props: &StoredProps, canvas: &mut WidgetCanvas<'_>) -> Result<(), BuildError> {
     let size = canvas.size();
@@ -210,43 +171,6 @@ pub fn paint_meter(props: &StoredProps, canvas: &mut WidgetCanvas<'_>) -> Result
     Ok(())
 }
 
-/// Per-component overrides. An unassigned token inherits its parent theme.
-#[derive(Default, Copy, Clone)]
-pub struct Style {
-    pub background: Option<Rgb565>,
-    pub surface: Option<Rgb565>,
-    pub text: Option<Rgb565>,
-    pub accent: Option<Rgb565>,
-    pub focus: Option<Rgb565>,
-    pub font: Option<FontId>,
-    pub spacing: Option<u16>,
-    pub control_height: Option<u16>,
-}
-impl Theme {
-    #[track_caller]
-    pub fn with(self, style: Style) -> Self {
-        Self {
-            source: self.source.scoped([
-                style.background.is_some(),
-                style.surface.is_some(),
-                style.text.is_some(),
-                style.accent.is_some(),
-                style.focus.is_some(),
-                style.font.is_some(),
-                style.spacing.is_some(),
-                style.control_height.is_some(),
-            ]),
-            background: style.background.unwrap_or(self.background),
-            surface: style.surface.unwrap_or(self.surface),
-            text: style.text.unwrap_or(self.text),
-            accent: style.accent.unwrap_or(self.accent),
-            focus: style.focus.unwrap_or(self.focus),
-            font: style.font.unwrap_or(self.font),
-            spacing: style.spacing.unwrap_or(self.spacing),
-            control_height: style.control_height.unwrap_or(self.control_height),
-        }
-    }
-}
 /// Numeric editing via touch drag or rotary steps. Actions carry the clamped value.
 pub fn number_editor(
     ui: &mut Children<'_, '_>,
@@ -265,9 +189,8 @@ pub fn number_editor(
         NodeProps {
             min,
             max,
-            value: value.clamp(min, max),
             step,
-            ..theme.control()
+            ..theme.slider(value.clamp(min, max))
         },
     )
 }
@@ -314,14 +237,17 @@ fn choice_buttons(
 ) -> Result<(), BuildError> {
     for &(key, text) in items {
         let chosen = key == selected;
+        let base = if chosen {
+            theme.primary_button()
+        } else {
+            theme.control()
+        };
         ui.button(
             key,
             NodeProps {
                 text,
                 checked: chosen,
-                border_color: chosen.then_some(theme.accent),
-                border_width: 1,
-                ..theme.control()
+                ..base
             },
         )?;
     }
@@ -339,29 +265,95 @@ pub fn confirm_dialog(
         NodeProps {
             width: Length::Px(180),
             height: Length::Content,
+            padding: EdgeInsets::all(8),
             bg: Some(theme.surface),
-            overlay_alpha: 10,
+            border_color: Some(theme.border),
+            border_width: theme.shape.border_width,
+            radius: theme.radius,
+            overlay_color: theme.overlay,
+            overlay_alpha: theme.interaction.modal_scrim_alpha,
+            ..NodeProps::new()
+        },
+        |modal| confirm_dialog_actions(modal, keys, labels, theme),
+    )
+}
+/// Centered modal confirmation dialog covering the viewport with a backdrop scrim.
+pub fn centered_confirm_dialog(
+    ui: &mut Children<'_, '_>,
+    keys: [Key; 4],
+    labels: [TextRef; 2],
+    theme: Theme,
+) -> Result<(), BuildError> {
+    let panel = theme.resolve_surface(
+        SurfaceSpec::FLOATING.with_radius(theme.shape.radius_lg),
+        NodeProps {
+            width: Length::Px(204),
+            height: Length::Content,
+            padding: EdgeInsets::all(theme.density.card_pad.saturating_add(2)),
+            gap: theme.spacing,
+            align_cross: Align::Stretch,
+            ..NodeProps::new()
+        },
+    );
+    ui.modal(
+        keys[0],
+        NodeProps {
+            width: Length::Fill(1),
+            height: Length::Fill(1),
+            overlay_color: theme.overlay,
+            overlay_alpha: theme.interaction.modal_scrim_alpha,
             ..NodeProps::new()
         },
         |modal| {
-            modal.column(
-                keys[1],
+            modal.column(keys[1], panel.props, |actions| {
+                actions.button(
+                    keys[2],
+                    NodeProps {
+                        text: labels[0],
+                        ..theme.primary_button()
+                    },
+                )?;
+                actions.button(
+                    keys[3],
+                    NodeProps {
+                        text: labels[1],
+                        ..theme.secondary_button()
+                    },
+                )
+            })?;
+            if panel.effect.shadow.is_some() || panel.effect.layer().is_some() {
+                modal.decorate(keys[1], panel.effect)?;
+            }
+            Ok(())
+        },
+    )
+}
+fn confirm_dialog_actions(
+    modal: &mut Children<'_, '_>,
+    keys: [Key; 4],
+    labels: [TextRef; 2],
+    theme: Theme,
+) -> Result<(), BuildError> {
+    modal.column(
+        keys[1],
+        NodeProps {
+            width: Length::Fill(1),
+            gap: theme.spacing,
+            ..NodeProps::new()
+        },
+        |actions| {
+            actions.button(
+                keys[2],
                 NodeProps {
-                    width: Length::Fill(1),
-                    gap: theme.spacing,
-                    ..NodeProps::new()
+                    text: labels[0],
+                    ..theme.primary_button()
                 },
-                |actions| {
-                    for (key, text) in [keys[2], keys[3]].into_iter().zip(labels) {
-                        actions.button(
-                            key,
-                            NodeProps {
-                                text,
-                                ..theme.control()
-                            },
-                        )?;
-                    }
-                    Ok(())
+            )?;
+            actions.button(
+                keys[3],
+                NodeProps {
+                    text: labels[1],
+                    ..theme.secondary_button()
                 },
             )
         },
@@ -380,11 +372,165 @@ pub fn toast(
             text,
             width: Length::Fill(1),
             height: Length::Px(theme.control_height.into()),
-            bg: Some(theme.surface),
+            padding: EdgeInsets::symmetric(
+                theme.density.pad_x.saturating_add(2),
+                theme.density.pad_y,
+            ),
+            bg: Some(theme.surface_alt),
+            border_color: Some(theme.accent),
+            border_width: theme.shape.border_width,
+            radius: theme.radius,
             fg: theme.text,
             font: theme.font,
+            align_cross: Align::Center,
             text_align: TextAlign::Center,
             ..NodeProps::new()
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_preset_color_schemes_meet_readability_contrast() {
+        for preset in ThemePreset::ALL {
+            for dark in [false, true] {
+                let t = Theme::preset(preset, dark);
+                let c = t.colors;
+                let text_on_bg = contrast_ratio_x10(c.text, c.background);
+                let text_on_surf = contrast_ratio_x10(c.text, c.surface);
+                let text_on_alt = contrast_ratio_x10(c.text, c.surface_alt);
+                let muted_on_bg = contrast_ratio_x10(c.text_muted, c.background);
+                let muted_on_surf = contrast_ratio_x10(c.text_muted, c.surface);
+                let on_accent = contrast_ratio_x10(c.on_accent, c.accent);
+                let on_danger = contrast_ratio_x10(c.on_danger, c.danger);
+                assert!(
+                    text_on_bg >= 45 && text_on_surf >= 45 && text_on_alt >= 45,
+                    "{preset:?} dark={dark} primary text contrast too low: {text_on_bg}/{text_on_surf}/{text_on_alt}"
+                );
+                assert!(
+                    muted_on_bg >= 30 && muted_on_surf >= 30,
+                    "{preset:?} dark={dark} muted contrast too low: {muted_on_bg}/{muted_on_surf}"
+                );
+                assert!(
+                    on_accent >= 30 && on_danger >= 30,
+                    "{preset:?} dark={dark} button ink contrast too low: {on_accent}/{on_danger}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn granular_effects_capabilities_toggle_and_clamp_independently() {
+        let flat = Theme::DARK.with_effect_tier(EffectTier::Flat);
+        assert_eq!(flat.elevation(Elevation::Floating), SurfaceStyle::FLAT);
+
+        // Disable only shadows while keeping press depth & glass tint.
+        let no_shadow = Theme::DARK
+            .with_shadows(false)
+            .with_glass_blur(false)
+            .with_glass_tint(None, 8);
+        assert_eq!(no_shadow.elevation(Elevation::Raised).shadow, None);
+
+        // Cap shadow blur and scale shadow opacity independently.
+        let capped = Theme::DARK.with_effects(
+            EffectsConfig::GLASS
+                .with_max_shadow_blur(3)
+                .with_shadow_opacity_scale(8),
+        );
+        let sh = capped.elevation(Elevation::Floating).shadow.unwrap();
+        assert_eq!(sh.blur, 3);
+        assert!(
+            sh.opacity
+                < Theme::DARK
+                    .elevation(Elevation::Floating)
+                    .shadow
+                    .unwrap()
+                    .opacity
+        );
+
+        // Glass blur vs glass tint fallback resolution works independently of Cargo features.
+        let tint_only = Theme::DARK.with_glass_blur(false).with_glass_tint(None, 9);
+        let res = tint_only.resolve_surface(SurfaceSpec::GLASS, tint_only.card());
+        assert_eq!(
+            res.effect.press_depth.duration_ms(),
+            tint_only.motion.press_depth_ms
+        );
+
+        let no_press = Theme::DARK.with_press_depth(false);
+        assert!(
+            !no_press
+                .elevation(Elevation::Raised)
+                .press_depth
+                .is_enabled()
+        );
+    }
+
+    #[test]
+    fn legacy_theme_with_and_field_defaults_remain_compatible() {
+        assert_eq!(Theme::DARK.control_height, 32);
+        assert_eq!(Theme::DARK.spacing, 6);
+        assert_eq!(Theme::DARK.radius, 8);
+        assert_eq!(Theme::LIGHT.control_height, 32);
+
+        let custom = Theme::DARK.with(Style {
+            control_height: Some(38),
+            spacing: Some(10),
+            radius: Some(4),
+            accent: Some(rgb8(255, 0, 128)),
+            ..Style::default()
+        });
+        assert_eq!(custom.control_height, 38);
+        assert_eq!(custom.density.control_height, 38);
+        assert_eq!(custom.spacing, 10);
+        assert_eq!(custom.density.spacing, 10);
+        assert_eq!(custom.radius, 4);
+        assert_eq!(custom.shape.radius_md, 4);
+        assert_eq!(custom.accent, rgb8(255, 0, 128));
+        assert_eq!(custom.colors.accent, rgb8(255, 0, 128));
+    }
+
+    #[test]
+    fn compositor_and_variant_buttons_honor_individual_gates() {
+        let mut draft = liuli::core::view::ViewDraft::new();
+        let no_3d_no_opacity = Theme::DARK.with_effects(
+            EffectsConfig::GLASS
+                .with_projection_3d(false)
+                .with_group_opacity(false)
+                .with_glass_blur(false)
+                .with_glass_tint(false),
+        );
+        let resolved = no_3d_no_opacity.resolve_surface(
+            SurfaceSpec::GLASS.with_compositor(Compositor::isolated(6, Projection(32))),
+            no_3d_no_opacity.card(),
+        );
+        // Glass degraded cleanly to elevated solid card and blocked 3D/opacity when gated off.
+        assert!(resolved.props.bg.is_some());
+        if let Some(layer) = resolved.effect.layer() {
+            assert_eq!(layer.opacity, 15);
+            assert_eq!(layer.projection, Projection(0));
+            assert_eq!(layer.backdrop_radius, 0);
+            assert_eq!(layer.tint_alpha, 0);
+        }
+
+        let theme = Theme::DARK
+            .with_rounded_focus(true)
+            .with_motion(Motion::SNAPPY);
+        let mut vb = ViewBuilder::new(&mut draft);
+        vb.root(Key(1), NodeProps::new(), |root| {
+            let mut ui = ThemedUi::new(root, theme);
+            ui.card(Key(2), SurfaceSpec::RAISED, |card| {
+                card.button(Key(3), "Save", IconKind::Check, ButtonVariant::Primary)?;
+                card.button(Key(4), "Delete", IconKind::Warning, ButtonVariant::Danger)?;
+                card.button(Key(5), "Info", IconKind::Sliders, ButtonVariant::Outline)
+            })
+        })
+        .unwrap();
+        vb.finish().unwrap();
+        assert_eq!(draft.nodes[2].props.focus_ring().rounded, true);
+        assert_eq!(draft.nodes[4].props.bg(), None);
+        assert_eq!(draft.nodes[4].props.fg, theme.accent);
+    }
 }

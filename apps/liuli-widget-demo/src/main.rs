@@ -64,7 +64,10 @@ fn check_focus_outline(app: &Session<'_>) {
     }
 }
 fn exercise(app: &mut Session<'_>, dir: Option<&Path>) -> Result<(), String> {
-    let mut clock = 0;
+    exercise_from(app, dir, 0)
+}
+fn exercise_from(app: &mut Session<'_>, dir: Option<&Path>, start_ms: u64) -> Result<(), String> {
+    let mut clock = start_ms;
     if let Some(dir) = dir {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
@@ -185,6 +188,7 @@ fn exercise(app: &mut Session<'_>, dir: Option<&Path>) -> Result<(), String> {
                     tap(app, &mut clock, key)?;
                 }
             }
+            Page::Depth => exercise_depth(app, &mut clock, dir)?,
             Page::Home => unreachable!(),
         }
         tap(app, &mut clock, 3)?;
@@ -193,15 +197,168 @@ fn exercise(app: &mut Session<'_>, dir: Option<&Path>) -> Result<(), String> {
     }
     Ok(())
 }
+fn exercise_depth(
+    app: &mut Session<'_>,
+    clock: &mut u64,
+    dir: Option<&Path>,
+) -> Result<(), String> {
+    let id = PointerId(3);
+    let pos = center(app, 305)?;
+    input(app, clock, RawInput::PointerDown { id, pos })?;
+    let down = app.screen().words().to_vec();
+    *clock += 60;
+    app.step(InstantMs(*clock), None, true)?;
+    assert_ne!(
+        down,
+        app.screen().words(),
+        "pressed card shadow must animate"
+    );
+    shot(app, dir, "depth-press")?;
+    input(app, clock, RawInput::PointerUp { id, pos })?;
+    assert_eq!(app.engine().model().depth.presses, 1);
+    tap(app, clock, 306)?;
+    #[cfg(feature = "enhanced")]
+    {
+        tap(app, clock, 307)?;
+        let start = *clock;
+        *clock = start + 160;
+        app.step(InstantMs(*clock), None, true)?;
+        assert_eq!(app.engine().model().depth.turn, 32);
+        assert_eq!(app.engine().active_commands().reused_groups(), 1);
+        shot(app, dir, "depth-tilt")?;
+        // The old right edge has moved. The left half of the projected button still accepts a tap.
+        let rect = app
+            .engine()
+            .active_tree()
+            .node_by_key(Key(305))
+            .unwrap()
+            .layout_rect;
+        let sample = |n| Point::new(rect.x + rect.w as i32 * n / 16, rect.y + rect.h as i32 / 2);
+        for (pos, expected) in [(sample(15), 1), (sample(6), 2)] {
+            for event in [
+                RawInput::PointerDown { id, pos },
+                RawInput::PointerUp { id, pos },
+            ] {
+                app.step(InstantMs(*clock), Some(event), true)?;
+            }
+            assert_eq!(app.engine().model().depth.presses, expected);
+        }
+        assert_eq!(app.engine().model().depth.presses, 2);
+        *clock = start + 320;
+        app.step(InstantMs(*clock), None, true)?;
+        assert_eq!(app.engine().model().depth.turn, 64);
+        let tree = app.engine().active_tree();
+        let slot = tree.find_slot_by_key(Key(305)).unwrap();
+        assert!(tree.local_point(slot, center(app, 305)?).is_none());
+        shot(app, dir, "depth-edge")?;
+        *clock = start + 640;
+        app.step(InstantMs(*clock), None, true)?;
+        assert_eq!(app.engine().model().depth.turn, 128);
+        let button = app
+            .engine()
+            .active_tree()
+            .node_by_key(Key(305))
+            .unwrap()
+            .layout_rect;
+        let sample = Point::new(button.x + 12, button.y + button.h as i32 / 2);
+        let pixel = |app: &Session<'_>| app.screen().pixel(sample.x as u32, sample.y as u32);
+        let opaque = pixel(app);
+        let slider = app
+            .engine()
+            .active_tree()
+            .node_by_key(Key(308))
+            .unwrap()
+            .layout_rect;
+        let min = Point::new(slider.x + 1, slider.y + slider.h as i32 / 2);
+        for ev in [
+            RawInput::PointerDown { id, pos: min },
+            RawInput::PointerUp { id, pos: min },
+        ] {
+            input(app, clock, ev)?;
+        }
+        assert_eq!(app.engine().model().depth.opacity, 0);
+        let transparent = pixel(app);
+        tap(app, clock, 308)?;
+        let alpha = app.engine().model().depth.opacity;
+        assert!((1..15).contains(&alpha));
+        let rgb = liuli::core::geometry::u16_to_rgb565;
+        let expected = liuli::text::blend_rgb565_a4(rgb(opaque), rgb(transparent), alpha);
+        assert_eq!(
+            pixel(app),
+            liuli::core::geometry::rgb565_to_u16(expected),
+            "composite the whole button once"
+        );
+        let before = app.screen().words().to_vec();
+        tap(app, clock, 310)?;
+        assert_ne!(before, app.screen().words());
+        shot(app, dir, "depth-glass")?;
+        tap(app, clock, 309)?;
+    }
+    Ok(())
+}
+/// The board harness injects these raw taps and reads the scanned SDRAM buffer after each release.
+fn panel_checkpoints(app: &mut Session<'_>, dir: &Path) -> Result<(), String> {
+    let mut clock = 0;
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let mut trace = String::new();
+    let mut save = |app: &Session<'_>, seq: usize, point: Point| -> Result<(), String> {
+        use std::fmt::Write;
+        let name = format!("frame-{seq:02}.rgb565");
+        let bytes: Vec<u8> = app
+            .screen()
+            .words()
+            .iter()
+            .flat_map(|p| p.to_le_bytes())
+            .collect();
+        std::fs::write(dir.join(&name), bytes).map_err(|e| e.to_string())?;
+        writeln!(
+            trace,
+            "{} {} {} {}",
+            point.x,
+            point.y,
+            app.engine().model().page as u8,
+            name
+        )
+        .unwrap();
+        Ok(())
+    };
+    save(app, 0, Point::new(-1, -1))?;
+    for (i, &(page, _, _)) in PAGES.iter().enumerate() {
+        for (j, key) in [100 + i as u32, 3].into_iter().enumerate() {
+            let point = center(app, key)?;
+            tap(app, &mut clock, key)?;
+            let expected = if j == 0 { page } else { Page::Home };
+            if app.engine().model().page != expected {
+                return Err(format!("tap {key} missed {expected:?}"));
+            }
+            save(app, 1 + 2 * i + j, point)?;
+        }
+    }
+    std::fs::write(dir.join("frames.txt"), trace).map_err(|e| e.to_string())
+}
 fn main() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
     let mut headless = false;
     let mut directory = None;
     let mut replay = None;
     let mut port = 7878u16;
+    let mut panel_frames = None;
+    let mut size = Size::new(240, 536);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--headless" => headless = true,
+            "--size" => {
+                size = match args.next().as_deref() {
+                    Some("800x480") => Size::new(800, 480),
+                    Some("240x536") => Size::new(240, 536),
+                    _ => return Err("expected --size 800x480 or 240x536".into()),
+                };
+            }
+            "--panel-frames" => {
+                panel_frames = Some(PathBuf::from(
+                    args.next().ok_or("missing reference frame directory")?,
+                ))
+            }
             "--port" => {
                 port = args
                     .next()
@@ -217,7 +374,7 @@ fn main() -> Result<(), String> {
             "--replay" => replay = Some(args.next().ok_or("missing trace file")?),
             "-h" | "--help" => {
                 println!(
-                    "liuli-widget-demo [--port PORT] [--headless] [--screenshots DIR] [--replay TRACE]"
+                    "liuli-widget-demo [--port PORT] [--headless] [--size 240x536|800x480] [--screenshots DIR] [--panel-frames DIR] [--replay TRACE]"
                 );
                 return Ok(());
             }
@@ -228,12 +385,21 @@ fn main() -> Result<(), String> {
     let fonts = FontSet::single(Lf4Font::from_bytes(FONT).map_err(|e| format!("{e:?}"))?);
     let mut app = AppSession::<Catalog>::new(
         &mut storage,
-        Model::new(536),
+        Model::new(size.height as u16),
         fonts,
-        Size::new(240, 536),
+        size,
         InstantMs(0),
         true,
     )?;
+    #[cfg(feature = "enhanced")]
+    if size.width == 800 {
+        app.engine_mut()
+            .set_layer_budget(1024 * 1024)
+            .map_err(|e| format!("{e:?}"))?;
+    }
+    if let Some(dir) = panel_frames {
+        return panel_checkpoints(&mut app, &dir);
+    }
     if let Some(path) = replay {
         return replay_trace(
             &mut app,
@@ -246,4 +412,47 @@ fn main() -> Result<(), String> {
     let server = PreviewServer::bind(port)?;
     println!("Widget Demo   http://{}", server.addr());
     server.serve_app(&mut app)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dark_and_light_modern_themes_pass_all_pages_and_focus_outlines() {
+        let fonts = FontSet::single(Lf4Font::from_bytes(FONT).unwrap());
+
+        let mut dark_storage = Storage::new();
+        let mut dark_app = AppSession::<Catalog>::new(
+            &mut dark_storage,
+            Model::new(536),
+            fonts,
+            Size::new(240, 536),
+            InstantMs(0),
+            true,
+        )
+        .unwrap();
+        let dark_home = dark_app.screen().words().to_vec();
+        exercise(&mut dark_app, None).unwrap();
+
+        let mut light_storage = Storage::new();
+        let mut light_app = AppSession::<Catalog>::new(
+            &mut light_storage,
+            Model::new(536),
+            fonts,
+            Size::new(240, 536),
+            InstantMs(0),
+            true,
+        )
+        .unwrap();
+        let mut clock = 0u64;
+        tap(&mut light_app, &mut clock, 5).unwrap();
+        let light_home = light_app.screen().words().to_vec();
+        assert_ne!(dark_home, light_home);
+
+        // Touch hides the focus ring; re-enable rotary focus before running exercise_from.
+        input(&mut light_app, &mut clock, RawInput::Nav(NavDir::Next)).unwrap();
+        input(&mut light_app, &mut clock, RawInput::Nav(NavDir::Prev)).unwrap();
+        exercise_from(&mut light_app, None, clock).unwrap();
+    }
 }

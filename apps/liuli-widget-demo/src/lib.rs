@@ -4,7 +4,8 @@
 extern crate alloc;
 
 use liuli::prelude::*;
-use liuli_widgets::{Style, Theme, paint_meter};
+use liuli_widgets::{Density, EffectsConfig, Shape, Theme, ThemePreset, paint_meter};
+mod depth;
 mod pages;
 pub const FONT: &[u8] = include_bytes!("../assets/body.lf4");
 
@@ -20,6 +21,7 @@ pub enum Page {
     Image,
     #[cfg(feature = "enhanced")]
     Text,
+    Depth,
 }
 pub const PAGES: &[(Page, &str, IconKind)] = &[
     (Page::Inputs, "Buttons & sliders", IconKind::Sliders),
@@ -31,11 +33,19 @@ pub const PAGES: &[(Page, &str, IconKind)] = &[
     (Page::Image, "Image transforms", IconKind::Waveform),
     #[cfg(feature = "enhanced")]
     (Page::Text, "Text field", IconKind::Sliders),
+    (Page::Depth, "Surface & depth", IconKind::Gauge),
 ];
 
 pub struct Model {
     pub page: Page,
-    dark: bool,
+    pub depth: depth::Depth,
+    pub dark: bool,
+    pub preset: ThemePreset,
+    pub shape_idx: u8,
+    pub effects: EffectsConfig,
+    pub blur_radius: u8,
+    pub tint_alpha: Option<u8>,
+    pub rounded_focus: bool,
     height: u16,
     pub value: i16,
     enabled: bool,
@@ -62,7 +72,14 @@ impl Model {
         }
         Self {
             page: Page::Home,
+            depth: depth::Depth::new(),
             dark: true,
+            preset: ThemePreset::Liuli,
+            shape_idx: 0,
+            effects: EffectsConfig::GLASS,
+            blur_radius: 5,
+            tint_alpha: None,
+            rounded_focus: false,
             height,
             value: 65,
             enabled: true,
@@ -82,23 +99,29 @@ impl Model {
             field: pages::text_field(),
         }
     }
-    fn theme(&self) -> Theme {
-        if self.dark {
-            Theme::DARK.with(Style {
-                background: Some(Rgb565::new(2, 4, 5)),
-                surface: Some(Rgb565::new(4, 9, 10)),
-                text: Some(Rgb565::new(29, 60, 29)),
-                accent: Some(Rgb565::new(29, 44, 12)),
-                control_height: Some(38),
-                spacing: Some(5),
-                ..Style::default()
-            })
-        } else {
-            Theme::LIGHT.with(Style {
-                control_height: Some(38),
-                spacing: Some(5),
-                ..Style::default()
-            })
+    pub fn theme(&self) -> Theme {
+        let mut t = Theme::preset(self.preset, self.dark)
+            .with_density(Density::TOUCH)
+            .with_effects(self.effects.with_max_blur_radius(self.blur_radius))
+            .with_blur_radius(self.blur_radius)
+            .with_rounded_focus(self.rounded_focus);
+        t = match self.shape_idx {
+            1 => t.with_shape(Shape::SHARP),
+            2 => t.with_shape(Shape::SOFT),
+            3 => t.with_shape(Shape::ROUNDED),
+            _ => t,
+        };
+        if let Some(alpha) = self.tint_alpha {
+            t = t.with_glass_tint(None, alpha);
+        }
+        t
+    }
+    pub fn shape_name(&self) -> &'static str {
+        match self.shape_idx {
+            1 => "Sharp",
+            2 => "Soft",
+            3 => "Rounded",
+            _ => "Preset",
         }
     }
 }
@@ -137,10 +160,13 @@ impl App for Catalog {
             PageRestore::default()
         }
     }
-    fn next_deadline(m: &Model, _: InstantMs) -> Option<InstantMs> {
-        m.toast_until
+    fn next_deadline(m: &Model, now: InstantMs) -> Option<InstantMs> {
+        m.toast_until.into_iter().chain(m.depth.deadline(now)).min()
     }
     fn on_timer(m: &mut Model, now: InstantMs) -> Change {
+        if m.page == Page::Depth && m.depth.advance(now) {
+            return Change::View;
+        }
         if m.toast_until.is_some_and(|end| now >= end) {
             m.toast_until = None;
             Change::View
@@ -155,6 +181,7 @@ impl App for Catalog {
         canvas: &mut WidgetCanvas<'_>,
     ) -> Result<(), BuildError> {
         match key.0 {
+            301 => depth::backdrop(m, canvas),
             43 => paint_meter(props, canvas),
             71 => pages::paint_image(m, canvas),
             #[cfg(feature = "enhanced")]
@@ -201,16 +228,67 @@ impl App for Catalog {
         match (action.key.0, action.kind) {
             (_, ActionKind::Dismiss) if m.confirm => m.confirm = false,
             (_, ActionKind::Dismiss) | (3, ActionKind::Activate) => {
+                m.depth.stop(now);
                 m.page = Page::Home;
                 m.toast_until = None;
             }
-            (5, ActionKind::Activate) => m.dark = !m.dark,
-            (k @ 100..=107, ActionKind::Activate) => {
+            (5, ActionKind::Activate) => {
+                m.dark = !m.dark;
+                #[cfg(feature = "enhanced")]
+                {
+                    let t = m.theme();
+                    let _ = m.field.set_colors(t.text, t.surface);
+                }
+            }
+            (k @ 100..=108, ActionKind::Activate) => {
                 let Some((page, _, _)) = PAGES.get((k - 100) as usize) else {
                     return Change::Unchanged;
                 };
                 m.page = *page;
             }
+            (300..=329, _) if m.page == Page::Depth => match (action.key.0, action.kind) {
+                (313, ActionKind::Activate) => {
+                    m.preset = m.preset.next();
+                    #[cfg(feature = "enhanced")]
+                    {
+                        let t = m.theme();
+                        let _ = m.field.set_colors(t.text, t.surface);
+                    }
+                    return Change::View;
+                }
+                (314, ActionKind::Activate) => {
+                    m.shape_idx = (m.shape_idx + 1) % 4;
+                    return Change::View;
+                }
+                (315, ActionKind::Activate) => {
+                    m.effects.shadows = !m.effects.shadows;
+                    return Change::View;
+                }
+                (316, ActionKind::Activate) => {
+                    m.effects.press_depth = !m.effects.press_depth;
+                    return Change::View;
+                }
+                (317, ActionKind::Activate) => {
+                    m.effects.glass_tint = !m.effects.glass_tint;
+                    return Change::View;
+                }
+                (319, ActionKind::SetValue(v)) => {
+                    m.blur_radius = v.clamp(0, 8) as u8;
+                    m.effects.glass_blur = m.blur_radius > 0;
+                    return Change::View;
+                }
+                (321, ActionKind::SetValue(v)) => {
+                    let v = v.clamp(0, 15) as u8;
+                    m.tint_alpha = Some(v);
+                    m.effects.glass_tint = v > 0;
+                    return Change::View;
+                }
+                (322, ActionKind::Activate) => {
+                    m.rounded_focus = !m.rounded_focus;
+                    return Change::View;
+                }
+                _ => return m.depth.action(action, now),
+            },
             (30, ActionKind::Activate) => m.count = m.count.wrapping_add(1),
             (31, ActionKind::Toggle) => m.enabled = !m.enabled,
             (32 | 57, ActionKind::SetValue(value)) => m.value = value,
