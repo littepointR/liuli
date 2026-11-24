@@ -170,6 +170,9 @@ fn complex_text(target: &mut Display<'_>) -> Result<(), ()> {
                 band.iter().copied().map(u16_to_rgb565),
             )?;
         }
+        if unsafe { board_flush() } != 0 {
+            return Err(());
+        }
         unsafe {
             board_sample(3, i, board_now_us() - start, 240 * 48);
             board_wait();

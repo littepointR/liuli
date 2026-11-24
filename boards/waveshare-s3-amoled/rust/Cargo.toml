@@ -19,9 +19,26 @@ embedded-graphics-core = "=0.4.1"
 [profile.release]
 panic="abort"
 opt-level="s"
+lto=true
 codegen-units=1
 
+[profile.release.package.liuli-core]
+opt-level = 3
+
+[profile.release.package.liuli-render]
+opt-level = 3
+
+[profile.release.package.liuli-text]
+opt-level = 3
+
+[profile.release.package.embedded-graphics-core]
+opt-level = 3
+
+[profile.release.package.liuli-s3-runtime]
+opt-level = 3
+
 [features]
+effects-benchmark=["widget-demo"]
 input-trace=[]
 enhanced=["liuli/enhanced"]
 benchmark=["enhanced"]

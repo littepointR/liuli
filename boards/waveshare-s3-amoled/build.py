@@ -15,6 +15,7 @@ def main():
     parser.add_argument("--out", type=Path, default=BOARD.parents[1] / "target" / "s3")
     parser.add_argument("--offline", action="store_true")
     parser.add_argument("--rust-only", action="store_true")
+    parser.add_argument("--effects-benchmark",action="store_true",help="exercise the widget demo with a fixed clock and report on-board timings")
     parser.add_argument("--trace-input", action="store_true", help="stream accepted inputs and clock advances over the debug serial port")
     args = parser.parse_args()
     out = args.out.resolve()
@@ -23,6 +24,10 @@ def main():
     command = ["cargo", "+esp", "build", "-Zbuild-std=" + components, "--locked",
                "--target", TARGET, "--release", "--ignore-rust-version", "--target-dir", str(out / "rust")]
     features = [] if args.profile == "basic" else [args.profile]
+    if args.effects_benchmark:
+        if args.profile != "widget-demo":
+            parser.error("--effects-benchmark requires --profile widget-demo")
+        features.append("effects-benchmark")
     if args.trace_input:
         features.append("input-trace")
     if features:

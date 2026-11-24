@@ -17,6 +17,8 @@ use application::BoardApp;
 
 #[cfg(feature = "benchmark")]
 mod benchmark;
+#[cfg(all(feature = "effects-benchmark", not(feature = "benchmark")))]
+mod effects_benchmark;
 #[cfg(feature = "enhanced")]
 mod enhanced;
 #[cfg(feature = "input-trace")]
@@ -24,18 +26,24 @@ mod input_trace;
 
 const WIDTH: u32 = 240;
 const HEIGHT: u32 = 536;
-const WORDS: usize = WIDTH as usize * 8;
+#[cfg(feature = "enhanced")]
+const BAND_HEIGHT: u32 = 32;
+#[cfg(not(feature = "enhanced"))]
+const BAND_HEIGHT: u32 = 8;
+const WORDS: usize = WIDTH as usize * BAND_HEIGHT as usize;
 static mut STORAGE: Storage = Storage::ZERO;
 static mut SCRATCH: [u16; WORDS] = [0; WORDS];
-static mut WIRE: [u16; WORDS] = [0; WORDS];
+static mut WIRE: [[u16; WORDS]; 2] = [[0; WORDS]; 2];
 
 unsafe extern "C" {
     #[cfg(feature = "sleep-benchmark")]
     fn board_take_wake_report() -> i32;
     fn board_pixels(x: i32, y: i32, w: u32, h: u32, bytes: *const u16) -> i32;
+    fn board_flush() -> i32;
     fn board_now_us() -> i64;
     fn board_touch(points: *mut Contact) -> i32;
     fn board_wait();
+    fn board_wait_ms(ms: u32);
     fn board_frame(pixels: u32, elapsed_us: i64);
     #[cfg(feature = "enhanced")]
     fn board_blend(p: *mut u16, len: usize, fg: u16, a: u32);
@@ -45,7 +53,10 @@ unsafe extern "C" {
 fn panic(_: &PanicInfo<'_>) -> ! {
     unsafe { abort() }
 }
-struct Display<'a>(&'a mut [u16]);
+struct Display<'a> {
+    wire: [&'a mut [u16]; 2],
+    slot: usize,
+}
 impl OriginDimensions for Display<'_> {
     fn size(&self) -> Size {
         Size::new(WIDTH, HEIGHT)
@@ -68,13 +79,17 @@ impl DrawTarget for Display<'_> {
         colors: I,
     ) -> Result<(), ()> {
         let count = rect.size.width as usize * rect.size.height as usize;
-        let dst = self.0.get_mut(..count).ok_or(())?;
-        let mut source = colors.into_iter();
-        for word in dst.iter_mut() {
-            *word = source.next().ok_or(())?.into_storage().to_be();
+        let dst = self.wire[self.slot].get_mut(..count).ok_or(())?;
+        let mut written = 0;
+        for (word, c) in dst.iter_mut().zip(colors) {
+            *word = c.into_storage().to_be();
+            written += 1;
         }
-        // The blocking board driver completes the transfer before releasing this borrow.
-        if unsafe {
+        if written != count {
+            return Err(());
+        }
+        // `board_pixels` waits for any previous band DMA before reusing `self.wire[self.slot]`.
+        let res = unsafe {
             board_pixels(
                 rect.top_left.x,
                 rect.top_left.y,
@@ -82,12 +97,9 @@ impl DrawTarget for Display<'_> {
                 rect.size.height,
                 dst.as_ptr(),
             )
-        } == 0
-        {
-            Ok(())
-        } else {
-            Err(())
-        }
+        };
+        self.slot ^= 1;
+        if res == 0 { Ok(()) } else { Err(()) }
     }
 }
 
@@ -118,7 +130,12 @@ fn present(
     e.align_damage(step, step).map_err(|_| ())?;
     glyphs.start();
     let result = e
-        .present_sync_with_pixels(target, scratch, |_| Ok(()), glyphs)
+        .present_sync_with_pixels(
+            target,
+            scratch,
+            |_| unsafe { if board_flush() == 0 { Ok(()) } else { Err(()) } },
+            glyphs,
+        )
         .map_err(|_| ());
     glyphs.finish();
     result
@@ -126,7 +143,7 @@ fn present(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn liuli_static_bytes() -> u32 {
-    (size_of::<Storage>() + 2 * size_of::<[u16; WORDS]>()) as u32
+    (size_of::<Storage>() + size_of::<[u16; WORDS]>() + size_of::<[[u16; WORDS]; 2]>()) as u32
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn liuli_benchmark() -> i32 {
@@ -161,7 +178,11 @@ pub unsafe extern "C" fn liuli_run(ptr: *const u8, len: usize) -> i32 {
     let now = InstantMs(initial as u64 / 1000);
     let storage = unsafe { &mut *(&raw mut STORAGE) };
     let scratch = unsafe { &mut *(&raw mut SCRATCH) };
-    let mut display = Display(unsafe { &mut *(&raw mut WIRE) });
+    let [w0, w1] = unsafe { &mut *(&raw mut WIRE) };
+    let mut display = Display {
+        wire: [w0, w1],
+        slot: 0,
+    };
     let Ok(mut engine) = Engine::<BoardApp>::new_in_place(
         storage,
         application::model(HEIGHT as u16),
@@ -171,6 +192,7 @@ pub unsafe extern "C" fn liuli_run(ptr: *const u8, len: usize) -> i32 {
     ) else {
         return -2;
     };
+    engine.set_band_height(BAND_HEIGHT);
     #[cfg(feature = "enhanced")]
     engine.set_sync_blend(|row, fg, a| unsafe {
         board_blend(row.as_mut_ptr(), row.len(), fg.into_storage(), u32::from(a))
@@ -182,6 +204,10 @@ pub unsafe extern "C" fn liuli_run(ptr: *const u8, len: usize) -> i32 {
     #[cfg(feature = "benchmark")]
     if run_benchmark && benchmark::run(&mut engine, &mut display, scratch, &mut glyphs).is_err() {
         return -7;
+    }
+    #[cfg(all(feature = "effects-benchmark", not(feature = "benchmark")))]
+    if effects_benchmark::run(&mut engine, &mut display, scratch, &mut glyphs, now).is_err() {
+        return -8;
     }
     let mut previous = [Contact::default(); 2];
     let mut previous_count = 0;
@@ -240,6 +266,14 @@ pub unsafe extern "C" fn liuli_run(ptr: *const u8, len: usize) -> i32 {
             Ok(_) => {}
             Err(_) => return -5,
         }
-        unsafe { board_wait() };
+        let after = InstantMs(unsafe { board_now_us() } as u64 / 1000);
+        match engine.next_wakeup(after, false) {
+            NextWakeup::Now => {}
+            NextWakeup::At(t) => {
+                let wait_ms = t.0.saturating_sub(after.0).clamp(1, 10) as u32;
+                unsafe { board_wait_ms(wait_ms) };
+            }
+            NextWakeup::OnEvent => unsafe { board_wait() },
+        }
     }
 }

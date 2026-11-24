@@ -1,5 +1,7 @@
 /target
 checks/firmware/target
 **/*.rs.bk
+__pycache__/
+*.pyc
 .idea/
 .vscode/

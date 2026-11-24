@@ -18,6 +18,13 @@ static i2c_master_dev_handle_t touch;
 static int64_t transfer_us;
 static const esp_partition_t *font_partition;
 void *board_alloc(size_t size, size_t alignment) {
+  if (heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) >=
+      size + 49152) {
+    void *ptr = heap_caps_aligned_alloc(alignment, size,
+                                        MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (ptr)
+      return ptr;
+  }
   return heap_caps_aligned_alloc(alignment, size,
                                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 }
@@ -56,6 +63,20 @@ void board_sample(unsigned kind, unsigned n, int64_t elapsed, unsigned pixels) {
   transfer_us = 0;
 }
 
+static spi_transaction_t pending_tr;
+static bool pending_active = false;
+static int64_t pending_start = 0;
+
+int board_flush(void) {
+  if (!pending_active)
+    return ESP_OK;
+  spi_transaction_t *ret = NULL;
+  esp_err_t e = spi_device_get_trans_result(panel, &ret, portMAX_DELAY);
+  pending_active = false;
+  transfer_us += esp_timer_get_time() - pending_start;
+  return e;
+}
+
 static esp_err_t send(uint8_t op, uint8_t reg, const void *bytes, size_t n) {
   spi_transaction_t tr = {.cmd = op,
                           .addr = (uint32_t)reg << 8,
@@ -74,13 +95,13 @@ static void setup(void) {
                                 .data5_io_num = -1,
                                 .data6_io_num = -1,
                                 .data7_io_num = -1,
-                                .max_transfer_sz = 240 * 8 * 2};
+                                .max_transfer_sz = 240 * 32 * 2};
   ESP_ERROR_CHECK(spi_bus_initialize(SPI2_HOST, &bus, SPI_DMA_CH_AUTO));
   const spi_device_interface_config_t dev = {.command_bits = 8,
                                              .address_bits = 24,
                                              .clock_speed_hz = 40 * 1000 * 1000,
                                              .spics_io_num = 6,
-                                             .queue_size = 1,
+                                             .queue_size = 4,
                                              .flags = SPI_DEVICE_HALFDUPLEX};
   ESP_ERROR_CHECK(spi_bus_add_device(SPI2_HOST, &dev, &panel));
   ESP_ERROR_CHECK(gpio_set_direction(17, GPIO_MODE_OUTPUT));
@@ -112,14 +133,25 @@ static void setup(void) {
 int board_pixels(int x, int y, unsigned w, unsigned h, const uint16_t *pixels) {
   if (x < 0 || y < 0 || w == 0 || h == 0 || x + w > 240 || y + h > 536)
     return ESP_ERR_INVALID_ARG;
-  const int64_t start = esp_timer_get_time();
+  esp_err_t e = board_flush();
+  if (e != ESP_OK)
+    return e;
+  const int64_t setup_start = esp_timer_get_time();
   unsigned x1 = x + w - 1, y1 = y + h - 1;
-  esp_err_t e = send(2, 0x2A, (uint8_t[]){x >> 8, x, x1 >> 8, x1}, 4);
+  e = send(2, 0x2A, (uint8_t[]){x >> 8, x, x1 >> 8, x1}, 4);
   if (e == ESP_OK)
     e = send(2, 0x2B, (uint8_t[]){y >> 8, y, y1 >> 8, y1}, 4);
-  if (e == ESP_OK)
-    e = send(0x32, 0x2C, pixels, w * h * 2);
-  transfer_us += esp_timer_get_time() - start;
+  transfer_us += esp_timer_get_time() - setup_start;
+  if (e != ESP_OK)
+    return e;
+  pending_tr = (spi_transaction_t){.cmd = 0x32,
+                                   .addr = (uint32_t)0x2C << 8,
+                                   .length = w * h * 16,
+                                   .tx_buffer = pixels,
+                                   .flags = SPI_TRANS_MODE_QIO};
+  pending_start = esp_timer_get_time();
+  e = spi_device_queue_trans(panel, &pending_tr, portMAX_DELAY);
+  pending_active = (e == ESP_OK);
   return e;
 }
 typedef struct {
@@ -151,7 +183,9 @@ int board_touch(board_contact_t *points) {
   return count;
 }
 int board_sleep_cycle(void) {
-  esp_err_t err = send(2, 0x28, NULL, 0);
+  esp_err_t err = board_flush();
+  if (err == ESP_OK)
+    err = send(2, 0x28, NULL, 0);
   if (err == ESP_OK)
     err = send(2, 0x10, NULL, 0);
   if (err == ESP_OK)
@@ -170,6 +204,7 @@ int board_sleep_cycle(void) {
 }
 int64_t board_now_us(void) { return esp_timer_get_time(); }
 void board_wait(void) { vTaskDelay(pdMS_TO_TICKS(10)); }
+void board_wait_ms(uint32_t ms) { vTaskDelay(pdMS_TO_TICKS(ms ? ms : 1)); }
 void board_frame(unsigned pixels, int64_t elapsed_us) {
   ESP_LOGI("liuli",
            "timestamp_us=%lld pixels=%u frame_us=%lld transfer_us=%lld "
