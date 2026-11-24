@@ -183,10 +183,16 @@ pub unsafe extern "C" fn liuli_run(ptr: *const u8, len: usize) -> i32 {
         wire: [w0, w1],
         slot: 0,
     };
-    let Ok(mut engine) = Engine::<BoardApp>::new_in_place(
+    #[cfg(all(feature = "widget-demo", not(feature = "benchmark")))]
+    let Ok(fonts) = liuli_widget_demo::studio_fonts(font) else {
+        return -1;
+    };
+    #[cfg(not(all(feature = "widget-demo", not(feature = "benchmark"))))]
+    let fonts = FontSet::single(font);
+    let Ok(mut engine) = Engine::<BoardApp>::new_in_place_with_fonts(
         storage,
         application::model(HEIGHT as u16),
-        font,
+        fonts,
         Rect::new(0, 0, WIDTH, HEIGHT),
         now,
     ) else {

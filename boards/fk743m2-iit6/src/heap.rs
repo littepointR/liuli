@@ -5,25 +5,42 @@ use core::{
 };
 use linked_list_allocator::Heap;
 
-pub struct SdramHeap(UnsafeCell<Heap>);
+const EXTERNAL: usize = 0xc020_0000;
+struct UiHeap(UnsafeCell<[Heap; 2]>);
 // The two backends share this single-core allocator. Each heap operation masks interrupts.
-unsafe impl Sync for SdramHeap {}
-unsafe impl GlobalAlloc for SdramHeap {
+unsafe impl Sync for UiHeap {}
+unsafe impl GlobalAlloc for UiHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        cortex_m::interrupt::free(|_| unsafe { (&mut *self.0.get()).allocate_first_fit(layout) })
-            .map_or(core::ptr::null_mut(), NonNull::as_ptr)
+        cortex_m::interrupt::free(|_| {
+            unsafe { &mut *self.0.get() }
+                .iter_mut()
+                .find_map(|heap| heap.allocate_first_fit(layout).ok())
+                .map_or(core::ptr::null_mut(), NonNull::as_ptr)
+        })
     }
     unsafe fn dealloc(&self, p: *mut u8, layout: Layout) {
         cortex_m::interrupt::free(|_| unsafe {
-            (*self.0.get()).deallocate(NonNull::new_unchecked(p), layout)
+            let index = usize::from(p.addr() >= EXTERNAL);
+            (*self.0.get())[index].deallocate(NonNull::new_unchecked(p), layout)
         });
     }
 }
 #[global_allocator]
-static HEAP: SdramHeap = SdramHeap(UnsafeCell::new(Heap::empty()));
+static HEAP: UiHeap = UiHeap(UnsafeCell::new([Heap::empty(), Heap::empty()]));
 pub unsafe fn init() {
-    // The first 2 MiB of the 32 MiB SDRAM are reserved for both scanout buffers.
+    unsafe extern "C" {
+        static mut _ui_heap_start: u8;
+        static _ui_heap_end: u8;
+    }
+    // The linker leaves the AXI SRAM after statics free on both runtimes
+    // (the stack lives in DTCM). Keep hot UI pixels off the scanout SDRAM bus.
     unsafe {
-        (*HEAP.0.get()).init(0xc0200000 as *mut u8, 30 * 1024 * 1024);
+        let start = &raw mut _ui_heap_start;
+        let internal = (&raw const _ui_heap_end).addr() - start.addr();
+        let [fast, external] = &mut *HEAP.0.get();
+        if internal >= 3 * size_of::<usize>() {
+            fast.init(start, internal);
+        }
+        external.init(EXTERNAL as *mut u8, 30 * 1024 * 1024);
     }
 }

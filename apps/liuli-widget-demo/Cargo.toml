@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Interactive Liuli widget catalog for desktop, ESP32-S3 and STM32H743"
+description = "Spool field recorder UI demo for desktop, ESP32-S3 and STM32H743"
 
 [dependencies]
 liuli.workspace = true

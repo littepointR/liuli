@@ -85,8 +85,8 @@ async fn run() -> Result<(), u32> {
     let band = unsafe { &mut *(&raw mut STRIPE) };
     let mut ui = Engine::<Catalog>::new_in_place_with_fonts(
         storage,
-        Model::new(HEIGHT as u16),
-        FontSet::single(font),
+        Model::for_size(Size::new(WIDTH, HEIGHT)),
+        liuli_widget_demo::studio_fonts(font).map_err(|_| 14u32)?,
         Rect::new(0, 0, WIDTH, HEIGHT),
         InstantMs(0),
     )

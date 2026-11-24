@@ -67,18 +67,90 @@ def issue(link, seq, action, point=None):
 
 
 def read_snapshot(link, size):
+    from pylink.errors import JLinkReadException
     result = bytearray()
     for offset in range(0, size, 1024):
         count = min(1024, size-offset) // 4
         addr = 0xc0180000 + offset
-        for _ in range(4):
-            data = link.memory_read32(addr, count)
+        for attempt in range(4):
+            try:
+                data = link.memory_read32(addr, count)
+            except JLinkReadException:
+                if attempt == 3:
+                    raise
+                time.sleep(.025 * (attempt + 1))
+                continue
             if len(data) == count and link.memory_read32(addr, count) == data:
                 result.extend(struct.pack(f"<{count}I", *data))
                 break
         else:
             raise RuntimeError(f"unstable snapshot data at {addr:#x}")
     return bytes(result)
+
+
+def depth_scroll(commander, uid, trace, demo):
+    """Check the fixed 800x480 out-and-back drag against the desktop renderer."""
+    import statistics
+    import subprocess
+    from urllib.parse import parse_qsl
+    from jlink import FRONTS, compare_pixels, expand_snapshot, frame_runs
+
+    lines = trace.read_text().splitlines()
+    if lines[:1] != ["liuli-trace 1"]:
+        raise ValueError("expected the h743-depth-scroll.trace fixture")
+    events, references = [], {}
+    for i, line in enumerate(lines[1:], 1):
+        _, query = line.split(" ", 1)
+        fields = dict(parse_qsl(query, strict_parsing=True))
+        kind, x, y = fields["kind"], int(fields["x"]), int(fields["y"])
+        events.append((kind, x, y))
+        if kind == "move" and y in (72, 360, 432):
+            prefix = commander.temp / "scroll.trace"
+            frame = commander.temp / "scroll.rgb565"
+            prefix.write_text("\n".join(lines[:i+1]) + "\n", encoding="ascii")
+            subprocess.run([str(demo.resolve()), "--size", "800x480", "--replay", str(prefix),
+                            "--scanout", str(frame)], check=True)
+            references[i] = frame.read_bytes()
+    visible, hidden = [], []
+    link = new_link(commander)
+    try:
+        attach(commander, link, uid)
+        link.reset(halt=True)
+        link.memory_write32(0x24000000, [0])
+        link.restart()
+        last_frame = wait_for_ack(link, 0)[2]
+        # Clear sticky FIFO and transfer errors once. Leave the reload flag to the BSP.
+        link.memory_write32(0x5000103c, [6])
+        for i, (kind, x, y) in enumerate(events, 1):
+            action = {"down": 1, "up": 2, "move": 3}[kind]
+            state = issue(link, 2*i, action, x | y << 16)
+            if kind == "move":
+                if state[8] != 9 or state[2] <= last_frame:
+                    raise RuntimeError(f"move {i} at y={y} did not submit a Depth frame")
+                if y >= 384:
+                    visible.append(state[5])
+                elif y <= 240:
+                    hidden.append(state[5])
+            last_frame = state[2]
+            if i in references:
+                snapshot = issue(link, 2*i+1, 6)
+                expected = references[i]
+                front = link.memory_read32(0x500010ac, 1)[0]
+                if front not in FRONTS or front != snapshot[3] or snapshot[14] != frame_runs(expected):
+                    raise ValueError(f"unexpected scanout at event {i}, y={y}")
+                compare_pixels(f"event {i}, y={y}", expand_snapshot(read_snapshot(link, snapshot[14])), expected)
+        flags = link.memory_read32(0x50001038, 1)[0]
+        if issue(link, 2*len(events)+2, 5, 757 | 30 << 16)[8] != 0:
+            raise RuntimeError("failed to return to the catalog")
+        if len(references) != 4 or not visible or not hidden:
+            raise ValueError("expected the complete H743 depth-scroll fixture")
+        top, away = statistics.median(visible), statistics.median(hidden)
+        print(f"near-top median {top:g} us; hidden median {away:g} us; LTDC ISR {flags:#x}")
+        # 1081 x 543 total clocks at 33 MHz is one 17.8 ms panel refresh.
+        if flags & 6 or top - away > 18000:
+            raise RuntimeError("LTDC scanout error or top graphic costs more than one additional refresh")
+    finally:
+        link.close()
 
 
 def capture(commander, uid, checkpoints, lengths):

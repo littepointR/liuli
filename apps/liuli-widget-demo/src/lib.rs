@@ -6,8 +6,16 @@ extern crate alloc;
 use liuli::prelude::*;
 use liuli_widgets::{Density, EffectsConfig, Shape, Theme, ThemePreset, paint_meter};
 mod depth;
+mod motion;
 mod pages;
+mod studio;
+mod tape;
 pub const FONT: &[u8] = include_bytes!("../assets/body.lf4");
+
+pub fn studio_fonts(body: Lf4Font<'_>) -> Result<FontSet<'_>, liuli::text::FontError> {
+    let heading = Lf4Font::from_bytes(include_bytes!("../assets/heading.lf4"))?;
+    Ok(FontSet::single(body).with_title(heading))
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Page {
@@ -22,23 +30,47 @@ pub enum Page {
     #[cfg(feature = "enhanced")]
     Text,
     Depth,
+    Motion,
 }
 pub const PAGES: &[(Page, &str, IconKind)] = &[
-    (Page::Inputs, "Buttons & sliders", IconKind::Sliders),
-    (Page::Data, "Meters & charts", IconKind::Gauge),
-    (Page::Choices, "Tabs & selectors", IconKind::Check),
-    (Page::Feedback, "Dialogs & toasts", IconKind::Bell),
-    (Page::List, "Virtual list", IconKind::ChevronRight),
-    (Page::Icons, "Icon set", IconKind::Diagnostics),
-    (Page::Image, "Image transforms", IconKind::Waveform),
+    (Page::Inputs, "Mixer", IconKind::Sliders),
+    (Page::Data, "Line check", IconKind::Gauge),
+    (Page::Choices, "Input routing", IconKind::Check),
+    (Page::Feedback, "Recording", IconKind::Bell),
+    (Page::List, "Tape library", IconKind::ChevronRight),
+    (Page::Icons, "Cue stamps", IconKind::Diagnostics),
+    (Page::Image, "Deck artwork", IconKind::Waveform),
     #[cfg(feature = "enhanced")]
-    (Page::Text, "Text field", IconKind::Sliders),
-    (Page::Depth, "Surface & depth", IconKind::Gauge),
+    (Page::Text, "Session notes", IconKind::Sliders),
+    (Page::Depth, "Tape sleeve", IconKind::Gauge),
+    (Page::Motion, "Fade preview", IconKind::Waveform),
 ];
+
+impl Page {
+    pub fn parent(self) -> Self {
+        match self {
+            Self::Data | Self::Choices | Self::Image => Self::Inputs,
+            Self::Icons => Self::List,
+            #[cfg(feature = "enhanced")]
+            Self::Text => Self::List,
+            _ => Self::Home,
+        }
+    }
+    pub fn route_key(self) -> Key {
+        if self == Self::Home {
+            return Key(98);
+        }
+        Key(100 + PAGES.iter().position(|p| p.0 == self).unwrap() as u32)
+    }
+    fn is_tab(self) -> bool {
+        matches!(self, Self::Home | Self::List | Self::Inputs)
+    }
+}
 
 pub struct Model {
     pub page: Page,
     pub depth: depth::Depth,
+    motion: motion::Motion,
     pub dark: bool,
     pub preset: ThemePreset,
     pub shape_idx: u8,
@@ -46,14 +78,22 @@ pub struct Model {
     pub blur_radius: u8,
     pub tint_alpha: Option<u8>,
     pub rounded_focus: bool,
+    pub text_gamma: TextGamma,
     height: u16,
+    landscape: bool,
+    deck: tape::Deck,
     pub value: i16,
+    level: i16,
     enabled: bool,
     count: u16,
+    last_cue: Option<(usize, u32)>,
     samples: SampleRing<32>,
     tab: Key,
     choice: Key,
-    confirm: bool,
+    confirm: Option<InstantMs>,
+    #[cfg(feature = "enhanced")]
+    room_tone_logged: bool,
+    capture_saved: bool,
     toast_until: Option<InstantMs>,
     pub offset: i32,
     selected: Option<Key>,
@@ -66,13 +106,23 @@ pub struct Model {
 }
 impl Model {
     pub fn new(height: u16) -> Self {
+        Self::for_size(Size::new(240, height.into()))
+    }
+    pub fn for_size(size: Size) -> Self {
         let mut samples = SampleRing::default();
         for sample in [12, 25, 19, 37, 24, 36, 47, 39, 57, 50, 65, 55, 70, 68] {
             samples.push(sample);
         }
+        #[cfg(feature = "enhanced")]
+        let field = {
+            let mut f = pages::text_field(studio::palette(Theme::DARK));
+            let _ = f.set_gamma(TextGamma::Perceptual);
+            f
+        };
         Self {
             page: Page::Home,
             depth: depth::Depth::new(),
+            motion: motion::Motion::new(),
             dark: true,
             preset: ThemePreset::Liuli,
             shape_idx: 0,
@@ -80,31 +130,44 @@ impl Model {
             blur_radius: 5,
             tint_alpha: None,
             rounded_focus: false,
-            height,
+            text_gamma: TextGamma::Perceptual,
+            height: size.height.min(u16::MAX.into()) as u16,
+            landscape: size.width >= 540,
+            deck: tape::Deck::new(),
             value: 65,
+            level: 68,
             enabled: true,
             count: 0,
+            last_cue: None,
             samples,
             tab: Key(50),
             choice: Key(53),
-            confirm: false,
+            confirm: None,
+            #[cfg(feature = "enhanced")]
+            room_tone_logged: false,
+            capture_saved: false,
             toast_until: None,
             offset: 0,
-            selected: None,
+            selected: Some(Key(1000)),
             icon: 0,
             angle: 0,
             alpha: 15,
-            scale: 70,
+            scale: 100,
             #[cfg(feature = "enhanced")]
-            field: pages::text_field(),
+            field,
         }
     }
     pub fn theme(&self) -> Theme {
-        let mut t = Theme::preset(self.preset, self.dark)
+        let mut t = studio::palette(Theme::preset(self.preset, self.dark))
+            .with_typography(liuli_widgets::Typography {
+                title: FontId::Title20,
+                ..liuli_widgets::Typography::STANDARD
+            })
             .with_density(Density::TOUCH)
             .with_effects(self.effects.with_max_blur_radius(self.blur_radius))
             .with_blur_radius(self.blur_radius)
-            .with_rounded_focus(self.rounded_focus);
+            .with_rounded_focus(self.rounded_focus)
+            .with_text_gamma(self.text_gamma);
         t = match self.shape_idx {
             1 => t.with_shape(Shape::SHARP),
             2 => t.with_shape(Shape::SOFT),
@@ -115,6 +178,23 @@ impl Model {
             t = t.with_glass_tint(None, alpha);
         }
         t
+    }
+    fn mark(&mut self) {
+        self.count = self.count.saturating_add(1);
+        self.last_cue = Some((
+            self.icon,
+            if self.deck.recording.is_some() {
+                self.deck.recording_seconds
+            } else {
+                self.deck.elapsed()
+            },
+        ));
+    }
+    fn sample_input(&mut self, phase: u64) {
+        const WAVE: [i16; 12] = [52, 77, 63, 93, 70, 44, 82, 96, 57, 71, 55, 83];
+        let phase = (phase % WAVE.len() as u64) as usize + (self.choice.0 - 53) as usize;
+        self.level = self.value * WAVE[phase % WAVE.len()] / 100;
+        self.samples.push(self.level);
     }
     pub fn shape_name(&self) -> &'static str {
         match self.shape_idx {
@@ -161,14 +241,38 @@ impl App for Catalog {
         }
     }
     fn next_deadline(m: &Model, now: InstantMs) -> Option<InstantMs> {
-        m.toast_until.into_iter().chain(m.depth.deadline(now)).min()
+        let animation = match m.page {
+            Page::Depth => m.depth.deadline(now),
+            Page::Motion => m.motion.deadline(now),
+            _ => None,
+        };
+        m.toast_until
+            .into_iter()
+            .chain(animation)
+            .chain(m.deck.deadline(now).filter(|_| m.confirm.is_none()))
+            .min()
     }
     fn on_timer(m: &mut Model, now: InstantMs) -> Change {
+        let seconds = (m.deck.elapsed(), m.deck.recording_seconds);
+        let transport_changed = m.confirm.is_none() && m.deck.advance(now);
+        if seconds != (m.deck.elapsed(), m.deck.recording_seconds) {
+            m.sample_input(now.0 / 1000);
+        }
         if m.page == Page::Depth && m.depth.advance(now) {
+            return Change::View;
+        }
+        if m.page == Page::Motion && m.motion.advance(now) {
             return Change::View;
         }
         if m.toast_until.is_some_and(|end| now >= end) {
             m.toast_until = None;
+            Change::View
+        } else if transport_changed
+            && matches!(
+                m.page,
+                Page::Home | Page::Feedback | Page::Data | Page::List
+            )
+        {
             Change::View
         } else {
             Change::Unchanged
@@ -182,6 +286,9 @@ impl App for Catalog {
     ) -> Result<(), BuildError> {
         match key.0 {
             301 => depth::backdrop(m, canvas),
+            450 => studio::paint_tape(m, canvas),
+            456 => studio::waveform(props, canvas),
+            402 | 404 => motion::paint(props, canvas),
             43 => paint_meter(props, canvas),
             71 => pages::paint_image(m, canvas),
             #[cfg(feature = "enhanced")]
@@ -226,10 +333,20 @@ impl App for Catalog {
             Message::Edit(input) => return edit(m, input),
         };
         match (action.key.0, action.kind) {
-            (_, ActionKind::Dismiss) if m.confirm => m.confirm = false,
+            (_, ActionKind::Dismiss) if m.confirm.is_some() => {
+                if let (Some(end), Some(start)) = (m.confirm.take(), m.deck.recording) {
+                    m.deck.recording = Some(start.saturating_add(now.saturating_sub(end)));
+                }
+            }
             (_, ActionKind::Dismiss) | (3, ActionKind::Activate) => {
                 m.depth.stop(now);
-                m.page = Page::Home;
+                m.motion.reset();
+                if m.page == Page::Feedback && m.deck.recording.is_some() {
+                    m.deck.advance(now);
+                    m.confirm = Some(now);
+                    return Change::View;
+                }
+                m.page = m.page.parent();
                 m.toast_until = None;
             }
             (5, ActionKind::Activate) => {
@@ -240,11 +357,20 @@ impl App for Catalog {
                     let _ = m.field.set_colors(t.text, t.surface);
                 }
             }
-            (k @ 100..=108, ActionKind::Activate) => {
+            (98, ActionKind::Activate) => m.page = Page::Home,
+            (90, ActionKind::Activate) => m.deck.play_pause(now, m.motion.duration_ms()),
+            (k @ 100..=199, ActionKind::Activate) => {
                 let Some((page, _, _)) = PAGES.get((k - 100) as usize) else {
                     return Change::Unchanged;
                 };
                 m.page = *page;
+                if *page == Page::Feedback {
+                    m.capture_saved = false;
+                    m.deck.recording_seconds = 0;
+                }
+            }
+            (406 | 407 | 410..=412, ActionKind::Activate) if m.page == Page::Motion => {
+                return m.motion.action(action.key, now);
             }
             (300..=329, _) if m.page == Page::Depth => match (action.key.0, action.kind) {
                 (313, ActionKind::Activate) => {
@@ -289,35 +415,70 @@ impl App for Catalog {
                 }
                 _ => return m.depth.action(action, now),
             },
-            (30, ActionKind::Activate) => m.count = m.count.wrapping_add(1),
+            (30, ActionKind::Activate) if m.enabled => m.mark(),
             (31, ActionKind::Toggle) => m.enabled = !m.enabled,
-            (32 | 57, ActionKind::SetValue(value)) => m.value = value,
+            (32 | 57, ActionKind::SetValue(value)) => {
+                m.value = value;
+                m.sample_input(now.0 / 1000);
+            }
             (44, ActionKind::Activate) => {
-                m.value = (m.value + 17) % 101;
-                m.samples.push(m.value);
+                m.sample_input(now.0 / 16);
             }
             (50 | 51, ActionKind::Activate) => m.tab = action.key,
             (53..=55, ActionKind::Activate) => m.choice = action.key,
-            (60, ActionKind::Activate) => m.confirm = true,
-            (63, ActionKind::Activate) => {
-                m.confirm = false;
+            (60, ActionKind::Activate) if m.deck.recording.is_some() => {
+                m.deck.advance(now);
+                m.confirm = Some(now);
+            }
+            (60, ActionKind::Activate) => {
+                m.capture_saved = false;
+                m.deck.record(now);
+            }
+            (63, ActionKind::Activate) if m.confirm.is_some() => {
+                m.deck.save(m.confirm.unwrap());
+                m.capture_saved = true;
+                m.selected = Some(m.deck.loaded.key);
+                m.offset = 0;
+                m.confirm = None;
                 m.toast_until = Some(now.saturating_add(2000));
             }
-            (64, ActionKind::Activate) => m.confirm = false,
-            (65, ActionKind::Activate) => m.toast_until = Some(now.saturating_add(2000)),
-            (1000..=1999, ActionKind::Activate) => m.selected = Some(action.key),
+            (64, ActionKind::Activate) => {
+                m.confirm = None;
+                m.deck.recording = None;
+                m.page = Page::Home;
+            }
+            (65, ActionKind::Activate) if m.enabled => {
+                m.mark();
+                m.toast_until = Some(now.saturating_add(2000));
+            }
+            (1000..=2007, ActionKind::Activate) => {
+                m.deck.load(action.key);
+                m.selected = Some(action.key);
+                m.page = Page::Home;
+            }
             (200..=210, ActionKind::Activate) => m.icon = action.key.0 as usize - 200,
             (72, ActionKind::Activate) => m.angle = m.angle.wrapping_add(16),
             (73, ActionKind::SetValue(a)) => m.alpha = a,
             (74, ActionKind::SetValue(percent)) => m.scale = percent,
             #[cfg(feature = "enhanced")]
-            (81, ActionKind::Activate) => return edit(m, TextInput::Compose("告警")),
+            (81, ActionKind::Activate) => return edit(m, TextInput::Compose(" wind")),
             #[cfg(feature = "enhanced")]
-            (82, ActionKind::Activate) => return edit(m, TextInput::Commit("告警")),
+            (82, ActionKind::Activate) => return edit(m, TextInput::Commit(" wind")),
             #[cfg(feature = "enhanced")]
             (83, ActionKind::Activate) => return edit(m, TextInput::Cancel),
             #[cfg(feature = "enhanced")]
             (84, ActionKind::Activate) => return edit(m, TextInput::Backspace),
+            #[cfg(feature = "enhanced")]
+            (863, ActionKind::Toggle) => m.room_tone_logged = !m.room_tone_logged,
+            #[cfg(feature = "enhanced")]
+            (85, ActionKind::Activate) => {
+                m.text_gamma = if m.text_gamma == TextGamma::Perceptual {
+                    TextGamma::Linear
+                } else {
+                    TextGamma::Perceptual
+                };
+                let _ = m.field.set_gamma(m.text_gamma);
+            }
             _ => return Change::Unchanged,
         }
         Change::View

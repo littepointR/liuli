@@ -3,18 +3,18 @@ use core::num::NonZeroU16;
 use liuli_widgets::{ButtonVariant, SurfaceSpec, ThemedUi, virtual_list};
 
 pub(super) const LIST: Key = Key(12);
-const ICONS: &[(IconKind, &str)] = &[
-    (IconKind::ChevronRight, "Next"),
-    (IconKind::Check, "Check"),
-    (IconKind::Warning, "Warning"),
-    (IconKind::Sliders, "Sliders"),
-    (IconKind::Bell, "Bell"),
-    (IconKind::Moon, "Moon"),
-    (IconKind::Thermometer, "Temp"),
-    (IconKind::Reset, "Reset"),
-    (IconKind::Gauge, "Gauge"),
-    (IconKind::Waveform, "Waveform"),
-    (IconKind::Diagnostics, "Diag"),
+pub(super) const ICONS: &[(IconKind, &str)] = &[
+    (IconKind::ChevronRight, "Start"),
+    (IconKind::Check, "Keep"),
+    (IconKind::Warning, "Noise"),
+    (IconKind::Sliders, "Mix"),
+    (IconKind::Bell, "Chime"),
+    (IconKind::Moon, "Night"),
+    (IconKind::Thermometer, "Warm"),
+    (IconKind::Reset, "Retake"),
+    (IconKind::Gauge, "Peak"),
+    (IconKind::Waveform, "Room"),
+    (IconKind::Diagnostics, "Click"),
 ];
 fn wide(height: Length) -> NodeProps {
     NodeProps {
@@ -26,7 +26,14 @@ fn wide(height: Length) -> NodeProps {
 pub(super) fn view(m: &Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildError> {
     let t = m.theme();
     let full = wide(Length::Fill(1));
-    let viewport = m.height.saturating_sub(68);
+    let padding = EdgeInsets::all(10);
+    let gap = t.spacing;
+    let tabs_height = if !m.landscape && m.page.is_tab() {
+        t.control_height + 8
+    } else {
+        0
+    };
+    let viewport = m.height.saturating_sub(68 + tabs_height);
     out.root(
         Key(1),
         NodeProps {
@@ -38,7 +45,7 @@ pub(super) fn view(m: &Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildErro
             ui.column(
                 Key(2),
                 NodeProps {
-                    padding: EdgeInsets::all(10),
+                    padding,
                     gap: 8,
                     align_cross: Align::Stretch,
                     ..full
@@ -52,17 +59,36 @@ pub(super) fn view(m: &Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildErro
                             ..wide(Length::Px(40))
                         },
                         |bar| {
-                            let title = PAGES
-                                .iter()
-                                .find(|p| p.0 == m.page)
-                                .map_or("Widget Demo", |p| p.1);
+                            let title = PAGES.iter().find(|p| p.0 == m.page).map_or(
+                                if m.landscape {
+                                    "Spool    /    Field recorder"
+                                } else {
+                                    "Spool"
+                                },
+                                |p| p.1,
+                            );
                             bar.title(Key(8), TextRef::Static(title))?;
+                            if m.landscape && m.page.is_tab() {
+                                bar.column(
+                                    Key(95),
+                                    NodeProps {
+                                        width: Length::Px(280),
+                                        height: Length::Content,
+                                        ..NodeProps::new()
+                                    },
+                                    |nav| navigation(nav, m),
+                                )?;
+                            }
                             let home = m.page == Page::Home;
                             bar.button_props(
                                 if home { Key(5) } else { Key(3) },
                                 ButtonVariant::Secondary,
                                 NodeProps {
-                                    text: TextRef::Static(if home { "Theme" } else { "Back" }),
+                                    text: TextRef::Static(if home {
+                                        if m.dark { "Day" } else { "Night" }
+                                    } else {
+                                        "Back"
+                                    }),
                                     icon: if home { IconKind::Moon } else { IconKind::None },
                                     height: Length::Px(34),
                                     width: Length::Px(if home { 86 } else { 64 }),
@@ -72,42 +98,33 @@ pub(super) fn view(m: &Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildErro
                             )
                         },
                     )?;
+                    if !m.landscape && m.page.is_tab() {
+                        navigation(ui, m)?;
+                    }
                     if m.page == Page::List {
-                        return virtual_list(
-                            ui.raw(),
-                            [LIST, Key(13), Key(14)],
-                            1000,
-                            NonZeroU16::new(38).unwrap(),
-                            m.offset,
-                            viewport,
-                            |rows, id| {
-                                let key = Key(1000 + id);
-                                let selected = m.selected == Some(key);
-                                let text = rows.text_fmt(format_args!("Record {:04}", id + 1))?;
-                                let base = if selected {
-                                    t.secondary_button()
-                                } else {
-                                    t.control()
-                                };
-                                rows.button(
-                                    key,
+                        return if m.landscape {
+                            ui.row(Key(470), studio::group(), |columns| {
+                                columns.column(
+                                    Key(471),
                                     NodeProps {
-                                        text,
-                                        icon: if selected {
-                                            IconKind::Check
-                                        } else {
-                                            IconKind::None
-                                        },
-                                        border_color: Some(if selected {
-                                            t.accent
-                                        } else {
-                                            t.border
-                                        }),
-                                        ..base
+                                        width: Length::Fill(3),
+                                        gap: 8,
+                                        ..studio::group()
                                     },
+                                    |left| tape_rows(left, m, viewport),
+                                )?;
+                                columns.column(
+                                    Key(472),
+                                    NodeProps {
+                                        width: Length::Fill(2),
+                                        ..t.card()
+                                    },
+                                    |right| studio::loaded(right, m),
                                 )
-                            },
-                        );
+                            })
+                        } else {
+                            tape_rows(ui, m, viewport)
+                        };
                     }
                     ui.scroll_y(
                         Key(9),
@@ -119,68 +136,156 @@ pub(super) fn view(m: &Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildErro
                             scroll.column(
                                 Key(10),
                                 NodeProps {
-                                    gap: t.spacing,
+                                    gap,
                                     align_cross: Align::Stretch,
                                     ..wide(Length::Content)
                                 },
-                                |body| contents(body, m),
+                                |body| {
+                                    if m.landscape
+                                        && !matches!(
+                                            m.page,
+                                            Page::Home | Page::Inputs | Page::Depth
+                                        )
+                                    {
+                                        body.row(Key(470), studio::group(), |columns| {
+                                            columns.column(
+                                                Key(471),
+                                                NodeProps {
+                                                    width: Length::Fill(3),
+                                                    ..t.card()
+                                                },
+                                                |left| contents(left, m),
+                                            )?;
+                                            columns.column(
+                                                Key(472),
+                                                NodeProps {
+                                                    width: Length::Fill(2),
+                                                    ..t.card()
+                                                },
+                                                |right| studio::loaded(right, m),
+                                            )
+                                        })
+                                    } else {
+                                        contents(body, m)
+                                    }
+                                },
                             )
                         },
                     )
                 },
             )?;
-            if m.confirm {
+            if m.confirm.is_some() {
                 ui.centered_confirm_dialog(
                     [Key(61), Key(62), Key(63), Key(64)],
-                    [TextRef::Static("Confirm"), TextRef::Static("Cancel")],
+                    [TextRef::Static("Save take"), TextRef::Static("Discard")],
                 )?;
             }
             Ok(())
         },
     )
 }
+fn navigation(ui: &mut ThemedUi<'_, '_, '_>, m: &Model) -> Result<(), BuildError> {
+    ui.tabs(
+        Key(96),
+        &[
+            (Page::Home.route_key(), TextRef::Static("Deck")),
+            (Page::List.route_key(), TextRef::Static("Tapes")),
+            (Page::Inputs.route_key(), TextRef::Static("Mixer")),
+        ],
+        m.page.route_key(),
+    )
+}
+fn tape_rows(ui: &mut ThemedUi<'_, '_, '_>, m: &Model, viewport: u16) -> Result<(), BuildError> {
+    let t = ui.theme();
+    ui.row(Key(97), studio::row_props(t), |r| {
+        studio::link(r, Page::Icons, "Cue stamps", ButtonVariant::Secondary)?;
+        #[cfg(feature = "enhanced")]
+        studio::link(r, Page::Text, "Notebook", ButtonVariant::Secondary)?;
+        Ok(())
+    })?;
+    virtual_list(
+        ui.raw(),
+        [LIST, Key(13), Key(14)],
+        m.deck.count(),
+        NonZeroU16::new(t.control_height).unwrap(),
+        m.offset,
+        viewport.saturating_sub(t.control_height + 8),
+        |rows, id| {
+            let take = m.deck.row(id);
+            let key = take.key;
+            let selected = m.selected == Some(key);
+            let text = rows.text_fmt(format_args!("{:02}   {}", take.number, take))?;
+            let base = if selected {
+                t.secondary_button()
+            } else {
+                t.control()
+            };
+            rows.row(
+                key,
+                NodeProps {
+                    clickable: true,
+                    focusable: true,
+                    checked: selected,
+                    padding: EdgeInsets::symmetric(8, 0),
+                    align_cross: Align::Center,
+                    bg: Some(if selected {
+                        t.surface_alt
+                    } else if id % 2 == 0 {
+                        t.surface
+                    } else {
+                        t.background
+                    }),
+                    border_width: 0,
+                    border_color: None,
+                    ..base
+                },
+                |line| {
+                    line.label(
+                        Key(3000 + 2 * key.0),
+                        NodeProps {
+                            text,
+                            fg: if selected { t.accent } else { t.text },
+                            ellipsis: true,
+                            ..t.caption()
+                        },
+                    )?;
+                    let duration = line.text_fmt(format_args!(
+                        "{}:{:02}",
+                        take.seconds / 60,
+                        take.seconds % 60
+                    ))?;
+                    line.label(
+                        Key(3001 + 2 * key.0),
+                        NodeProps {
+                            text: duration,
+                            text_align: TextAlign::End,
+                            width: Length::Px(43),
+                            ..t.caption()
+                        },
+                    )
+                },
+            )
+        },
+    )
+}
 fn contents(ui: &mut ThemedUi<'_, '_, '_>, m: &Model) -> Result<(), BuildError> {
     let t = ui.theme();
     match m.page {
-        Page::Home => {
-            for (i, &(_, name, icon)) in PAGES.iter().enumerate() {
-                ui.button(Key(100 + i as u32), name, icon, ButtonVariant::Surface)?;
-            }
-        }
+        Page::Home => return studio::deck(ui, m),
         Page::Depth => return depth::page(ui, m),
-        Page::Inputs => {
-            let tally = ui.text_fmt(format_args!("Button   /   {} presses", m.count))?;
-            ui.caption(Key(20), tally)?;
-            ui.button_enabled(
-                Key(30),
-                "Press",
-                IconKind::None,
-                ButtonVariant::Primary,
-                m.enabled,
-            )?;
-            ui.caption(Key(21), TextRef::Static("Toggle"))?;
-            ui.toggle_row(
-                Key(33),
-                Key(34),
-                Key(31),
-                TextRef::Static("Enable button"),
-                m.enabled,
-            )?;
-            let level = ui.text_fmt(format_args!("Slider   /   {}%", m.value))?;
-            ui.caption(Key(22), level)?;
-            ui.slider(Key(32), m.value)?;
-        }
+        Page::Motion => return m.motion.page(ui),
+        Page::Inputs => return studio::mixer(ui, m),
         Page::Data => {
-            let level = ui.text_fmt(format_args!("Progress   /   {}%", m.value))?;
+            let level = ui.text_fmt(format_args!("Input level   /   {}%", m.level))?;
             ui.caption(Key(20), level)?;
-            ui.progress_bar(Key(41), m.value)?;
-            ui.caption(Key(21), TextRef::Static("Sparkline"))?;
+            ui.progress_bar(Key(41), m.level)?;
+            ui.caption(Key(21), TextRef::Static("Signal history"))?;
             ui.sparkline_ring(Key(42), &m.samples)?;
-            ui.caption(Key(22), TextRef::Static("Custom meter"))?;
+            ui.caption(Key(22), TextRef::Static("Peak level"))?;
             ui.custom(
                 Key(43),
                 NodeProps {
-                    value: m.value,
+                    value: m.level,
                     bg: Some(t.surface_alt),
                     accent: t.accent,
                     fg: t.text,
@@ -189,58 +294,41 @@ fn contents(ui: &mut ThemedUi<'_, '_, '_>, m: &Model) -> Result<(), BuildError> 
             )?;
             ui.button(
                 Key(44),
-                "Add sample",
+                "Send test tone",
                 IconKind::Waveform,
                 ButtonVariant::Primary,
             )?;
         }
         Page::Choices => {
-            ui.caption(Key(20), TextRef::Static("Tabs"))?;
             ui.tabs(
                 Key(49),
                 &[
-                    (Key(50), TextRef::Static("Mode")),
-                    (Key(51), TextRef::Static("Value")),
+                    (Key(50), TextRef::Static("Source")),
+                    (Key(51), TextRef::Static("Trim")),
                 ],
                 m.tab,
             )?;
             if m.tab == Key(50) {
-                ui.caption(Key(21), TextRef::Static("Selector"))?;
+                ui.caption(Key(21), TextRef::Static("Select an input"))?;
                 ui.selector(
                     Key(52),
                     &[
-                        (Key(53), TextRef::Static("Quiet")),
-                        (Key(54), TextRef::Static("Auto")),
-                        (Key(55), TextRef::Static("Loud")),
+                        (Key(53), TextRef::Static("Mic")),
+                        (Key(54), TextRef::Static("Line")),
+                        (Key(55), TextRef::Static("Aux")),
                     ],
                     m.choice,
                 )?;
             } else {
-                let text = ui.text_fmt(format_args!("Numeric editor   /   {}", m.value))?;
+                let text = ui.text_fmt(format_args!("Input gain   /   {}%", m.value))?;
                 ui.caption(Key(21), text)?;
                 ui.number_editor(Key(57), 0..=100, m.value, 5)?;
             }
         }
-        Page::Feedback => {
-            ui.button(
-                Key(60),
-                "Open dialog",
-                IconKind::Warning,
-                ButtonVariant::Primary,
-            )?;
-            ui.button(
-                Key(65),
-                "Show toast",
-                IconKind::Bell,
-                ButtonVariant::Secondary,
-            )?;
-            if m.toast_until.is_some() {
-                ui.toast(Key(66), TextRef::Static("Saved"))?;
-            }
-        }
+        Page::Feedback => return studio::capture(ui, m),
         Page::List => {}
         Page::Icons => {
-            let selected = ui.text_fmt(format_args!("Selected   /   {}", ICONS[m.icon].1))?;
+            let selected = ui.text_fmt(format_args!("Current stamp   /   {}", ICONS[m.icon].1))?;
             ui.caption(Key(20), selected)?;
             for (row, pair) in ICONS.chunks(2).enumerate() {
                 ui.row(
@@ -322,24 +410,66 @@ fn contents(ui: &mut ThemedUi<'_, '_, '_>, m: &Model) -> Result<(), BuildError> 
                     )
                 },
             )?;
+            ui.row(Key(76), studio::row_props(t), |r| {
+                r.button(Key(81), "Draft tag", IconKind::None, ButtonVariant::Surface)?;
+                r.button(Key(82), "Add tag", IconKind::None, ButtonVariant::Secondary)
+            })?;
+            ui.row(Key(77), studio::row_props(t), |r| {
+                r.button(
+                    Key(83),
+                    "Clear draft",
+                    IconKind::None,
+                    ButtonVariant::Surface,
+                )?;
+                r.button(Key(84), "Backspace", IconKind::None, ButtonVariant::Surface)
+            })?;
+            let gamma_label = if m.text_gamma == TextGamma::Perceptual {
+                "Ink / Soft"
+            } else {
+                "Ink / Crisp"
+            };
             ui.button(
-                Key(81),
-                "Compose",
+                Key(85),
+                gamma_label,
                 IconKind::Sliders,
-                ButtonVariant::Surface,
-            )?;
-            ui.button(Key(82), "Commit", IconKind::Check, ButtonVariant::Primary)?;
-            ui.button(
-                Key(83),
-                "Cancel preedit",
-                IconKind::Reset,
                 ButtonVariant::Outline,
             )?;
-            ui.button(
-                Key(84),
-                "Backspace",
-                IconKind::ChevronRight,
-                ButtonVariant::Secondary,
+            ui.surface_column(
+                Key(86),
+                SurfaceSpec::CARD,
+                NodeProps {
+                    padding: EdgeInsets::all(8),
+                    gap: 4,
+                    ..t.card()
+                },
+                |card| {
+                    card.toggle_row(
+                        Key(861),
+                        Key(862),
+                        Key(863),
+                        TextRef::Static("Tone logged"),
+                        m.room_tone_logged,
+                    )?;
+                    card.label(
+                        Key(87),
+                        NodeProps {
+                            text: TextRef::Static("Capture thirty seconds before the next take."),
+                            line_spacing: 2,
+                            max_lines: 3,
+                            ..t.paragraph()
+                        },
+                    )?;
+                    card.label(
+                        Key(89),
+                        NodeProps {
+                            text: TextRef::Static("Log the room tone"),
+                            underline: !m.room_tone_logged,
+                            strikethrough: m.room_tone_logged,
+                            height: Length::Content,
+                            ..t.caption()
+                        },
+                    )
+                },
             )?;
         }
     }
@@ -347,40 +477,28 @@ fn contents(ui: &mut ThemedUi<'_, '_, '_>, m: &Model) -> Result<(), BuildError> 
 }
 
 pub(super) fn paint_image(m: &Model, c: &mut WidgetCanvas<'_>) -> Result<(), BuildError> {
-    // A compass needle shows both the rotation angle and four-bit opacity.
-    const N: u16 = 0x18e5;
-    const A: u16 = 0x149d;
-    const B: u16 = 0xdf5e;
-    static NEEDLE: liuli::core::bitmap::Bitmap = liuli::core::bitmap::Bitmap::new(
-        5,
-        5,
-        &[
-            N, N, A, N, N, N, A, A, A, N, N, N, B, N, N, N, N, B, N, N, N, N, B, N, N,
-        ],
-    )
-    .unwrap();
     let size = c.size();
-    let side = size.width.min(size.height) * m.scale as u32 / 100;
+    let width = size.width.min(size.height * 240 / 136) * m.scale as u32 / 100;
+    let height = width * 136 / 240;
     c.bitmap(
         Rect::new(
-            ((size.width - side) / 2) as i32,
-            ((size.height - side) / 2) as i32,
-            side,
-            side,
+            ((size.width - width) / 2) as i32,
+            ((size.height - height) / 2) as i32,
+            width,
+            height,
         ),
-        &NEEDLE,
+        &studio::CASSETTE,
         m.angle,
         m.alpha as u8,
     )
 }
 
 #[cfg(feature = "enhanced")]
-pub(super) fn text_field() -> liuli::enhanced::field::TextField<'static> {
+pub(super) fn text_field(t: Theme) -> liuli::enhanced::field::TextField<'static> {
     use liuli::enhanced::{
         ShapingFont,
         field::{FieldStyle, TextField},
     };
-    let t = Theme::default();
     let faces = [
         &include_bytes!("../assets/example.ttf")[..],
         &include_bytes!("../assets/Arabic.ttf")[..],
@@ -390,7 +508,7 @@ pub(super) fn text_field() -> liuli::enhanced::field::TextField<'static> {
     .map(|bytes| ShapingFont::from_bytes(bytes, 0).expect("bundled demo typeface"))
     .collect();
     TextField::new(
-        "告警 A سلام कि".into(),
+        "Pier A / سلام कि".into(),
         faces,
         FieldStyle {
             width: 200,

@@ -1,0 +1,8 @@
+budget = 16384
+[[font]]
+source = "example.ttf"
+charset = "headings.txt"
+output = "heading.lf4"
+px = 23
+fallback = "?"
+stem_darken = 0.5

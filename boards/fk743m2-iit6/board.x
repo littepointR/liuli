@@ -12,6 +12,8 @@ SECTIONS {
   .data : ALIGN(4) { _sdata = .; *(.data .data.*) . = ALIGN(4); _edata = .; } > AXI AT > FLASH
   _sidata = LOADADDR(.data);
   .bss (NOLOAD) : ALIGN(8) { _sbss = .; *(.bss .bss.* COMMON) . = ALIGN(8); _ebss = .; } > AXI
+  _ui_heap_start = ALIGN(_ebss, 8);
+  _ui_heap_end = ORIGIN(AXI) + LENGTH(AXI);
   _stack = ORIGIN(DTCM) + LENGTH(DTCM);
   /DISCARD/ : { *(.ARM.extab*) *(.comment) }
 }

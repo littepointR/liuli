@@ -223,6 +223,8 @@ def main():
     p.add_argument("--compare",type=Path,help="compare scanout with --panel-frames directory from a fresh boot")
     p.add_argument("--raw-scanout", action="store_true", help="read uncompressed framebuffer memory during --compare")
     p.add_argument("--probe-api", action="store_true", help="poll frame acknowledgements and double-read snapshot blocks with pylink-square")
+    p.add_argument("--depth-scroll", nargs=2, type=Path, metavar=("TRACE", "DEMO"),
+                   help="replay the enhanced H743 depth-scroll fixture and compare with the desktop executable")
     args=p.parse_args()
     if args.speed <= 0:
         p.error("--speed must be a positive SWD frequency in kHz")
@@ -249,6 +251,9 @@ def main():
             print(f"boot verified, front={v[3]:#x}, first/last update={v[4]} pixels, touch ID={v[6]:#x}")
         if args.compare:
             compare(c,args.compare,args.raw_scanout,uid if args.probe_api else None)
+        if args.depth_scroll:
+            from probe import depth_scroll
+            depth_scroll(c, uid, *args.depth_scroll)
 
 
 if __name__=="__main__":

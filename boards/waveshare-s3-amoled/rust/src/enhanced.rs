@@ -1,5 +1,5 @@
 use core::alloc::{GlobalAlloc, Layout};
-use liuli::text::storage::{Cached, ReadAt, StoredFont};
+use liuli::text::storage::{BlockCache, ReadAt, StoredFont};
 extern crate alloc;
 unsafe extern "C" {
     fn board_alloc(size: usize, alignment: usize) -> *mut u8;
@@ -36,9 +36,11 @@ use liuli::prelude::{FontId, Rect};
 use liuli::text::GlyphBitmap;
 use liuli::text::storage::{GlyphPixels, IoMetrics, ReadError};
 pub struct Reader<'a> {
-    font: StoredFont<Cached<'a, Partition>>,
+    font: StoredFont<BlockCache<'a, Partition, 8>>,
     scratch: [u8; 512],
+    #[cfg(any(feature = "benchmark", feature = "effects-benchmark"))]
     band: u32,
+    #[cfg(any(feature = "benchmark", feature = "effects-benchmark"))]
     seen: alloc::vec::Vec<(u32, u32)>,
     cross_band: u32,
     requests: u32,
@@ -47,16 +49,19 @@ pub struct Reader<'a> {
 impl<'a> Reader<'a> {
     pub fn new(len: usize, cache: &'a mut [u8]) -> Result<Self, ReadError<i32>> {
         let cache_size = cache.len();
-        let font = StoredFont::open(Cached::new(Partition(len), cache))?;
+        let font = StoredFont::open(BlockCache::new(Partition(len), cache))?;
         let m = font.source().metrics();
         unsafe {
             board_font_metrics(m.reads, m.bytes, m.cache_hits, cache_size);
         }
+        #[cfg(any(feature = "benchmark", feature = "effects-benchmark"))]
         let seen = alloc::vec::Vec::with_capacity(font.glyph_count().into());
         Ok(Self {
             font,
             scratch: [0; 512],
+            #[cfg(any(feature = "benchmark", feature = "effects-benchmark"))]
             band: 0,
+            #[cfg(any(feature = "benchmark", feature = "effects-benchmark"))]
             seen,
             cross_band: 0,
             requests: 0,
@@ -69,8 +74,11 @@ impl super::FrameGlyphs for Reader<'_> {
         self.baseline = self.font.source().metrics();
         self.cross_band = 0;
         self.requests = 0;
-        self.seen.clear();
-        self.band = 0;
+        #[cfg(any(feature = "benchmark", feature = "effects-benchmark"))]
+        {
+            self.seen.clear();
+            self.band = 0;
+        }
     }
     fn finish(&self) {
         let m = self.font.source().metrics();
@@ -90,18 +98,33 @@ unsafe extern "C" {
 impl GlyphPixels for Reader<'_> {
     type Error = ReadError<i32>;
     fn begin_band(&mut self, _: Rect) {
-        self.band += 1;
+        #[cfg(any(feature = "benchmark", feature = "effects-benchmark"))]
+        {
+            self.band += 1;
+        }
     }
-    fn pixels<'a>(&'a mut self, _: FontId, g: GlyphBitmap<'a>) -> Result<&'a [u8], Self::Error> {
-        let key = g.metrics.unicode;
+    fn pixels<'a>(
+        &'a mut self,
+        _slot: FontId,
+        g: GlyphBitmap<'a>,
+    ) -> Result<&'a [u8], Self::Error> {
+        // Heading glyph offsets belong to the demo's linked asset, body offsets to the partition.
+        #[cfg(all(feature = "widget-demo", not(feature = "benchmark")))]
+        if _slot == FontId::Title20 {
+            return Ok(g.data);
+        }
         self.requests += 1;
-        if let Some((_, last)) = self.seen.iter_mut().find(|(ch, _)| *ch == key) {
-            if *last != self.band {
-                self.cross_band += 1;
-                *last = self.band;
+        #[cfg(any(feature = "benchmark", feature = "effects-benchmark"))]
+        {
+            let key = g.metrics.unicode;
+            if let Some((_, last)) = self.seen.iter_mut().find(|(ch, _)| *ch == key) {
+                if *last != self.band {
+                    self.cross_band += 1;
+                    *last = self.band;
+                }
+            } else {
+                self.seen.push((key, self.band));
             }
-        } else {
-            self.seen.push((key, self.band));
         }
         Ok(self.font.read_bitmap(g.metrics, &mut self.scratch)?.data)
     }

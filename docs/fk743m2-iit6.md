@@ -37,8 +37,8 @@ python boards/fk743m2-iit6/jlink.py --ram-writer --speed 12000 --flash target/fk
 | 面板 | HSYNC / HBP / HFP 为 1 / 80 / 200，VSYNC / VBP / VFP 为 1 / 40 / 22，背光 PH6 |
 | RGB565 扫描缓冲区 | SDRAM `0xC0000000` 和 `0xC00C0000`，每块 768,000 字节 |
 | UI | 内部 AXI SRAM 存放 Engine 和 800 × 32 像素条带，调用栈位于 DTCM |
-| 基础档 | 八页 Widget Demo，零堆，使用外部 SDRAM 作为显示内存 |
-| 增强档 | 九页，增加复杂文字、透明图层、毛玻璃和透视翻转。分配器使用 SDRAM 的后 30 MiB，每份命令列表的图层预算为 1 MiB |
+| 基础档 | 九页 Widget Demo，零堆，使用外部 SDRAM 作为显示内存 |
+| 增强档 | 十页，增加复杂文字、透明图层、毛玻璃和透视翻转。UI 优先从静态对象之后的空闲 AXI SRAM 分配，空间不足时使用 SDRAM 的后 30 MiB。每份命令列表的图层预算为 1 MiB |
 | Goodix 触摸 | PI11 SCL、PI8 SDA、PG3 INT、PH4 RESET。探测 0x5D、0x14，读取产品 ID 和分辨率，按触点 ID 生成事件 |
 
 LTDC 在垂直消隐时换到新帧，SDRAM 的 MPU 属性为普通、Write-Back 可缓存，驱动在 LTDC/DMA2D 与 CPU 交接处显式执行 D-Cache clean/invalidate 与数据同步屏障。换帧完成后，由硬件 Chrom-ART `DMA2D` 异步 2D 跨步搬移将已更新像素区域回填到备用缓冲区，与下一帧 CPU 绘制并行。扫描缓冲区由外设持续读取，UI 静止时无需提交新帧。触摸驱动区分暂无新报告、释放和 I²C 错误。未检测到控制器时保持显示并重试。
@@ -55,9 +55,9 @@ tools/bin/liuli-widget-demo --size 800x480 --panel-frames target/fk743-frames
 python boards/fk743m2-iit6/jlink.py --compare target/fk743-frames
 ~~~
 
-增强档共 19 个检查点，依次进入全部九页并返回。比较工具通过 SWD 写入原始按下、松开及逻辑坐标，等待固件确认提交，核对页面，再对当前 LTDC 扫描缓冲区的 768,000 字节做逐字节比对。固件在收到快照命令时将当前扫描像素按游程无损编码到预留 SDRAM，主机还原完整帧并逐字节比较。`--probe-api` 使用 SEGGER 动态库轮询每次提交的确认序号，分块重复读回一份稳定的快照，适合诊断间歇性 SWD 传输错误。`--raw-scanout` 可直接导出未压缩像素。物理触摸坐标和面板实际出画可另行观察。SDK 默认桌面程序启用了增强特性，基础档的参考帧须用仅启用 `desktop` 的 Widget Demo 生成。
+Spool 增强档共 31 个检查点，覆盖三个主区、上下级页面切换，以及返回录音台。比较工具通过 SWD 写入原始按下、松开及逻辑坐标，等待固件确认提交，核对页面，再对当前 LTDC 扫描缓冲区的 768,000 字节做逐字节比对。固件在收到快照命令时将当前扫描像素按游程无损编码到预留 SDRAM，主机还原完整帧并逐字节比较。`--probe-api` 使用 SEGGER 动态库轮询每次提交的确认序号，分块重复读回一份稳定的快照，适合诊断间歇性 SWD 传输错误。`--raw-scanout` 可直接导出未压缩像素。物理触摸坐标和面板实际出画可另行观察。SDK 默认桌面程序启用了增强特性，基础档的参考帧须用仅启用 `desktop` 的 Widget Demo 生成。
 
-在解压后的 SDK 中，下面两条命令分别生成基础档参考帧、运行完整基础档实板回归。把 `embassy-basic.bin` 换成 `st-hal-basic.bin` 可复用同一组参考帧校验另一个后端。增强档使用上面的九页参考帧目录和对应的 `*-enhanced.bin`。
+在解压后的 SDK 中，下面两条命令分别生成基础档参考帧、运行完整基础档实板回归。把 `embassy-basic.bin` 换成 `st-hal-basic.bin` 可复用同一组参考帧校验另一个后端。增强档使用上面的十页参考帧目录和对应的 `*-enhanced.bin`。
 
 ~~~sh
 cargo run --locked --offline --release --manifest-path liuli-widget-demo/Cargo.toml --no-default-features --features desktop -- --size 800x480 --panel-frames target/fk743-frames-basic
@@ -67,3 +67,15 @@ python boards/fk743m2-iit6/jlink.py --speed 12000 --ram-writer --probe-api --fla
 片内 SRAM `0x24000000` 起有 16 个小端 32 位诊断字。字 0 为签名 `0x4C554C49`，字 1 为启动阶段（4 表示首帧就绪），字 2 至 5 为帧数、扫描地址、最近一次提交像素数和呈现耗时（微秒），字 6 至 9 为触控产品 ID、I²C 报错数、当前页面和 LTDC 状态。字 10 至 13 为输入序列、动作、打包坐标和已提交序列。动作 6 导出当前帧；字 14 为 `0xC0180000` 处快照的字节数，超出 512 KiB 返回 `0xFFFFFFFF`。字 15 记录故障状态。异常时阶段为 `0xBAD00000 | 错误码`。这些字段与桌面参考帧共同定位启动、渲染和传输问题。
 
 四种固件的首帧提交耗时、Flash CRC32 和逐页实板结果见配套记录。[实板验收报告](hardware/fk743-widget-demo.md)
+
+### 磁带套图形区滚动回归
+
+同一条 800 × 480 轨迹会按住屏幕，把顶部卡片完全滑出，再沿原路滑回。桌面回放逐帧比较增量与整屏绘制。实板工具按每次提交的确认序号注入轨迹坐标，在四个位置读回完整扫描缓冲区，与桌面输出逐字节比较。触摸由工具产生，板上的时钟用于帧耗时测量。
+
+~~~sh
+cargo build --offline --locked --release -p liuli-widget-demo --features desktop,enhanced
+target/release/liuli-widget-demo --size 800x480 --replay apps/liuli-widget-demo/tests/fixtures/h743-depth-scroll.trace
+python boards/fk743m2-iit6/jlink.py --speed 12000 --depth-scroll apps/liuli-widget-demo/tests/fixtures/h743-depth-scroll.trace target/release/liuli-widget-demo
+~~~
+
+Windows 把桌面程序路径写为 `target/release/liuli-widget-demo.exe`。在含本次修复的离线 SDK 中，使用 `liuli-widget-demo/tests/fixtures/h743-depth-scroll.trace` 和 `tools/bin/` 下的桌面程序，板上运行同一构建的增强版 Widget Demo。工具在卡片接近顶部与完全隐藏时分别取中位数，两组相差超过 18 ms（约一个面板刷新周期）、检测到 LTDC 欠载或传输错误、扫描像素不匹配时均会报错。

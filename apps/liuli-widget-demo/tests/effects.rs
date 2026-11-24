@@ -66,7 +66,55 @@ impl App for MovingCard {
     }
 }
 fn fonts() -> FontSet<'static> {
-    FontSet::single(Lf4Font::from_bytes(liuli_widget_demo::FONT).unwrap())
+    liuli_widget_demo::studio_fonts(Lf4Font::from_bytes(liuli_widget_demo::FONT).unwrap()).unwrap()
+}
+
+#[cfg(feature = "enhanced")]
+#[test]
+fn h743_scrolls_glass_card_out_and_back_without_changing_its_pixels() {
+    use liuli_sim::preview::replay_trace;
+    use liuli_widget_demo::{Catalog, Model, Page};
+    let mut storage = Storage::new();
+    let mut app = AppSession::<Catalog>::new(
+        &mut storage,
+        Model::for_size(Size::new(800, 480)),
+        fonts(),
+        Size::new(800, 480),
+        InstantMs(0),
+        true,
+    )
+    .unwrap();
+    app.engine_mut().set_layer_budget(1024 * 1024).unwrap();
+    let mut by_position = std::collections::BTreeMap::new();
+    let mut heights = Vec::new();
+    for event in include_str!("fixtures/h743-depth-scroll.trace")
+        .lines()
+        .skip(1)
+    {
+        replay_trace(&mut app, &format!("liuli-trace 1\n{event}")).unwrap();
+        if event.contains("kind=move") {
+            assert_eq!(app.engine().model().page, Page::Depth);
+            let card = app.engine().active_tree().node_by_key(Key(303)).unwrap();
+            heights.push(card.visible_rect.h);
+            let position = card.layout_rect.y;
+            if let Some(expected) = by_position.get(&position) {
+                assert!(
+                    expected == app.screen().words(),
+                    "different scanout at card y={position}"
+                );
+            } else {
+                by_position.insert(position, app.screen().words().to_vec());
+            }
+        }
+    }
+    assert!(heights.contains(&0) && heights.iter().any(|&h| h > 0 && h < 108));
+    assert_eq!(heights.last(), Some(&108));
+    assert!(heights[..15].is_sorted_by(|a, b| a >= b) && heights[15..].is_sorted());
+    assert_eq!(
+        by_position.len(),
+        16,
+        "each drag step must actually move the content"
+    );
 }
 
 #[test]

@@ -194,6 +194,9 @@ int fk_panel_init(uint32_t front) {
     __HAL_RCC_LTDC_FORCE_RESET();
     __HAL_RCC_LTDC_CLK_ENABLE();
     __HAL_RCC_LTDC_RELEASE_RESET();
+    // RM0433: INI6 is LTDC. Give scanout reads priority over default-priority
+    // CPU and DMA2D transactions competing for the same SDRAM target.
+    WRITE_REG(GPV->AXI_INI6_READ_QOS, 1U);
     display.Instance = LTDC;
     display.Init = (LTDC_InitTypeDef){
         .HSPolarity = LTDC_HSPOLARITY_AL, .VSPolarity = LTDC_VSPOLARITY_AL,

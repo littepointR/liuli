@@ -30,6 +30,10 @@ fn tap(app: &mut Session<'_>, clock: &mut u64, key: u32) -> Result<(), String> {
     input(app, clock, RawInput::PointerDown { id, pos })?;
     input(app, clock, RawInput::PointerUp { id, pos })
 }
+fn label<'a>(app: &'a Session<'_>, key: u32) -> &'a str {
+    let tree = app.engine().active_tree();
+    tree.text_str(tree.node_by_key(Key(key)).unwrap().props.text())
+}
 fn shot(app: &Session<'_>, dir: Option<&Path>, name: &str) -> Result<(), String> {
     if let Some(dir) = dir {
         std::fs::write(dir.join(format!("{name}.png")), app.screen().to_png())
@@ -80,9 +84,13 @@ fn exercise_from(app: &mut Session<'_>, dir: Option<&Path>, start_ms: u64) -> Re
     let before_theme = app.screen().words().to_vec();
     tap(app, &mut clock, 5)?;
     assert_ne!(before_theme, app.screen().words());
+    shot(app, dir, "00-home-alternate")?;
     tap(app, &mut clock, 5)?;
     for (i, &(page, name, _)) in PAGES.iter().enumerate() {
-        tap(app, &mut clock, 100 + i as u32)?;
+        if page.parent() != Page::Home {
+            tap(app, &mut clock, page.parent().route_key().0)?;
+        }
+        tap(app, &mut clock, page.route_key().0)?;
         assert_eq!(app.engine().model().page, page);
         shot(app, dir, &format!("{:02}-{page:?}", i + 1))?;
         match page {
@@ -100,9 +108,9 @@ fn exercise_from(app: &mut Session<'_>, dir: Option<&Path>, start_ms: u64) -> Re
                 tap(app, &mut clock, 32)?;
             }
             Page::Data => {
-                let before = app.engine().model().value;
+                let before = app.screen().words().to_vec();
                 tap(app, &mut clock, 44)?;
-                assert_ne!(app.engine().model().value, before);
+                assert_ne!(app.screen().words(), before);
             }
             Page::Choices => {
                 tap(app, &mut clock, 54)?;
@@ -120,7 +128,12 @@ fn exercise_from(app: &mut Session<'_>, dir: Option<&Path>, start_ms: u64) -> Re
             }
             Page::Feedback => {
                 tap(app, &mut clock, 60)?;
+                clock += 3100;
+                app.step(InstantMs(clock), None, true)?;
+                tap(app, &mut clock, 60)?;
                 shot(app, dir, "04-dialog")?;
+                clock += 4000;
+                app.step(InstantMs(clock), None, true)?;
                 input(app, &mut clock, RawInput::Back)?;
                 assert_eq!(app.engine().model().page, Page::Feedback);
                 tap(app, &mut clock, 60)?;
@@ -132,6 +145,28 @@ fn exercise_from(app: &mut Session<'_>, dir: Option<&Path>, start_ms: u64) -> Re
                 assert!(app.engine().active_tree().node_by_key(Key(66)).is_none());
             }
             Page::List => {
+                // The recording made in the preceding workflow is selectable and has its actual duration.
+                tap(app, &mut clock, 2000)?;
+                assert_eq!(label(app, 451), "Field take 01");
+                assert!(label(app, 452).contains("0:03"));
+                tap(app, &mut clock, 90)?;
+                clock += 600;
+                app.step(InstantMs(clock), None, true)?;
+                assert_eq!(
+                    app.engine()
+                        .active_tree()
+                        .node_by_key(Key(456))
+                        .unwrap()
+                        .props
+                        .max,
+                    875
+                );
+                clock += 500;
+                app.step(InstantMs(clock), None, true)?;
+                tap(app, &mut clock, 90)?;
+                assert!(label(app, 452).starts_with("0:01"));
+                assert!(label(app, 455).starts_with("Line input"));
+                tap(app, &mut clock, Page::List.route_key().0)?;
                 input(app, &mut clock, RawInput::Nav(NavDir::Next))?;
                 check_focus_outline(app);
                 let id = PointerId(1);
@@ -160,7 +195,31 @@ fn exercise_from(app: &mut Session<'_>, dir: Option<&Path>, start_ms: u64) -> Re
                     },
                 )?;
                 assert!(app.engine().model().offset > 0);
-                assert!(app.engine().active_tree().active_count < 26);
+                let tree = app.engine().active_tree();
+                let row_count = tree
+                    .nodes
+                    .iter()
+                    .filter(|n| n.occupied && (1000..=2007).contains(&n.key.0))
+                    .count();
+                let viewport = tree.node_by_key(Key(12)).unwrap().layout_rect.h;
+                assert!(row_count <= viewport.div_ceil(38) as usize + 3);
+                let offset = app.engine().model().offset;
+                let row = tree
+                    .nodes
+                    .iter()
+                    .find(|n| {
+                        n.occupied
+                            && (1000..2000).contains(&n.key.0)
+                            && n.layout_rect.intersect(n.clip_rect) == n.layout_rect
+                    })
+                    .unwrap()
+                    .key
+                    .0;
+                tap(app, &mut clock, row)?;
+                assert_eq!(app.engine().model().page, Page::Home);
+                tap(app, &mut clock, Page::List.route_key().0)?;
+                assert_eq!(app.engine().model().offset, offset);
+                assert_eq!(app.engine().focus().focused_key(), Some(Key(row)));
             }
             Page::Icons => {
                 for key in 200..211 {
@@ -187,14 +246,107 @@ fn exercise_from(app: &mut Session<'_>, dir: Option<&Path>, start_ms: u64) -> Re
                 for key in 81..=84 {
                     tap(app, &mut clock, key)?;
                 }
+                tap(app, &mut clock, 863)?;
+                assert!(
+                    app.engine()
+                        .active_tree()
+                        .node_by_key(Key(863))
+                        .unwrap()
+                        .props
+                        .checked()
+                );
+                let before_gamma = app.screen().words().to_vec();
+                tap(app, &mut clock, 85)?;
+                assert_ne!(before_gamma, app.screen().words());
+                tap(app, &mut clock, 85)?;
             }
             Page::Depth => exercise_depth(app, &mut clock, dir)?,
+            Page::Motion => exercise_motion(app, &mut clock, dir)?,
             Page::Home => unreachable!(),
         }
         tap(app, &mut clock, 3)?;
+        assert_eq!(app.engine().model().page, page.parent());
+        if page.parent() != Page::Home {
+            tap(app, &mut clock, Page::Home.route_key().0)?;
+        }
         assert_eq!(app.engine().model().page, Page::Home);
+        if page == Page::Motion {
+            assert_eq!(
+                Catalog::next_deadline(app.engine().model(), InstantMs(clock)),
+                None
+            );
+        }
         println!("{name}: passed");
     }
+    Ok(())
+}
+fn exercise_motion(
+    app: &mut Session<'_>,
+    clock: &mut u64,
+    dir: Option<&Path>,
+) -> Result<(), String> {
+    let positions = |app: &Session<'_>| {
+        [402, 404].map(|key| {
+            app.engine()
+                .active_tree()
+                .node_by_key(Key(key))
+                .unwrap()
+                .props
+                .value
+        })
+    };
+    assert_eq!(positions(app), [0, 0]);
+    tap(app, clock, 406)?;
+    *clock += 600;
+    app.step(InstantMs(*clock), None, true)?;
+    assert_eq!(positions(app), [500, 875]);
+    for (key, fraction) in [(402, 500), (404, 875)] {
+        let track = app.engine().active_tree().node_by_key(Key(key)).unwrap();
+        let r = track.layout_rect;
+        let x = r.x as u32 + 8 + (r.w - 16) * fraction / 1000;
+        let y = r.y as u32 + r.h / 2 - 4;
+        assert_eq!(
+            app.screen().pixel(x, y),
+            liuli::core::geometry::rgb565_to_u16(track.props.fg)
+        );
+    }
+    shot(app, dir, "animations-halfway")?;
+    tap(app, clock, 406)?;
+    let paused = app.screen().words().to_vec();
+    *clock += 1500;
+    app.step(InstantMs(*clock), None, true)?;
+    assert_eq!(paused, app.screen().words());
+    assert_eq!(
+        Catalog::next_deadline(app.engine().model(), InstantMs(*clock)),
+        None
+    );
+    tap(app, clock, 410)?;
+    tap(app, clock, 406)?;
+    let resumed = positions(app)[0];
+    *clock += 60;
+    app.step(InstantMs(*clock), None, true)?;
+    assert!((98..=101).contains(&(positions(app)[0] - resumed)));
+    tap(app, clock, 412)?;
+    let retimed = positions(app)[0];
+    *clock += 240;
+    app.step(InstantMs(*clock), None, true)?;
+    assert!((98..=101).contains(&(positions(app)[0] - retimed)));
+    *clock += 2400;
+    app.step(InstantMs(*clock), None, true)?;
+    assert_eq!(positions(app), [1000, 1000]);
+    assert_eq!(
+        Catalog::next_deadline(app.engine().model(), InstantMs(*clock)),
+        None
+    );
+    tap(app, clock, 406)?;
+    assert_eq!(positions(app), [0, 0]);
+    tap(app, clock, 407)?;
+    assert_eq!(positions(app), [0, 0]);
+    assert_eq!(
+        Catalog::next_deadline(app.engine().model(), InstantMs(*clock)),
+        None
+    );
+    tap(app, clock, 406)?; // The caller leaves while playback is active.
     Ok(())
 }
 fn exercise_depth(
@@ -296,6 +448,16 @@ fn exercise_depth(
     }
     Ok(())
 }
+fn save_scanout(app: &Session<'_>, path: &Path) -> Result<(), String> {
+    let bytes: Vec<u8> = app
+        .screen()
+        .words()
+        .iter()
+        .flat_map(|p| p.to_le_bytes())
+        .collect();
+    std::fs::write(path, bytes).map_err(|e| e.to_string())
+}
+
 /// The board harness injects these raw taps and reads the scanned SDRAM buffer after each release.
 fn panel_checkpoints(app: &mut Session<'_>, dir: &Path) -> Result<(), String> {
     let mut clock = 0;
@@ -304,13 +466,7 @@ fn panel_checkpoints(app: &mut Session<'_>, dir: &Path) -> Result<(), String> {
     let mut save = |app: &Session<'_>, seq: usize, point: Point| -> Result<(), String> {
         use std::fmt::Write;
         let name = format!("frame-{seq:02}.rgb565");
-        let bytes: Vec<u8> = app
-            .screen()
-            .words()
-            .iter()
-            .flat_map(|p| p.to_le_bytes())
-            .collect();
-        std::fs::write(dir.join(&name), bytes).map_err(|e| e.to_string())?;
+        save_scanout(app, &dir.join(&name))?;
         writeln!(
             trace,
             "{} {} {} {}",
@@ -323,15 +479,25 @@ fn panel_checkpoints(app: &mut Session<'_>, dir: &Path) -> Result<(), String> {
         Ok(())
     };
     save(app, 0, Point::new(-1, -1))?;
-    for (i, &(page, _, _)) in PAGES.iter().enumerate() {
-        for (j, key) in [100 + i as u32, 3].into_iter().enumerate() {
+    let mut seq = 0;
+    for &(page, _, _) in PAGES {
+        let mut steps = Vec::new();
+        if page.parent() != Page::Home {
+            steps.push((page.parent().route_key().0, page.parent()));
+        }
+        steps.push((page.route_key().0, page));
+        steps.push((3, page.parent()));
+        if page.parent() != Page::Home {
+            steps.push((Page::Home.route_key().0, Page::Home));
+        }
+        for (key, expected) in steps {
             let point = center(app, key)?;
             tap(app, &mut clock, key)?;
-            let expected = if j == 0 { page } else { Page::Home };
             if app.engine().model().page != expected {
                 return Err(format!("tap {key} missed {expected:?}"));
             }
-            save(app, 1 + 2 * i + j, point)?;
+            seq += 1;
+            save(app, seq, point)?;
         }
     }
     std::fs::write(dir.join("frames.txt"), trace).map_err(|e| e.to_string())
@@ -341,6 +507,7 @@ fn main() -> Result<(), String> {
     let mut headless = false;
     let mut directory = None;
     let mut replay = None;
+    let mut scanout = None;
     let mut port = 7878u16;
     let mut panel_frames = None;
     let mut size = Size::new(240, 536);
@@ -372,9 +539,14 @@ fn main() -> Result<(), String> {
                 ))
             }
             "--replay" => replay = Some(args.next().ok_or("missing trace file")?),
+            "--scanout" => {
+                scanout = Some(PathBuf::from(
+                    args.next().ok_or("missing RGB565 output path")?,
+                ))
+            }
             "-h" | "--help" => {
                 println!(
-                    "liuli-widget-demo [--port PORT] [--headless] [--size 240x536|800x480] [--screenshots DIR] [--panel-frames DIR] [--replay TRACE]"
+                    "liuli-widget-demo [--port PORT] [--headless] [--size 240x536|800x480] [--screenshots DIR] [--panel-frames DIR] [--replay TRACE [--scanout FILE]]"
                 );
                 return Ok(());
             }
@@ -382,10 +554,12 @@ fn main() -> Result<(), String> {
         }
     }
     let mut storage = Storage::new();
-    let fonts = FontSet::single(Lf4Font::from_bytes(FONT).map_err(|e| format!("{e:?}"))?);
+    let fonts =
+        liuli_widget_demo::studio_fonts(Lf4Font::from_bytes(FONT).map_err(|e| format!("{e:?}"))?)
+            .map_err(|e| format!("{e:?}"))?;
     let mut app = AppSession::<Catalog>::new(
         &mut storage,
-        Model::new(size.height as u16),
+        Model::for_size(size),
         fonts,
         size,
         InstantMs(0),
@@ -397,20 +571,27 @@ fn main() -> Result<(), String> {
             .set_layer_budget(1024 * 1024)
             .map_err(|e| format!("{e:?}"))?;
     }
+    if scanout.is_some() && (replay.is_none() || panel_frames.is_some()) {
+        return Err("--scanout requires --replay without --panel-frames".into());
+    }
     if let Some(dir) = panel_frames {
         return panel_checkpoints(&mut app, &dir);
     }
     if let Some(path) = replay {
-        return replay_trace(
+        replay_trace(
             &mut app,
             &std::fs::read_to_string(path).map_err(|e| e.to_string())?,
-        );
+        )?;
+        if let Some(path) = scanout {
+            save_scanout(&app, &path)?;
+        }
+        return Ok(());
     }
     if headless || directory.is_some() {
         return exercise(&mut app, directory.as_deref());
     }
     let server = PreviewServer::bind(port)?;
-    println!("Widget Demo   http://{}", server.addr());
+    println!("Spool   http://{}", server.addr());
     server.serve_app(&mut app)
 }
 
@@ -420,7 +601,7 @@ mod tests {
 
     #[test]
     fn dark_and_light_modern_themes_pass_all_pages_and_focus_outlines() {
-        let fonts = FontSet::single(Lf4Font::from_bytes(FONT).unwrap());
+        let fonts = liuli_widget_demo::studio_fonts(Lf4Font::from_bytes(FONT).unwrap()).unwrap();
 
         let mut dark_storage = Storage::new();
         let mut dark_app = AppSession::<Catalog>::new(

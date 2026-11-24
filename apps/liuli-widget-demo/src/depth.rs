@@ -61,15 +61,15 @@ pub(super) fn backdrop(m: &Model, canvas: &mut WidgetCanvas<'_>) -> Result<(), B
     let size = canvas.size();
     let colors = if m.dark {
         [
-            Rgb565::new(4, 24, 25),
-            Rgb565::new(9, 39, 28),
-            Rgb565::new(10, 28, 28),
+            liuli_widgets::rgb8(99, 61, 48),
+            liuli_widgets::rgb8(186, 120, 70),
+            liuli_widgets::rgb8(118, 80, 59),
         ]
     } else {
         [
-            Rgb565::new(17, 46, 27),
-            Rgb565::new(23, 55, 28),
-            Rgb565::new(16, 49, 29),
+            liuli_widgets::rgb8(201, 164, 119),
+            liuli_widgets::rgb8(234, 203, 153),
+            liuli_widgets::rgb8(179, 142, 110),
         ]
     };
     for x in (0..size.width).step_by(9) {
@@ -138,8 +138,8 @@ pub(super) fn page(ui: &mut ThemedUi<'_, '_, '_>, m: &Model) -> Result<(), Build
                         },
                         |card| {
                             let text = card.text_fmt(format_args!(
-                                "{}   /   {:02}",
-                                if d.turn > 64 { "Back" } else { "Front" },
+                                "{} / Stamp {:02}",
+                                if d.turn > 64 { "B" } else { "A" },
                                 d.presses
                             ))?;
                             card.title(Key(304), text)?;
@@ -148,7 +148,7 @@ pub(super) fn page(ui: &mut ThemedUi<'_, '_, '_>, m: &Model) -> Result<(), Build
                                 ButtonVariant::Primary,
                                 NodeProps {
                                     width: Length::Px(88),
-                                    text: TextRef::Static("Press"),
+                                    text: TextRef::Static("Stamp"),
                                     ..t.primary_button()
                                 },
                             )
@@ -172,7 +172,7 @@ pub(super) fn page(ui: &mut ThemedUi<'_, '_, '_>, m: &Model) -> Result<(), Build
     {
         ui.button(
             Key(307),
-            "Flip card",
+            "Turn sleeve",
             IconKind::Reset,
             ButtonVariant::Primary,
         )?;
@@ -188,13 +188,13 @@ pub(super) fn page(ui: &mut ThemedUi<'_, '_, '_>, m: &Model) -> Result<(), Build
     }
     ui.button(
         Key(310),
-        "Move backdrop",
+        "Shift stripes",
         IconKind::None,
         ButtonVariant::Secondary,
     )?;
 
     // Granular Theme & Effect capability controls (below fold inside ScrollY).
-    ui.caption(Key(312), TextRef::Static("Theme & capability tuning"))?;
+    ui.caption(Key(312), TextRef::Static("Sleeve finish"))?;
     let preset_lbl = ui.text_fmt(format_args!("Preset   /   {}", m.preset.name()))?;
     ui.button_props(
         Key(313),
