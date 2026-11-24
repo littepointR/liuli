@@ -7,6 +7,7 @@ from pathlib import Path
 import platform
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import tomllib
@@ -76,7 +77,8 @@ def package(output, fetch=False):
         shutil.copyfile(ROOT / "README.md", stage / "README.md")
         shutil.copyfile(ROOT / "checks/package-firmware.py", stage / "package-firmware.py")
         (stage/"tools").mkdir()
-        shutil.copyfile(ROOT/"tools/export-touch-trace.py", stage/"tools/export-touch-trace.py")
+        for script in ("check-ui.py", "export-touch-trace.py"):
+            shutil.copyfile(ROOT/"tools"/script, stage/"tools"/script)
         board = stage / "boards/waveshare-s3-amoled"
         shutil.copytree(ROOT / "boards/waveshare-s3-amoled", board, ignore=shutil.ignore_patterns("target", "build", "sdkconfig"))
         shutil.copytree(ROOT / "crates/liuli-enhanced/tests/fonts", board / "bench-fonts")
@@ -110,12 +112,7 @@ def package(output, fetch=False):
         env = dict(os.environ, CARGO_HOME=str(Path(scratch)/"cargo-home"), CARGO_NET_OFFLINE="true",
                    CARGO_TARGET_DIR=str(Path(scratch)/"build"))
         cargo("run", "--offline", "--example", "preview", "--", "--headless", cwd=app, env=env)
-        cargo("test", "--offline", "--tests", "--release", "--all-features", cwd=product, env=env)
-        cargo("run", "--offline", "--example", "diagnostics", cwd=product, env=env)
-        cargo("run", "--offline", "--example", "editor", "--features", "enhanced", "--",
-              str(board/"bench-fonts/Arabic.ttf"), str(board/"bench-fonts/Devanagari.ttf"), "--headless", cwd=product, env=env)
-        cargo("run", "--offline", "--example", "editor", "--features", "enhanced", "--",
-              "--replay", str(stage/"docs/hardware/rc1-browser-ime.trace"), cwd=product, env=env)
+        cargo("generate-lockfile", "--offline", cwd=product, env=env)
         cargo("generate-lockfile", "--offline", cwd=starter_board/"rust", env=env)
         cargo("run", "--offline", "--example", "catalog", "--", str(app/"assets/body.lf4"), "--headless", cwd=widgets, env=env)
         for name, binaries in (("liuli-fontpack",["--bin","liuli-fontpack"]),("liuli-sim",["--bins"])):
@@ -126,7 +123,7 @@ def package(output, fetch=False):
         (stage/"tools/.crates2.json").unlink(missing_ok=True)
         (stage/"tools/.crates.toml").unlink(missing_ok=True)
         exe_suffix = ".exe" if os.name == "nt" else ""
-        subprocess.run([str(stage/"tools/bin"/("liuli-widget-demo"+exe_suffix)), "--headless"],
+        subprocess.run([sys.executable, str(stage/"tools/check-ui.py")],
                        cwd=stage, env=env, check=True)
         subprocess.run([str(stage/"tools"/"bin"/("liuli-fontpack"+exe_suffix)),
                         "verify","--project",str(app/"assets/fonts.toml")],cwd=stage,env=env,check=True)

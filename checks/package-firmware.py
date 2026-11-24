@@ -13,6 +13,8 @@ enhanced.bin 是日常告警固件，basic.bin 为零堆 UI 的基础档，start
 
 使用 ESP-IDF 5.5 的 Python 环境。对于已经具有本分区表和字体的参考板，恢复日常固件只需要以下命令。PORT 替换为设备管理器或 serial.tools.list_ports 确认的端口。
 
+input-trace.bin 为可选的告警触摸录制镜像。使用 SDK 内的 tools/export-touch-trace.py 导出串口记录，详见 docs/waveshare-s3.md。换回日常或全控件镜像会关闭录制。
+
 ~~~
 python -m esptool --chip esp32s3 -p PORT --after watchdog_reset write_flash 0x10000 enhanced.bin
 ~~~
@@ -23,7 +25,7 @@ python -m esptool --chip esp32s3 -p PORT --after watchdog_reset write_flash 0x10
 python -m esptool --chip esp32s3 -p PORT --after watchdog_reset write_flash --flash_mode dio --flash_size 16MB --flash_freq 80m 0x0 bootloader.bin 0x8000 partition-table.bin 0x10000 enhanced.bin 0x310000 body.lf4
 ~~~
 
-按住 BOOT，轻按并释放 RESET，再松开 BOOT 可进入 ROM 下载模式。启动串口为 115200，首帧日志包含 pixels=128640。开发版的真机验收范围见随 SDK 提供的 docs/qualification.md。
+按住 BOOT，轻按并释放 RESET，再松开 BOOT 可进入 ROM 下载模式。启动串口为 115200，首帧日志包含 pixels=128640。各版本的实板测量和覆盖范围见 SDK 内的 docs/qualification.md。
 """
 
 
@@ -109,9 +111,12 @@ if __name__ == "__main__":
     for name in PROFILES:
         parser.add_argument("--" + name, type=Path, required=True, help=f"{name} ESP-IDF output directory")
     parser.add_argument("--widget-demo", type=Path, help="include the interactive widget catalog firmware")
+    parser.add_argument("--input-trace", type=Path, help="include the alarm touch recording firmware")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     builds = {p: getattr(args, p).resolve() for p in PROFILES}
     if args.widget_demo:
         builds["widget-demo"] = args.widget_demo.resolve()
+    if args.input_trace:
+        builds["input-trace"] = args.input_trace.resolve()
     package(args.sdk.resolve(), builds, args.out.resolve())

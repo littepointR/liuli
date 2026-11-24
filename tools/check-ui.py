@@ -1,0 +1,54 @@
+"""Run the same unattended UI regressions in a checkout or an extracted SDK."""
+import argparse
+import os
+from pathlib import Path
+import subprocess
+import sys
+from tempfile import TemporaryDirectory
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def run(*args):
+    subprocess.run(args, cwd=ROOT, check=True)
+
+
+def check(screenshots):
+    packaged = (ROOT / "vendor").is_dir() and (ROOT / "liuli-alarms").is_dir()
+    apps = ROOT if packaged else ROOT / "apps"
+    alarms = apps / "liuli-alarms"
+    catalog = apps / "liuli-widget-demo"
+    fixtures = alarms / "tests/fixtures"
+    manifest = str(alarms / "Cargo.toml")
+    if packaged:
+        exe = ".exe" if os.name == "nt" else ""
+        demo = [str(ROOT / "tools/bin" / ("liuli-widget-demo" + exe))]
+    else:
+        demo = ["cargo", "run", "--offline", "--locked", "--release", "--manifest-path",
+                str(catalog / "Cargo.toml"), "--features", "desktop,enhanced", "--"]
+    if screenshots:
+        run(*demo, "--screenshots", str(screenshots.resolve()))
+    else:
+        run(*demo, "--headless")
+
+    run("cargo", "test", "--offline", "--locked", "--release", "--manifest-path", manifest,
+        "--all-features", "--tests")
+    example = ["cargo", "run", "--offline", "--locked", "--manifest-path", manifest, "--example"]
+    run(*example, "diagnostics")
+    editor = [*example, "editor", "--features", "enhanced", "--"]
+    run(*editor, str(catalog/"assets/Arabic.ttf"), str(catalog/"assets/Devanagari.ttf"), "--headless")
+    run(*editor, "--replay", str(ROOT/"docs/hardware/rc1-browser-ime.trace"))
+    with TemporaryDirectory() as directory:
+        exported = Path(directory) / "from-device.trace"
+        run(sys.executable, str(ROOT/"tools/export-touch-trace.py"), "--log",
+            str(fixtures/"s3-long-press.serial.gz"), "--out", str(exported))
+        if exported.read_text(encoding="ascii") != (fixtures/"s3-long-press.trace").read_text(encoding="ascii"):
+            raise ValueError("exported board trace differs from the regression fixture")
+        run(*example, "preview", "--", str(alarms/"assets/body.lf4"), "--replay", str(exported))
+    print("UI regressions passed", flush=True)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--screenshots", type=Path, help="save the rendered widget gallery")
+    check(parser.parse_args().screenshots)

@@ -1,0 +1,4 @@
+I (846) app_init: App version:      1.0.0
+I (847) app_init: ELF file SHA256:  9a90e3ae1...
+I (861) liuli: ui_task_stack_reserved=16384 ui_static_with_bands=70688
+I (1221) liuli: timestamp_us=374729 pixels=128640 frame_us=80783 transfer_us=16719 free_internal=291275 free_psram=8385180

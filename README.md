@@ -10,6 +10,8 @@
 | [硬件与发布记录](docs/qualification.md) | 测量边界、实板结果和 1.0 验收状态 |
 | [底层架构](docs/architecture.md) | 树、布局、按条带绘制和 DMA |
 
+在仓库或解压后的 SDK 根目录运行 `python tools/check-ui.py`，即可离线回归控件、焦点框、告警触摸流程、长按、输入法和诊断工具。加上 `--screenshots shots` 可保存本次控件画面。三平台打包 CI 执行相同命令。[编写自己的回放](docs/sdk.md#无人值守的-ui-回归)
+
 从源码运行产品应用：
 
 ```sh

@@ -1,5 +1,6 @@
 """Extract one complete boot's Liuli trace from a serial log or a live port."""
 import argparse
+import gzip
 import os
 from pathlib import Path
 import re
@@ -83,7 +84,8 @@ if __name__ == "__main__":
         cli.error("--seconds must be positive")
     try:
         if args.log:
-            with args.log.open("rb") as lines:
+            open_log = gzip.open if args.log.suffix == ".gz" else open
+            with open_log(args.log, "rb") as lines:
                 count, contacts = export(lines, args.out)
         else:
             count, contacts = export(serial_lines(args.port, args.seconds), args.out)

@@ -9,6 +9,28 @@ cargo run --offline --manifest-path device-ui/Cargo.toml --example preview
 
 浏览器打开终端打印的本机地址。第一条命令会用模板应用构建两帧，对照完整重绘。第二条命令会提供交互预览。在 device-ui/src/lib.rs 实现 App，Model 保存业务数据，update 返回 Change::View 时框架重建视图。桌面和设备使用相同的键、布局和逻辑坐标。在 api/liuli/index.html 和 api/liuli_widgets/index.html 查看 API。
 
+## 无人值守的 UI 回归
+
+安装 Python 3 和桌面 Rust 工具链后，在解压的 SDK 根目录执行以下命令。源码仓库也有相同入口，首次使用源码时先用 `cargo fetch --locked` 准备依赖。
+
+~~~sh
+python tools/check-ui.py
+python tools/check-ui.py --screenshots shots
+~~~
+
+三平台打包 CI 会在空 Cargo 缓存下运行第一条命令。它直接驱动应用的输入、命中测试和单调时钟，比较增量渲染与完整重绘，同时检查八页控件、焦点框的四条边、告警编辑后返回的位置、输入法组合与故障恢复。失败会以非零状态退出，并输出失败的场景或断言。第二条命令还会保存控件画面。整个过程使用随包夹具，可以在没有浏览器、串口或开发板的构建机上执行。
+
+为应用添加回归时，可以直接编写逻辑坐标和时间戳。例如下面的夹具在同一位置按住 900 ms。中间的 `tick` 在手指静止时推进时钟，供引擎触发长按。将轨迹交给 `replay_trace`，用应用模型断言目标条目、打开的页面或焦点，并启用逐帧像素对照。随包的 `liuli-alarms/tests/workflow.rs` 展示了如何在抬手前断言页面变化。
+
+~~~text
+liuli-trace 1
+0 kind=down&v=0&x=92&y=389
+800 tick
+900 kind=up&v=0&x=92&y=389
+~~~
+
+发生实板特有的问题时，可自愿将该次输入从串口导出，作为另一条夹具。随包的实板记录可以离线反复重放。要在参考板上测量像素计算或 QSPI 传输时间，可直接启动 `benchmark.bin`，它会自动执行固定输入和像素对照。[参考板录制和基准](waveshare-s3.md)
+
 ## 控件与主题
 
 安装包内的 liuli-widget-demo 是完整交互控件目录。运行 tools/bin/liuli-widget-demo（Windows 使用 .exe），打开终端打印的网址即可操作八个分类。示例源码位于包根目录的 liuli-widget-demo。板级固件使用同一份应用代码。[控件清单和运行方法](widget-demo.md)

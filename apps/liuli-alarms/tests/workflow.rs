@@ -4,6 +4,32 @@ use liuli_sim::preview::replay_trace;
 use liuli_sim::session::AppSession;
 
 #[test]
+fn board_trace_opens_the_held_record_before_the_finger_lifts() {
+    let trace = include_str!("fixtures/s3-long-press.trace");
+    let font = Lf4Font::from_bytes(include_bytes!("../assets/body.lf4")).unwrap();
+    let mut storage = Storage::new();
+    let mut app = AppSession::<Alarms>::new(
+        &mut storage,
+        Model::new(536),
+        FontSet::single(font),
+        Size::new(240, 536),
+        InstantMs(0),
+        true,
+    )
+    .unwrap();
+    let (before_hold, tail) = trace.split_once("36717 kind=down").unwrap();
+    replay_trace(&mut app, before_hold).unwrap();
+    assert_eq!(app.engine().model().routes.current(), Page::List);
+    assert_eq!(app.engine().model().offset, 415);
+    let (hold, release) = tail.split_once("37617 kind=up").unwrap();
+    // The 900 ms hold has no move events. Only the captured time advances can open detail.
+    replay_trace(&mut app, &format!("liuli-trace 1\n36717 kind=down{hold}")).unwrap();
+    assert_eq!(app.engine().model().routes.current(), Page::Detail(24));
+    replay_trace(&mut app, &format!("liuli-trace 1\n37617 kind=up{release}")).unwrap();
+    assert_eq!(app.engine().model().routes.current(), Page::Detail(24));
+}
+
+#[test]
 fn touch_workflow_edits_only_the_selected_record_and_restores_the_list() {
     let trace = include_str!("fixtures/touch-workflow.trace");
     let font = Lf4Font::from_bytes(include_bytes!("../assets/body.lf4")).unwrap();

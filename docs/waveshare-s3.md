@@ -63,10 +63,17 @@ cargo run --offline --manifest-path liuli-alarms/Cargo.toml --example preview --
 
 随包的 `liuli-alarms/tests/fixtures/touch-workflow.trace` 全程通过原始指针坐标操作列表、详情、编辑器和模态框。运行 `cargo test --offline --manifest-path liuli-alarms/Cargo.toml --test workflow` 可断言第 12 条记录从 50 变为 75，返回后恢复偏移 320 和焦点，下一条记录仍为 50。
 
+固件包中的 input-trace.bin 使用增强告警配置。下面两条命令直接从本次实板串口封包重建回放并在桌面运行。录制中两次上滑累计偏移 415 px；触点 0 在 (92, 389) 停住 900 ms。回放在收到 up 之前已进入第 25 条告警详情，与操作者在板上看到的详情页一致。
+
+~~~sh
+python tools/export-touch-trace.py --log liuli-alarms/tests/fixtures/s3-long-press.serial.gz --out hardware.trace
+cargo run --offline --manifest-path liuli-alarms/Cargo.toml --example preview -- liuli-alarms/assets/body.lf4 --replay hardware.trace
+~~~
+
 ## 生成固件分发包
 
 在离线 SDK 根目录分别构建 basic、enhanced、benchmark 和 device-ui 模板，将各自的 IDF 输出目录传给随包脚本。脚本核对目标芯片、版本、分区表及各文件校验和，把日常固件、基准固件、字体、配置和许可证一起打包。解压后的 README.md 给出空白板安装和仅恢复日常程序的命令。
 
 ~~~
-python package-firmware.py --sdk . --basic target/basic/idf --enhanced target/enhanced/idf --benchmark target/benchmark/idf --starter target/starter/idf --widget-demo target/widget-demo/idf --out liuli-waveshare-s3.zip
+python package-firmware.py --sdk . --basic target/basic/idf --enhanced target/enhanced/idf --benchmark target/benchmark/idf --starter target/starter/idf --widget-demo target/widget-demo/idf --input-trace target/trace-input/idf --out liuli-waveshare-s3.zip
 ~~~
