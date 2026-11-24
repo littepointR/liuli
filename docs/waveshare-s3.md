@@ -4,7 +4,7 @@
 
 ## 构建
 
-准备 ESP-IDF 5.5 工具链、其 Python 环境及包含 rust-src 的 esp Rust 工具链。进入已导出环境的 ESP-IDF 终端。在项目根目录运行：
+RC1 使用 ESP-IDF 5.5.2、其 Python 环境及带 rust-src 的 Xtensa Rust 1.97.0.0。进入已导出环境的 ESP-IDF 终端，在项目根目录运行以下命令。
 
 ~~~
 python boards/waveshare-s3-amoled/build.py --profile basic

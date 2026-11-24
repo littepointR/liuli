@@ -78,18 +78,24 @@ jobs:
 
   esp32s3:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     strategy:
+      fail-fast: false
       matrix:
         profile: [basic, enhanced, benchmark, sleep-benchmark]
     steps:
       - uses: actions/checkout@v4
       - uses: esp-rs/xtensa-toolchain@v1.5
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         with:
           buildtargets: esp32s3
+          version: '1.97.0.0'
       - run: python3 boards/waveshare-s3-amoled/build.py --rust-only --profile ${{ matrix.profile }}
       - uses: espressif/esp-idf-ci-action@v1
         with:
-          esp_idf_version: v5.5.1
+          esp_idf_version: v5.5.2
           target: esp32s3
           path: boards/waveshare-s3-amoled
           command: idf.py -DLIULI_RUNTIME=$PWD/../../target/s3/rust/xtensa-esp32s3-none-elf/release/libliuli_s3_runtime.a build

@@ -69,6 +69,15 @@ cargo run --offline --manifest-path device-ui/Cargo.toml --example preview -- --
 
 对告警应用，先给 preview 传入字库路径，再传 --replay 与文件路径。回放逐帧比较增量渲染与全屏重绘；用模型、焦点或截图断言额外验证业务结果。每次预览保留最近 16 帧的 PNG，完整事件记录最多 8 MiB，达到上限会明确报错。
 
+在 SDK 根目录运行以下诊断和编辑器回放。两条命令都使用随包资源。
+
+~~~sh
+cargo run --offline --manifest-path liuli-alarms/Cargo.toml --example diagnostics
+cargo run --offline --manifest-path liuli-alarms/Cargo.toml --example editor --features enhanced -- --replay docs/hardware/rc1-browser-ime.trace
+~~~
+
+诊断示例在同一个 96 × 48 场景内重现三类故障。点 (8, 8) 应当选中按钮 11，命中报告给出挡住按钮的可点击标签 12。将覆盖层的 clickable 设为 false 即可让点击落到按钮。第二帧只修改根节点的 theme_id，报告显示像素变化为零，仍传输了 9,216 B；移除没有视觉变化的版本递增可避免这次整屏发送。最后一次更新耗尽节点容量，错误列出页面 7、键 160 和 Nodes。例子断言上一帧仍然可用，再通过 AppSession::recover 缩小活动窗口并提交视图。
+
 ## 从 v0.2 迁移与恢复
 
 两个原有应用、LF4 v1 和旧 .events 回放保留原入口。新应用使用 AppSession::<YourApp>::new 设置模型、FontSet 和显示尺寸。设备使用 Engine::new_in_place_with_fonts，在单调毫秒时钟下依次调用 try_advance、try_dispatch 和 present。

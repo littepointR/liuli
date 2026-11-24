@@ -107,8 +107,11 @@ def package(output, fetch=False):
                    CARGO_TARGET_DIR=str(Path(scratch)/"build"))
         cargo("run", "--offline", "--example", "preview", "--", "--headless", cwd=app, env=env)
         cargo("test", "--offline", "--tests", "--release", "--all-features", cwd=product, env=env)
+        cargo("run", "--offline", "--example", "diagnostics", cwd=product, env=env)
         cargo("run", "--offline", "--example", "editor", "--features", "enhanced", "--",
               str(board/"bench-fonts/Arabic.ttf"), str(board/"bench-fonts/Devanagari.ttf"), "--headless", cwd=product, env=env)
+        cargo("run", "--offline", "--example", "editor", "--features", "enhanced", "--",
+              "--replay", str(stage/"docs/hardware/rc1-browser-ime.trace"), cwd=product, env=env)
         cargo("generate-lockfile", "--offline", cwd=starter_board/"rust", env=env)
         cargo("run", "--offline", "--example", "catalog", "--", str(app/"assets/body.lf4"), "--headless", cwd=widgets, env=env)
         for name, binaries in (("liuli-fontpack",["--bin","liuli-fontpack"]),("liuli-sim",["--bins"])):
