@@ -98,6 +98,9 @@ def package(output, fetch=False):
         shutil.copytree(vendor / f"liuli-alarms-{VERSION}", product)
         widgets = stage / "liuli-widgets"
         shutil.copytree(vendor / f"liuli-widgets-{VERSION}", widgets)
+        for consumer in (product, widgets):
+            with (consumer/"Cargo.toml").open("a") as manifest:
+                manifest.write("\n[workspace]\n")
         # Exercise the packaged product and template without the workspace, registry cache or network.
         env = dict(os.environ, CARGO_HOME=str(Path(scratch)/"cargo-home"), CARGO_NET_OFFLINE="true",
                    CARGO_TARGET_DIR=str(Path(scratch)/"build"))
@@ -117,9 +120,10 @@ def package(output, fetch=False):
                         "verify","--project",str(app/"assets/fonts.toml")],cwd=stage,env=env,check=True)
         cargo("test", "--offline", cwd=widgets, env=env)
         cargo("generate-lockfile", "--offline", cwd=board / "rust", env=env)
-        cargo("doc", "--offline", "--no-deps", "--features", "liuli/enhanced",
+        cargo("doc", "--offline", "--no-deps", "--features", "enhanced", "-p", "liuli-alarms",
               "-p", "liuli","-p","liuli-core","-p","liuli-text","-p","liuli-render",
-              "-p","liuli-enhanced","-p","liuli-widgets","-p","liuli-sim",cwd=product,env=env)
+              "-p","liuli-enhanced","-p","liuli-widgets",cwd=product,env=env)
+        cargo("doc", "--offline", "--no-deps", "--lib", cwd=vendor/f"liuli-sim-{VERSION}", env=env)
         shutil.copytree(Path(env["CARGO_TARGET_DIR"]) / "doc", stage / "api")
         filename = f"liuli-sdk-{VERSION}-{platform.system().lower()}-{platform.machine().lower()}.zip"
         temporary = Path(scratch)/filename
