@@ -31,6 +31,11 @@ def check(screenshots):
     else:
         run(*demo, "--headless")
 
+    landscape = ["--screenshots", str(screenshots.resolve() / "fk743m2")] if screenshots else ["--headless"]
+    run(*demo, "--size", "800x480", *landscape)
+
+    run("cargo", "test", "--offline", "--locked", "--release", "--manifest-path",
+        str(catalog / "Cargo.toml"), "--features", "desktop,enhanced", "--test", "effects")
     run("cargo", "test", "--offline", "--locked", "--release", "--manifest-path", manifest,
         "--all-features", "--tests")
     example = ["cargo", "run", "--offline", "--locked", "--manifest-path", manifest, "--example"]

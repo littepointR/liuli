@@ -1,0 +1,50 @@
+Waveshare ESP32-S3-Touch-AMOLED-1.91 / Widget Demo / 2026-11-24
+240x536 RGB565; automatic raw-input and virtual-clock benchmark; async ping-pong QSPI DMA.
+sample=5: glass on; sample=6: glass off. Both rotate the same card from front to back.
+16 virtual steps, 40 ms apart per turn. elapsed_us counts wall-clock Engine advance and present.
+With async ping-pong DMA (`WIRE: [[u16; WORDS]; 2]` + `board_flush`), transfer_us accumulates
+in-flight window time between queueing band N and syncing band N+1 (overlapping CPU render).
+Panel emission latency was not measured.
+bench 845660ddfcbfcc363c58bf5107e03f2dfd1cda5ec37d7414fed7417bba0d3fa6
+demo  e4e45a9d6dc83065c037ef766fb3b57cdb96743cf5a40b17236f4d05160b4831
+
+Benchmark firmware
+I (567) liuli: ui_task_stack_reserved=49152 ui_static_with_bands=109752
+I (850) liuli: font_probe reads=5 bytes=2560 hits=111 psram_cache=4096
+I (1029) liuli: sample=5 index=0 elapsed_us=41148 pixels=35352 transfer_us=28523 glyph_requests=8 cross_band=0 font_reads=0 font_bytes=0 stack_free_min=33468
+I (1074) liuli: sample=5 index=1 elapsed_us=34050 pixels=26112 transfer_us=22353 glyph_requests=0 cross_band=0 font_reads=0 font_bytes=0 stack_free_min=33468
+I (1116) liuli: sample=5 index=2 elapsed_us=31959 pixels=26112 transfer_us=20851 glyph_requests=0 cross_band=0 font_reads=0 font_bytes=0 stack_free_min=33468
+I (1156) liuli: sample=5 index=3 elapsed_us=28653 pixels=26112 transfer_us=18390 glyph_requests=0 cross_band=0 font_reads=0 font_bytes=0 stack_free_min=33468
+I (1193) liuli: sample=5 index=4 elapsed_us=25303 pixels=26112 transfer_us=15888 glyph_requests=0 cross_band=0 font_reads=0 font_bytes=0 stack_free_min=33468
+I (1226) liuli: sample=5 index=5 elapsed_us=22030 pixels=26112 transfer_us=13393 glyph_requests=0 cross_band=0 font_reads=0 font_bytes=0 stack_free_min=33468
+I (1255) liuli: sample=5 index=6 elapsed_us=18961 pixels=26112 transfer_us=11033 glyph_requests=0 cross_band=0 font_reads=0 font_bytes=0 stack_free_min=33468
+I (1277) liuli: sample=5 index=7 elapsed_us=10297 pixels=26112 transfer_us=4557 glyph_requests=0 cross_band=0 font_reads=0 font_bytes=0 stack_free_min=33468
+I (1314) liuli: sample=5 index=8 elapsed_us=26872 pixels=26112 transfer_us=10819 glyph_requests=12 cross_band=0 font_reads=0 font_bytes=0 stack_free_min=33468
+I (1347) liuli: sample=5 index=9 elapsed_us=21787 pixels=26112 transfer_us=13176 glyph_requests=0 cross_band=0 font_reads=0 font_bytes=0 stack_free_min=33468
+I (1383) liuli: sample=5 index=10 elapsed_us=24079 pixels=26112 transfer_us=14977 glyph_requests=0 cross_band=0 font_reads=0 font_bytes=0 stack_free_min=33468
+I (1422) liuli: sample=5 index=11 elapsed_us=28388 pixels=26112 transfer_us=18229 glyph_requests=0 cross_band=0 font_reads=0 font_bytes=0 stack_free_min=33468
+I (1464) liuli: sample=5 index=12 elapsed_us=30739 pixels=26112 transfer_us=19974 glyph_requests=0 cross_band=0 font_reads=0 font_bytes=0 stack_free_min=33468
+I (1510) liuli: sample=5 index=13 elapsed_us=34587 pixels=26112 transfer_us=22782 glyph_requests=0 cross_band=0 font_reads=0 font_bytes=0 stack_free_min=33468
+I (1558) liuli: sample=5 index=14 elapsed_us=36699 pixels=26112 transfer_us=24234 glyph_requests=0 cross_band=0 font_reads=0 font_bytes=0 stack_free_min=33468
+I (1593) liuli: sample=5 index=15 elapsed_us=23878 pixels=26112 transfer_us=14130 glyph_requests=0 cross_band=0 font_reads=0 font_bytes=0 stack_free_min=33468
+I (1707) liuli: sample=6 index=0 elapsed_us=38676 pixels=35352 transfer_us=27005 glyph_requests=8 cross_band=0 font_reads=0 font_bytes=0 stack_free_min=33468
+I (1750) liuli: sample=6 index=1 elapsed_us=31941 pixels=26112 transfer_us=21111 glyph_requests=0 cross_band=0 font_reads=0 font_bytes=0 stack_free_min=33468
+I (1792) liuli: sample=6 index=2 elapsed_us=30072 pixels=26112 transfer_us=19747 glyph_requests=0 cross_band=0 font_reads=0 font_bytes=0 stack_free_min=33468
+I (1830) liuli: sample=6 index=3 elapsed_us=27072 pixels=26112 transfer_us=17480 glyph_requests=0 cross_band=0 font_reads=0 font_bytes=0 stack_free_min=33468
+I (1864) liuli: sample=6 index=4 elapsed_us=23961 pixels=26112 transfer_us=15136 glyph_requests=0 cross_band=0 font_reads=0 font_bytes=0 stack_free_min=33468
+I (1897) liuli: sample=6 index=5 elapsed_us=21018 pixels=26112 transfer_us=12880 glyph_requests=0 cross_band=0 font_reads=0 font_bytes=0 stack_free_min=33468
+I (1926) liuli: sample=6 index=6 elapsed_us=18160 pixels=26112 transfer_us=10682 glyph_requests=0 cross_band=0 font_reads=0 font_bytes=0 stack_free_min=33468
+I (1947) liuli: sample=6 index=7 elapsed_us=9974 pixels=26112 transfer_us=4553 glyph_requests=0 cross_band=0 font_reads=0 font_bytes=0 stack_free_min=33468
+I (1985) liuli: sample=6 index=8 elapsed_us=27336 pixels=26112 transfer_us=10481 glyph_requests=12 cross_band=0 font_reads=0 font_bytes=0 stack_free_min=33468
+I (2017) liuli: sample=6 index=9 elapsed_us=20881 pixels=26112 transfer_us=12724 glyph_requests=0 cross_band=0 font_reads=0 font_bytes=0 stack_free_min=33468
+I (2051) liuli: sample=6 index=10 elapsed_us=22964 pixels=26112 transfer_us=14366 glyph_requests=0 cross_band=0 font_reads=0 font_bytes=0 stack_free_min=33468
+I (2089) liuli: sample=6 index=11 elapsed_us=26912 pixels=26112 transfer_us=17357 glyph_requests=0 cross_band=0 font_reads=0 font_bytes=0 stack_free_min=33468
+I (2130) liuli: sample=6 index=12 elapsed_us=29054 pixels=26112 transfer_us=18962 glyph_requests=0 cross_band=0 font_reads=0 font_bytes=0 stack_free_min=33468
+I (2173) liuli: sample=6 index=13 elapsed_us=32532 pixels=26112 transfer_us=21530 glyph_requests=0 cross_band=0 font_reads=0 font_bytes=0 stack_free_min=33468
+I (2219) liuli: sample=6 index=14 elapsed_us=34382 pixels=26112 transfer_us=22859 glyph_requests=0 cross_band=0 font_reads=0 font_bytes=0 stack_free_min=33468
+I (2251) liuli: sample=6 index=15 elapsed_us=20708 pixels=26112 transfer_us=12592 glyph_requests=0 cross_band=0 font_reads=0 font_bytes=0 stack_free_min=33468
+
+Restored daily firmware (flash verified)
+I (565) liuli: ui_task_stack_reserved=49152 ui_static_with_bands=109752
+I (848) liuli: font_probe reads=5 bytes=2560 hits=111 psram_cache=4096
+I (932) liuli: timestamp_us=371707 pixels=128640 frame_us=44930 transfer_us=40483 free_internal=133611 free_psram=8385180

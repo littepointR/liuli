@@ -6,7 +6,8 @@
 |---|---|
 | [Widget Demo 全控件演示](docs/widget-demo.md) | 直接运行桌面程序，或刷入独立的参考板演示固件 |
 | [独立 SDK 与组件教程](docs/sdk.md) | 离线安装、应用模板、控件、主题、字体、回放和事务恢复 |
-| [参考板指南](docs/waveshare-s3.md) | 构建、分区、烧录、输入、接线与恢复 |
+| [FK743M2-IIT6 排针版与 5 寸 RGB 屏](docs/fk743m2-iit6.md) | ST HAL + LL 与 Embassy 双后端，800 × 480 横屏 Widget Demo、J-Link 烧录和整帧像素校验 |
+| [Waveshare ESP32-S3 参考板](docs/waveshare-s3.md) | 构建、分区、烧录、输入、接线与恢复 |
 | [硬件与发布记录](docs/qualification.md) | 测量边界、实板结果和 1.0 验收状态 |
 | [底层架构](docs/architecture.md) | 树、布局、按条带绘制和 DMA |
 

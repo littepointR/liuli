@@ -52,6 +52,17 @@ def bundle_xtensa_inputs(vendor, fetch):
             archive.write_bytes(data)
         unpack_crate(archive,vendor,pkg["checksum"])
 
+def bundle_probe_wheels(board, fetch):
+    cache = ROOT / "target/sdk-probe-cache"
+    cache.mkdir(exist_ok=True)
+    requirements = board / "probe-requirements.txt"
+    pip = [sys.executable, "-m", "pip", "--disable-pip-version-check", "download",
+           "--only-binary=:all:", "--no-deps", "--require-hashes", "-r", str(requirements)]
+    if fetch:
+        subprocess.run([*pip, "--dest", str(cache)], check=True)
+    subprocess.run([*pip, "--no-index", "--find-links", str(cache), "--dest", str(board / "wheels")], check=True)
+
+
 def package(output, fetch=False):
     output.mkdir(exist_ok=True, parents=True)
     cargo("package", "--workspace", "--no-verify", "--allow-dirty", "--locked", "--offline")
@@ -59,7 +70,8 @@ def package(output, fetch=False):
         stage = Path(scratch) / "liuli-sdk"
         stage.mkdir()
         vendor = stage / "vendor"
-        cargo("vendor", "--locked", "--offline", "--versioned-dirs", str(vendor))
+        cargo("vendor", "--locked", "--offline", "--sync", str(ROOT/"boards/fk743m2-iit6/Cargo.toml"),
+              "--versioned-dirs", str(vendor))
         lock = tomllib.loads((ROOT / "Cargo.lock").read_text())
         for pkg in (p for p in lock["package"] if "source" not in p):
             name = f"{pkg['name']}-{pkg['version']}"
@@ -79,6 +91,16 @@ def package(output, fetch=False):
         (stage/"tools").mkdir()
         for script in ("check-ui.py", "export-touch-trace.py"):
             shutil.copyfile(ROOT/"tools"/script, stage/"tools"/script)
+        fk743 = stage / "boards/fk743m2-iit6"
+        shutil.copytree(ROOT / "boards/fk743m2-iit6", fk743,
+                        ignore=shutil.ignore_patterns("target", "__pycache__"))
+        bundle_probe_wheels(fk743, fetch)
+        fk_manifest = fk743 / "Cargo.toml"
+        contents = fk_manifest.read_text()
+        for path in ("../../crates/liuli", "../../apps/liuli-widget-demo"):
+            contents = contents.replace(f'path = "{path}", ', "")
+        fk_manifest.write_text(contents)
+        (fk743 / "Cargo.lock").unlink()
         board = stage / "boards/waveshare-s3-amoled"
         shutil.copytree(ROOT / "boards/waveshare-s3-amoled", board, ignore=shutil.ignore_patterns("target", "build", "sdkconfig"))
         shutil.copytree(ROOT / "crates/liuli-enhanced/tests/fonts", board / "bench-fonts")
@@ -113,7 +135,32 @@ def package(output, fetch=False):
                    CARGO_TARGET_DIR=str(Path(scratch)/"build"))
         cargo("run", "--offline", "--example", "preview", "--", "--headless", cwd=app, env=env)
         cargo("generate-lockfile", "--offline", cwd=product, env=env)
+        cargo("generate-lockfile", "--offline", cwd=catalog, env=env)
         cargo("generate-lockfile", "--offline", cwd=starter_board/"rust", env=env)
+        cargo("generate-lockfile", "--offline", cwd=fk743, env=env)
+        # Cross-build the extracted MCU consumer when the target is installed.
+        installed = subprocess.check_output(["rustc", "--print", "target-libdir", "--target",
+                                             "thumbv7em-none-eabihf"], text=True).strip()
+        if any(Path(installed).glob("libcore-*.rlib")):
+            # MSVC needs short paths for the Embassy host proc-macro import libraries.
+            with tempfile.TemporaryDirectory(prefix="fk-", dir=ROOT / "target") as cross:
+                firmware = fk743 / "firmware"
+                firmware.mkdir()
+                digests = []
+                for backend in ("st-hal", "embassy"):
+                    for profile in ("basic", "enhanced"):
+                        subprocess.run([sys.executable, str(fk743/"build.py"), "--backend", backend,
+                                        "--profile", profile, "--offline", "--out",
+                                        str(Path(cross)/f"{backend}-{profile}")], cwd=fk743,env=env,check=True)
+                        name = f"{backend}-{profile}.bin"
+                        image = (Path(cross)/f"{backend}-{profile}"/"widget-demo.bin").read_bytes()
+                        (firmware / name).write_bytes(image)
+                        digests.append(f"{hashlib.sha256(image).hexdigest()}  {name}")
+                subprocess.run([sys.executable, str(fk743/"st/compile.py"), cross, "--writer"], check=True)
+                helper = (Path(cross)/"flash-writer.bin").read_bytes()
+                (firmware/"flash-writer.bin").write_bytes(helper)
+                digests.append(f"{hashlib.sha256(helper).hexdigest()}  flash-writer.bin")
+                (firmware/"SHA256SUMS").write_text("\n".join(digests) + "\n", encoding="ascii")
         cargo("run", "--offline", "--example", "catalog", "--", str(app/"assets/body.lf4"), "--headless", cwd=widgets, env=env)
         for name, binaries in (("liuli-fontpack",["--bin","liuli-fontpack"]),("liuli-sim",["--bins"])):
             cargo("install","--offline","--root",str(stage/"tools"),"--path",str(vendor/f"{name}-{VERSION}"),
@@ -169,6 +216,6 @@ def package(output, fetch=False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", type=Path, default=ROOT/"target"/"dist")
-    parser.add_argument("--fetch-toolchain-inputs",action="store_true",help="download any missing pinned Rust sysroot sources")
+    parser.add_argument("--fetch-toolchain-inputs",action="store_true",help="download pinned Rust sysroot crates and host probe wheels")
     args=parser.parse_args()
     package(args.out.resolve(), args.fetch_toolchain_inputs)

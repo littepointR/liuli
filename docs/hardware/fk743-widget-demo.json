@@ -1,0 +1,1347 @@
+{
+  "date": "2026-11-24",
+  "board": "FK743M2-IIT6",
+  "mcu_id": "0x20036450",
+  "panel": "RGB050M1",
+  "width": 800,
+  "height": 480,
+  "pixel_format": "RGB565 little endian",
+  "tests": [
+    {
+      "backend": "st-hal",
+      "profile": "basic",
+      "firmware_bytes": 170108,
+      "firmware_sha256": "af0922ba8355f4877b76cc4cbc3911c7adf233067bf225c4b0c9a7c22c7f963d",
+      "firmware_crc32": "79001366",
+      "touch_id": "911",
+      "i2c_errors": 0,
+      "first_present_us": 120165,
+      "frame_sequence_sha256": "26caa5f792bb1e5338b3746274412914202cea241b6c4d55b67d5f2be4ec3665",
+      "checkpoints": [
+        {
+          "index": 0,
+          "page": 0,
+          "tap": null,
+          "commit": 1,
+          "ack": 1,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 120165,
+          "pixels": 384000,
+          "snapshot_bytes": 29476,
+          "rgb565_sha256": "d23a1bed0a2902575b9e27e8c46000ef2d3167461f0a5528dcb7bc4925f49966"
+        },
+        {
+          "index": 1,
+          "page": 1,
+          "tap": [
+            400,
+            78
+          ],
+          "commit": 3,
+          "ack": 3,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 123503,
+          "pixels": 384000,
+          "snapshot_bytes": 15620,
+          "rgb565_sha256": "fec0d98d70cdc9f54f923271b3a4a4b4434d6326b2ef055c64255de9c3c084c6"
+        },
+        {
+          "index": 2,
+          "page": 0,
+          "tap": [
+            757,
+            30
+          ],
+          "commit": 5,
+          "ack": 5,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 119393,
+          "pixels": 384000,
+          "snapshot_bytes": 29220,
+          "rgb565_sha256": "0ac2ad708232901f47f7b78fc3ffa03d5fba43b8cb6d2e0feae94ab696539648"
+        },
+        {
+          "index": 3,
+          "page": 2,
+          "tap": [
+            400,
+            121
+          ],
+          "commit": 7,
+          "ack": 7,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 113959,
+          "pixels": 384000,
+          "snapshot_bytes": 15696,
+          "rgb565_sha256": "a50957b17c5d1169fc63037544e31828cddd9a8e903f23a2b0caedc52a767f1b"
+        },
+        {
+          "index": 4,
+          "page": 0,
+          "tap": [
+            757,
+            30
+          ],
+          "commit": 9,
+          "ack": 9,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 119366,
+          "pixels": 384000,
+          "snapshot_bytes": 29220,
+          "rgb565_sha256": "0ac2ad708232901f47f7b78fc3ffa03d5fba43b8cb6d2e0feae94ab696539648"
+        },
+        {
+          "index": 5,
+          "page": 3,
+          "tap": [
+            400,
+            165
+          ],
+          "commit": 11,
+          "ack": 11,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 114020,
+          "pixels": 384000,
+          "snapshot_bytes": 12976,
+          "rgb565_sha256": "6443c71049e982cd8319fd22e486eb2fa54481080118ca96ca60a4e7e1cfa787"
+        },
+        {
+          "index": 6,
+          "page": 0,
+          "tap": [
+            757,
+            30
+          ],
+          "commit": 13,
+          "ack": 13,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 119472,
+          "pixels": 384000,
+          "snapshot_bytes": 29220,
+          "rgb565_sha256": "0ac2ad708232901f47f7b78fc3ffa03d5fba43b8cb6d2e0feae94ab696539648"
+        },
+        {
+          "index": 7,
+          "page": 4,
+          "tap": [
+            400,
+            209
+          ],
+          "commit": 15,
+          "ack": 15,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 114174,
+          "pixels": 384000,
+          "snapshot_bytes": 9532,
+          "rgb565_sha256": "e63e53dab49a0408303b41903e50009c2bfc37db05716318e95eddb160b9d084"
+        },
+        {
+          "index": 8,
+          "page": 0,
+          "tap": [
+            757,
+            30
+          ],
+          "commit": 17,
+          "ack": 17,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 119477,
+          "pixels": 384000,
+          "snapshot_bytes": 29220,
+          "rgb565_sha256": "0ac2ad708232901f47f7b78fc3ffa03d5fba43b8cb6d2e0feae94ab696539648"
+        },
+        {
+          "index": 9,
+          "page": 5,
+          "tap": [
+            400,
+            253
+          ],
+          "commit": 19,
+          "ack": 19,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 130410,
+          "pixels": 384000,
+          "snapshot_bytes": 33212,
+          "rgb565_sha256": "59e638f61853c8bcb6c381604c792dd1fb2baa9cf207247b570a2ddb053487ac"
+        },
+        {
+          "index": 10,
+          "page": 0,
+          "tap": [
+            757,
+            30
+          ],
+          "commit": 21,
+          "ack": 21,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 119496,
+          "pixels": 384000,
+          "snapshot_bytes": 29220,
+          "rgb565_sha256": "0ac2ad708232901f47f7b78fc3ffa03d5fba43b8cb6d2e0feae94ab696539648"
+        },
+        {
+          "index": 11,
+          "page": 6,
+          "tap": [
+            400,
+            297
+          ],
+          "commit": 23,
+          "ack": 23,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 131219,
+          "pixels": 384000,
+          "snapshot_bytes": 24872,
+          "rgb565_sha256": "33022ff9c2274dd59c6b246aac852cc018e65441637b34c3022b932517dcf214"
+        },
+        {
+          "index": 12,
+          "page": 0,
+          "tap": [
+            757,
+            30
+          ],
+          "commit": 25,
+          "ack": 25,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 119327,
+          "pixels": 384000,
+          "snapshot_bytes": 29220,
+          "rgb565_sha256": "0ac2ad708232901f47f7b78fc3ffa03d5fba43b8cb6d2e0feae94ab696539648"
+        },
+        {
+          "index": 13,
+          "page": 7,
+          "tap": [
+            400,
+            341
+          ],
+          "commit": 27,
+          "ack": 27,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 131809,
+          "pixels": 384000,
+          "snapshot_bytes": 15416,
+          "rgb565_sha256": "27c867ff2bace2c6a35942d37e3333dba8345315c8c225d96f7fbca820d5d132"
+        },
+        {
+          "index": 14,
+          "page": 0,
+          "tap": [
+            757,
+            30
+          ],
+          "commit": 29,
+          "ack": 29,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 119472,
+          "pixels": 384000,
+          "snapshot_bytes": 29220,
+          "rgb565_sha256": "0ac2ad708232901f47f7b78fc3ffa03d5fba43b8cb6d2e0feae94ab696539648"
+        },
+        {
+          "index": 15,
+          "page": 8,
+          "tap": [
+            400,
+            384
+          ],
+          "commit": 31,
+          "ack": 31,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 131895,
+          "pixels": 384000,
+          "snapshot_bytes": 40092,
+          "rgb565_sha256": "febb4c23285bb6673c4951c57c701038efc02d35a2855fde0a140bbb9a595264"
+        },
+        {
+          "index": 16,
+          "page": 0,
+          "tap": [
+            757,
+            30
+          ],
+          "commit": 33,
+          "ack": 33,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 119452,
+          "pixels": 384000,
+          "snapshot_bytes": 29220,
+          "rgb565_sha256": "0ac2ad708232901f47f7b78fc3ffa03d5fba43b8cb6d2e0feae94ab696539648"
+        }
+      ]
+    },
+    {
+      "backend": "st-hal",
+      "profile": "enhanced",
+      "firmware_bytes": 923432,
+      "firmware_sha256": "69cbfe6f82cf58a5227d8f5d20e760f2d637645540133fd876a184b19d7ab705",
+      "firmware_crc32": "df5f07a4",
+      "touch_id": "911",
+      "i2c_errors": 0,
+      "first_present_us": 129329,
+      "frame_sequence_sha256": "2d87b6a863f21ef44b12697d72e858aac195cee617c661123f2b4fb451a77dfd",
+      "checkpoints": [
+        {
+          "index": 0,
+          "page": 0,
+          "tap": null,
+          "commit": 1,
+          "ack": 1,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 129329,
+          "pixels": 384000,
+          "snapshot_bytes": 31588,
+          "rgb565_sha256": "fe253a1c557f4ac63e6e1f0033b9bce6b22b078fa93ad096a51e3890ee4ecb76"
+        },
+        {
+          "index": 1,
+          "page": 1,
+          "tap": [
+            400,
+            78
+          ],
+          "commit": 3,
+          "ack": 3,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 123561,
+          "pixels": 384000,
+          "snapshot_bytes": 15620,
+          "rgb565_sha256": "fec0d98d70cdc9f54f923271b3a4a4b4434d6326b2ef055c64255de9c3c084c6"
+        },
+        {
+          "index": 2,
+          "page": 0,
+          "tap": [
+            757,
+            30
+          ],
+          "commit": 5,
+          "ack": 5,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 119360,
+          "pixels": 384000,
+          "snapshot_bytes": 31332,
+          "rgb565_sha256": "01af61ba221d9bae8c5ac115b9313e1e03a152b648b8ee440b97c1e5fbf530ab"
+        },
+        {
+          "index": 3,
+          "page": 2,
+          "tap": [
+            400,
+            121
+          ],
+          "commit": 7,
+          "ack": 7,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 113958,
+          "pixels": 384000,
+          "snapshot_bytes": 15696,
+          "rgb565_sha256": "a50957b17c5d1169fc63037544e31828cddd9a8e903f23a2b0caedc52a767f1b"
+        },
+        {
+          "index": 4,
+          "page": 0,
+          "tap": [
+            757,
+            30
+          ],
+          "commit": 9,
+          "ack": 9,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 119308,
+          "pixels": 384000,
+          "snapshot_bytes": 31332,
+          "rgb565_sha256": "01af61ba221d9bae8c5ac115b9313e1e03a152b648b8ee440b97c1e5fbf530ab"
+        },
+        {
+          "index": 5,
+          "page": 3,
+          "tap": [
+            400,
+            165
+          ],
+          "commit": 11,
+          "ack": 11,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 114016,
+          "pixels": 384000,
+          "snapshot_bytes": 12976,
+          "rgb565_sha256": "6443c71049e982cd8319fd22e486eb2fa54481080118ca96ca60a4e7e1cfa787"
+        },
+        {
+          "index": 6,
+          "page": 0,
+          "tap": [
+            757,
+            30
+          ],
+          "commit": 13,
+          "ack": 13,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 119390,
+          "pixels": 384000,
+          "snapshot_bytes": 31332,
+          "rgb565_sha256": "01af61ba221d9bae8c5ac115b9313e1e03a152b648b8ee440b97c1e5fbf530ab"
+        },
+        {
+          "index": 7,
+          "page": 4,
+          "tap": [
+            400,
+            209
+          ],
+          "commit": 15,
+          "ack": 15,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 114273,
+          "pixels": 384000,
+          "snapshot_bytes": 9532,
+          "rgb565_sha256": "e63e53dab49a0408303b41903e50009c2bfc37db05716318e95eddb160b9d084"
+        },
+        {
+          "index": 8,
+          "page": 0,
+          "tap": [
+            757,
+            30
+          ],
+          "commit": 17,
+          "ack": 17,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 119407,
+          "pixels": 384000,
+          "snapshot_bytes": 31332,
+          "rgb565_sha256": "01af61ba221d9bae8c5ac115b9313e1e03a152b648b8ee440b97c1e5fbf530ab"
+        },
+        {
+          "index": 9,
+          "page": 5,
+          "tap": [
+            400,
+            253
+          ],
+          "commit": 19,
+          "ack": 19,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 130497,
+          "pixels": 384000,
+          "snapshot_bytes": 33212,
+          "rgb565_sha256": "59e638f61853c8bcb6c381604c792dd1fb2baa9cf207247b570a2ddb053487ac"
+        },
+        {
+          "index": 10,
+          "page": 0,
+          "tap": [
+            757,
+            30
+          ],
+          "commit": 21,
+          "ack": 21,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 119409,
+          "pixels": 384000,
+          "snapshot_bytes": 31332,
+          "rgb565_sha256": "01af61ba221d9bae8c5ac115b9313e1e03a152b648b8ee440b97c1e5fbf530ab"
+        },
+        {
+          "index": 11,
+          "page": 6,
+          "tap": [
+            400,
+            297
+          ],
+          "commit": 23,
+          "ack": 23,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 131255,
+          "pixels": 384000,
+          "snapshot_bytes": 24872,
+          "rgb565_sha256": "33022ff9c2274dd59c6b246aac852cc018e65441637b34c3022b932517dcf214"
+        },
+        {
+          "index": 12,
+          "page": 0,
+          "tap": [
+            757,
+            30
+          ],
+          "commit": 25,
+          "ack": 25,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 119214,
+          "pixels": 384000,
+          "snapshot_bytes": 31332,
+          "rgb565_sha256": "01af61ba221d9bae8c5ac115b9313e1e03a152b648b8ee440b97c1e5fbf530ab"
+        },
+        {
+          "index": 13,
+          "page": 7,
+          "tap": [
+            400,
+            341
+          ],
+          "commit": 27,
+          "ack": 27,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 131869,
+          "pixels": 384000,
+          "snapshot_bytes": 15416,
+          "rgb565_sha256": "27c867ff2bace2c6a35942d37e3333dba8345315c8c225d96f7fbca820d5d132"
+        },
+        {
+          "index": 14,
+          "page": 0,
+          "tap": [
+            757,
+            30
+          ],
+          "commit": 29,
+          "ack": 29,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 119386,
+          "pixels": 384000,
+          "snapshot_bytes": 31332,
+          "rgb565_sha256": "01af61ba221d9bae8c5ac115b9313e1e03a152b648b8ee440b97c1e5fbf530ab"
+        },
+        {
+          "index": 15,
+          "page": 8,
+          "tap": [
+            400,
+            385
+          ],
+          "commit": 31,
+          "ack": 31,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 131794,
+          "pixels": 384000,
+          "snapshot_bytes": 16700,
+          "rgb565_sha256": "f3b8ccea6caa83542ff03b60a567cca229dbc7d0dda7f32da53cb79e83f8f931"
+        },
+        {
+          "index": 16,
+          "page": 0,
+          "tap": [
+            757,
+            30
+          ],
+          "commit": 33,
+          "ack": 33,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 119380,
+          "pixels": 384000,
+          "snapshot_bytes": 31332,
+          "rgb565_sha256": "01af61ba221d9bae8c5ac115b9313e1e03a152b648b8ee440b97c1e5fbf530ab"
+        },
+        {
+          "index": 17,
+          "page": 9,
+          "tap": [
+            400,
+            428
+          ],
+          "commit": 35,
+          "ack": 35,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 532831,
+          "pixels": 384000,
+          "snapshot_bytes": 225284,
+          "rgb565_sha256": "cd5380210c4e99016bf381a4417eefc3147ddc0e6d79e9db49b348c08ac911e3"
+        },
+        {
+          "index": 18,
+          "page": 0,
+          "tap": [
+            757,
+            30
+          ],
+          "commit": 37,
+          "ack": 37,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 119372,
+          "pixels": 384000,
+          "snapshot_bytes": 31332,
+          "rgb565_sha256": "01af61ba221d9bae8c5ac115b9313e1e03a152b648b8ee440b97c1e5fbf530ab"
+        }
+      ]
+    },
+    {
+      "backend": "embassy",
+      "profile": "basic",
+      "firmware_bytes": 171628,
+      "firmware_sha256": "ccd5da3132ace41585228bc1275044f9f232a2d08cb9c49caa575f0f50c3abee",
+      "firmware_crc32": "71acf948",
+      "touch_id": "911",
+      "i2c_errors": 0,
+      "first_present_us": 120124,
+      "frame_sequence_sha256": "26caa5f792bb1e5338b3746274412914202cea241b6c4d55b67d5f2be4ec3665",
+      "checkpoints": [
+        {
+          "index": 0,
+          "page": 0,
+          "tap": null,
+          "commit": 1,
+          "ack": 1,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 120124,
+          "pixels": 384000,
+          "snapshot_bytes": 29476,
+          "rgb565_sha256": "d23a1bed0a2902575b9e27e8c46000ef2d3167461f0a5528dcb7bc4925f49966"
+        },
+        {
+          "index": 1,
+          "page": 1,
+          "tap": [
+            400,
+            78
+          ],
+          "commit": 3,
+          "ack": 3,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 123442,
+          "pixels": 384000,
+          "snapshot_bytes": 15620,
+          "rgb565_sha256": "fec0d98d70cdc9f54f923271b3a4a4b4434d6326b2ef055c64255de9c3c084c6"
+        },
+        {
+          "index": 2,
+          "page": 0,
+          "tap": [
+            757,
+            30
+          ],
+          "commit": 5,
+          "ack": 5,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 119370,
+          "pixels": 384000,
+          "snapshot_bytes": 29220,
+          "rgb565_sha256": "0ac2ad708232901f47f7b78fc3ffa03d5fba43b8cb6d2e0feae94ab696539648"
+        },
+        {
+          "index": 3,
+          "page": 2,
+          "tap": [
+            400,
+            121
+          ],
+          "commit": 7,
+          "ack": 7,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 113926,
+          "pixels": 384000,
+          "snapshot_bytes": 15696,
+          "rgb565_sha256": "a50957b17c5d1169fc63037544e31828cddd9a8e903f23a2b0caedc52a767f1b"
+        },
+        {
+          "index": 4,
+          "page": 0,
+          "tap": [
+            757,
+            30
+          ],
+          "commit": 9,
+          "ack": 9,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 119389,
+          "pixels": 384000,
+          "snapshot_bytes": 29220,
+          "rgb565_sha256": "0ac2ad708232901f47f7b78fc3ffa03d5fba43b8cb6d2e0feae94ab696539648"
+        },
+        {
+          "index": 5,
+          "page": 3,
+          "tap": [
+            400,
+            165
+          ],
+          "commit": 11,
+          "ack": 11,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 114007,
+          "pixels": 384000,
+          "snapshot_bytes": 12976,
+          "rgb565_sha256": "6443c71049e982cd8319fd22e486eb2fa54481080118ca96ca60a4e7e1cfa787"
+        },
+        {
+          "index": 6,
+          "page": 0,
+          "tap": [
+            757,
+            30
+          ],
+          "commit": 13,
+          "ack": 13,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 119429,
+          "pixels": 384000,
+          "snapshot_bytes": 29220,
+          "rgb565_sha256": "0ac2ad708232901f47f7b78fc3ffa03d5fba43b8cb6d2e0feae94ab696539648"
+        },
+        {
+          "index": 7,
+          "page": 4,
+          "tap": [
+            400,
+            209
+          ],
+          "commit": 15,
+          "ack": 15,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 114188,
+          "pixels": 384000,
+          "snapshot_bytes": 9532,
+          "rgb565_sha256": "e63e53dab49a0408303b41903e50009c2bfc37db05716318e95eddb160b9d084"
+        },
+        {
+          "index": 8,
+          "page": 0,
+          "tap": [
+            757,
+            30
+          ],
+          "commit": 17,
+          "ack": 17,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 119459,
+          "pixels": 384000,
+          "snapshot_bytes": 29220,
+          "rgb565_sha256": "0ac2ad708232901f47f7b78fc3ffa03d5fba43b8cb6d2e0feae94ab696539648"
+        },
+        {
+          "index": 9,
+          "page": 5,
+          "tap": [
+            400,
+            253
+          ],
+          "commit": 19,
+          "ack": 19,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 130435,
+          "pixels": 384000,
+          "snapshot_bytes": 33212,
+          "rgb565_sha256": "59e638f61853c8bcb6c381604c792dd1fb2baa9cf207247b570a2ddb053487ac"
+        },
+        {
+          "index": 10,
+          "page": 0,
+          "tap": [
+            757,
+            30
+          ],
+          "commit": 21,
+          "ack": 21,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 119500,
+          "pixels": 384000,
+          "snapshot_bytes": 29220,
+          "rgb565_sha256": "0ac2ad708232901f47f7b78fc3ffa03d5fba43b8cb6d2e0feae94ab696539648"
+        },
+        {
+          "index": 11,
+          "page": 6,
+          "tap": [
+            400,
+            297
+          ],
+          "commit": 23,
+          "ack": 23,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 131214,
+          "pixels": 384000,
+          "snapshot_bytes": 24872,
+          "rgb565_sha256": "33022ff9c2274dd59c6b246aac852cc018e65441637b34c3022b932517dcf214"
+        },
+        {
+          "index": 12,
+          "page": 0,
+          "tap": [
+            757,
+            30
+          ],
+          "commit": 25,
+          "ack": 25,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 119277,
+          "pixels": 384000,
+          "snapshot_bytes": 29220,
+          "rgb565_sha256": "0ac2ad708232901f47f7b78fc3ffa03d5fba43b8cb6d2e0feae94ab696539648"
+        },
+        {
+          "index": 13,
+          "page": 7,
+          "tap": [
+            400,
+            341
+          ],
+          "commit": 27,
+          "ack": 27,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 131802,
+          "pixels": 384000,
+          "snapshot_bytes": 15416,
+          "rgb565_sha256": "27c867ff2bace2c6a35942d37e3333dba8345315c8c225d96f7fbca820d5d132"
+        },
+        {
+          "index": 14,
+          "page": 0,
+          "tap": [
+            757,
+            30
+          ],
+          "commit": 29,
+          "ack": 29,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 119457,
+          "pixels": 384000,
+          "snapshot_bytes": 29220,
+          "rgb565_sha256": "0ac2ad708232901f47f7b78fc3ffa03d5fba43b8cb6d2e0feae94ab696539648"
+        },
+        {
+          "index": 15,
+          "page": 8,
+          "tap": [
+            400,
+            384
+          ],
+          "commit": 31,
+          "ack": 31,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 131920,
+          "pixels": 384000,
+          "snapshot_bytes": 40092,
+          "rgb565_sha256": "febb4c23285bb6673c4951c57c701038efc02d35a2855fde0a140bbb9a595264"
+        },
+        {
+          "index": 16,
+          "page": 0,
+          "tap": [
+            757,
+            30
+          ],
+          "commit": 33,
+          "ack": 33,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 119472,
+          "pixels": 384000,
+          "snapshot_bytes": 29220,
+          "rgb565_sha256": "0ac2ad708232901f47f7b78fc3ffa03d5fba43b8cb6d2e0feae94ab696539648"
+        }
+      ]
+    },
+    {
+      "backend": "embassy",
+      "profile": "enhanced",
+      "firmware_bytes": 923524,
+      "firmware_sha256": "4c59dde0a43bb130c522136ca44dd1f079fc08552e3c6e8ae73daa657ba5a946",
+      "firmware_crc32": "f1783961",
+      "touch_id": "911",
+      "i2c_errors": 0,
+      "first_present_us": 129618,
+      "frame_sequence_sha256": "2d87b6a863f21ef44b12697d72e858aac195cee617c661123f2b4fb451a77dfd",
+      "checkpoints": [
+        {
+          "index": 0,
+          "page": 0,
+          "tap": null,
+          "commit": 1,
+          "ack": 1,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 129618,
+          "pixels": 384000,
+          "snapshot_bytes": 31588,
+          "rgb565_sha256": "fe253a1c557f4ac63e6e1f0033b9bce6b22b078fa93ad096a51e3890ee4ecb76"
+        },
+        {
+          "index": 1,
+          "page": 1,
+          "tap": [
+            400,
+            78
+          ],
+          "commit": 3,
+          "ack": 3,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 123474,
+          "pixels": 384000,
+          "snapshot_bytes": 15620,
+          "rgb565_sha256": "fec0d98d70cdc9f54f923271b3a4a4b4434d6326b2ef055c64255de9c3c084c6"
+        },
+        {
+          "index": 2,
+          "page": 0,
+          "tap": [
+            757,
+            30
+          ],
+          "commit": 5,
+          "ack": 5,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 119326,
+          "pixels": 384000,
+          "snapshot_bytes": 31332,
+          "rgb565_sha256": "01af61ba221d9bae8c5ac115b9313e1e03a152b648b8ee440b97c1e5fbf530ab"
+        },
+        {
+          "index": 3,
+          "page": 2,
+          "tap": [
+            400,
+            121
+          ],
+          "commit": 7,
+          "ack": 7,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 113930,
+          "pixels": 384000,
+          "snapshot_bytes": 15696,
+          "rgb565_sha256": "a50957b17c5d1169fc63037544e31828cddd9a8e903f23a2b0caedc52a767f1b"
+        },
+        {
+          "index": 4,
+          "page": 0,
+          "tap": [
+            757,
+            30
+          ],
+          "commit": 9,
+          "ack": 9,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 119367,
+          "pixels": 384000,
+          "snapshot_bytes": 31332,
+          "rgb565_sha256": "01af61ba221d9bae8c5ac115b9313e1e03a152b648b8ee440b97c1e5fbf530ab"
+        },
+        {
+          "index": 5,
+          "page": 3,
+          "tap": [
+            400,
+            165
+          ],
+          "commit": 11,
+          "ack": 11,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 114005,
+          "pixels": 384000,
+          "snapshot_bytes": 12976,
+          "rgb565_sha256": "6443c71049e982cd8319fd22e486eb2fa54481080118ca96ca60a4e7e1cfa787"
+        },
+        {
+          "index": 6,
+          "page": 0,
+          "tap": [
+            757,
+            30
+          ],
+          "commit": 13,
+          "ack": 13,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 119361,
+          "pixels": 384000,
+          "snapshot_bytes": 31332,
+          "rgb565_sha256": "01af61ba221d9bae8c5ac115b9313e1e03a152b648b8ee440b97c1e5fbf530ab"
+        },
+        {
+          "index": 7,
+          "page": 4,
+          "tap": [
+            400,
+            209
+          ],
+          "commit": 15,
+          "ack": 15,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 114226,
+          "pixels": 384000,
+          "snapshot_bytes": 9532,
+          "rgb565_sha256": "e63e53dab49a0408303b41903e50009c2bfc37db05716318e95eddb160b9d084"
+        },
+        {
+          "index": 8,
+          "page": 0,
+          "tap": [
+            757,
+            30
+          ],
+          "commit": 17,
+          "ack": 17,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 119379,
+          "pixels": 384000,
+          "snapshot_bytes": 31332,
+          "rgb565_sha256": "01af61ba221d9bae8c5ac115b9313e1e03a152b648b8ee440b97c1e5fbf530ab"
+        },
+        {
+          "index": 9,
+          "page": 5,
+          "tap": [
+            400,
+            253
+          ],
+          "commit": 19,
+          "ack": 19,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 130484,
+          "pixels": 384000,
+          "snapshot_bytes": 33212,
+          "rgb565_sha256": "59e638f61853c8bcb6c381604c792dd1fb2baa9cf207247b570a2ddb053487ac"
+        },
+        {
+          "index": 10,
+          "page": 0,
+          "tap": [
+            757,
+            30
+          ],
+          "commit": 21,
+          "ack": 21,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 119400,
+          "pixels": 384000,
+          "snapshot_bytes": 31332,
+          "rgb565_sha256": "01af61ba221d9bae8c5ac115b9313e1e03a152b648b8ee440b97c1e5fbf530ab"
+        },
+        {
+          "index": 11,
+          "page": 6,
+          "tap": [
+            400,
+            297
+          ],
+          "commit": 23,
+          "ack": 23,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 131309,
+          "pixels": 384000,
+          "snapshot_bytes": 24872,
+          "rgb565_sha256": "33022ff9c2274dd59c6b246aac852cc018e65441637b34c3022b932517dcf214"
+        },
+        {
+          "index": 12,
+          "page": 0,
+          "tap": [
+            757,
+            30
+          ],
+          "commit": 25,
+          "ack": 25,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 119191,
+          "pixels": 384000,
+          "snapshot_bytes": 31332,
+          "rgb565_sha256": "01af61ba221d9bae8c5ac115b9313e1e03a152b648b8ee440b97c1e5fbf530ab"
+        },
+        {
+          "index": 13,
+          "page": 7,
+          "tap": [
+            400,
+            341
+          ],
+          "commit": 27,
+          "ack": 27,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 131825,
+          "pixels": 384000,
+          "snapshot_bytes": 15416,
+          "rgb565_sha256": "27c867ff2bace2c6a35942d37e3333dba8345315c8c225d96f7fbca820d5d132"
+        },
+        {
+          "index": 14,
+          "page": 0,
+          "tap": [
+            757,
+            30
+          ],
+          "commit": 29,
+          "ack": 29,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 119394,
+          "pixels": 384000,
+          "snapshot_bytes": 31332,
+          "rgb565_sha256": "01af61ba221d9bae8c5ac115b9313e1e03a152b648b8ee440b97c1e5fbf530ab"
+        },
+        {
+          "index": 15,
+          "page": 8,
+          "tap": [
+            400,
+            385
+          ],
+          "commit": 31,
+          "ack": 31,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 131799,
+          "pixels": 384000,
+          "snapshot_bytes": 16700,
+          "rgb565_sha256": "f3b8ccea6caa83542ff03b60a567cca229dbc7d0dda7f32da53cb79e83f8f931"
+        },
+        {
+          "index": 16,
+          "page": 0,
+          "tap": [
+            757,
+            30
+          ],
+          "commit": 33,
+          "ack": 33,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 119370,
+          "pixels": 384000,
+          "snapshot_bytes": 31332,
+          "rgb565_sha256": "01af61ba221d9bae8c5ac115b9313e1e03a152b648b8ee440b97c1e5fbf530ab"
+        },
+        {
+          "index": 17,
+          "page": 9,
+          "tap": [
+            400,
+            428
+          ],
+          "commit": 35,
+          "ack": 35,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 532844,
+          "pixels": 384000,
+          "snapshot_bytes": 225284,
+          "rgb565_sha256": "cd5380210c4e99016bf381a4417eefc3147ddc0e6d79e9db49b348c08ac911e3"
+        },
+        {
+          "index": 18,
+          "page": 0,
+          "tap": [
+            757,
+            30
+          ],
+          "commit": 37,
+          "ack": 37,
+          "ltdc_front": "0xc00c0000",
+          "ltdc_gcr": "0x2221",
+          "layer_cr": "0x1",
+          "ltdc_isr": "0x8",
+          "last_present_us": 119400,
+          "pixels": 384000,
+          "snapshot_bytes": 31332,
+          "rgb565_sha256": "01af61ba221d9bae8c5ac115b9313e1e03a152b648b8ee440b97c1e5fbf530ab"
+        }
+      ]
+    }
+  ]
+}

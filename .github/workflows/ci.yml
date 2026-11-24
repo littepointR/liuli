@@ -38,6 +38,20 @@ jobs:
         with:
           targets: thumbv7em-none-eabihf
           components: llvm-tools
+      - run: cargo fmt --manifest-path boards/fk743m2-iit6/Cargo.toml -- --check
+      - shell: pwsh
+        run: |
+          foreach ($backend in 'st-hal', 'embassy') {
+            foreach ($profile in 'basic', 'enhanced') {
+              python boards/fk743m2-iit6/build.py --backend $backend --profile $profile --out "target/fk743-$backend-$profile"
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: liuli-fk743m2-firmware
+          path: target/fk743-*/widget-demo.bin
+          if-no-files-found: error
       - run: cargo check -p liuli-settings --target thumbv7em-none-eabihf --no-default-features --locked
       - working-directory: checks/firmware
         run: cargo build --target thumbv7em-none-eabihf --release --locked
@@ -66,7 +80,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - run: rustup target add thumbv7em-none-eabihf
       - run: cargo fetch --locked
+      - run: cargo fetch --locked --manifest-path boards/fk743m2-iit6/Cargo.toml
       - run: cargo test --workspace --all-features --release --locked
       - run: cargo run -p liuli-fontpack --locked -- verify --project apps/liuli-alarms/assets/fonts.toml
       - run: python checks/package-sdk.py --fetch-toolchain-inputs
