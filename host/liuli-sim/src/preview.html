@@ -24,8 +24,8 @@
     }
     #screen-box {
       position: relative;
-      width: 640px;
-      height: 480px;
+      width: min(90vw, calc(SCREEN_WIDTH * 2px));
+      height: auto; aspect-ratio: SCREEN_WIDTH / SCREEN_HEIGHT;
       border: 2px solid #354155;
       border-radius: 8px;
       overflow: hidden;
@@ -36,8 +36,8 @@
       position: absolute;
       left: 0;
       top: 0;
-      width: 640px;
-      height: 480px;
+      width: min(90vw, calc(SCREEN_WIDTH * 2px));
+      height: auto; aspect-ratio: SCREEN_WIDTH / SCREEN_HEIGHT;
       image-rendering: pixelated;
       display: block;
     }
@@ -107,11 +107,11 @@
   </style>
 </head>
 <body>
-  <h2 style="margin:0;">liuli 嵌入式 GUI 预览 (320×240 RGB565)</h2>
+  <h2 style="margin:0;">liuli 嵌入式 GUI 预览 (SCREEN_WIDTH×SCREEN_HEIGHT RGB565)</h2>
   <div class="panel">
     <div id="screen-box">
-      <img id="screen" src="/frame.png" width="640" height="480" draggable="false" alt="liuli frame" />
-      <canvas id="overlay" width="320" height="240"></canvas>
+      <img id="screen" src="/frame.png" width="SCREEN_WIDTH" height="SCREEN_HEIGHT" draggable="false" alt="liuli frame" />
+      <canvas id="overlay" width="SCREEN_WIDTH" height="SCREEN_HEIGHT"></canvas>
     </div>
     <div class="controls">
       <div class="sec-title">输入控制</div>
@@ -123,6 +123,8 @@
         <button onclick="sendInput('adjust', -1)">减小 (-)</button>
         <button onclick="sendInput('adjust', 1)">增大 (+)</button>
       </div>
+      <label id="ime-row" hidden>输入到当前文本框 <input id="ime" type="text" autocomplete="off" /></label>
+      <output id="input-error" role="status"></output>
       <div class="sec-title">虚拟时钟</div>
       <div class="btn-row">
         <button id="btn-pause" onclick="togglePause()">暂停时钟</button>
@@ -146,7 +148,9 @@
       <div style="font-size:11px;color:#9cb0c9;">
         鼠标可在画面点击或拖动列表；键盘方向键/Enter/Esc/+/- 同步可用。
       </div>
-      <pre id="state">loading...</pre>
+      <a href="/trace" download="liuli.trace">导出操作回放</a>
+      <div>Shift + 点击查看命中节点与祖先</div><pre id="inspected"></pre>
+      <pre id="frame-details"></pre><pre id="state">loading...</pre>
     </div>
   </div>
   <script>
@@ -157,7 +161,7 @@
     const btnPause = document.getElementById('btn-pause');
     const chkDamage = document.getElementById('chk-damage');
     const chkBands = document.getElementById('chk-bands');
-    let pointerDown = false;
+    const contacts = new Map();
     let shownFrameId = 0;
     let lastState = null;
     let queue = Promise.resolve();
@@ -168,7 +172,7 @@
     }
 
     function drawOverlay() {
-      ctx.clearRect(0, 0, 320, 240);
+      ctx.clearRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
       if (!lastState) return;
       if (chkBands.checked && Array.isArray(lastState.band_rects)) {
         ctx.strokeStyle = 'rgba(0, 220, 255, 0.85)';
@@ -194,6 +198,7 @@
 
     function applyState(data) {
       lastState = data;
+      document.getElementById("ime-row").hidden = !data.text_input;
       btnPause.textContent = data.paused ? '继续时钟' : '暂停时钟';
       btnPause.classList.toggle('active', !!data.paused);
       for (const r of [1, 4, 16]) {
@@ -202,6 +207,10 @@
       }
       if (data.frame_id && data.frame_id !== shownFrameId) {
         shownFrameId = data.frame_id;
+        const frame = shownFrameId;
+        fetch('/diagnostics?frame=' + frame).then(r=>r.ok?r.text():'').then(text=>{
+          if (frame===shownFrameId) document.getElementById('frame-details').textContent=text;
+        });
         img.src = '/frame.png?frame=' + encodeURIComponent(String(data.frame_id));
       }
       drawOverlay();
@@ -212,6 +221,7 @@
       return enqueue(async () => {
         const res = await fetch('/state');
         if (res.ok) applyState(await res.json());
+        else document.getElementById('input-error').textContent = await res.text();
       });
     }
 
@@ -223,6 +233,7 @@
         if (y !== undefined) params.set('y', String(y));
         const res = await fetch('/input', { method: 'POST', body: params.toString() });
         if (res.ok) applyState(await res.json());
+        else document.getElementById('input-error').textContent = await res.text();
       });
     }
 
@@ -233,6 +244,7 @@
         if (op === 'rate') params.set('v', String(arg));
         const res = await fetch('/clock', { method: 'POST', body: params.toString() });
         if (res.ok) applyState(await res.json());
+        else document.getElementById('input-error').textContent = await res.text();
       });
     }
 
@@ -243,35 +255,76 @@
 
     function mapCoords(ev) {
       const r = img.getBoundingClientRect();
-      const x = Math.max(0, Math.min(319, Math.floor((ev.clientX - r.left) * 320 / r.width)));
-      const y = Math.max(0, Math.min(239, Math.floor((ev.clientY - r.top) * 240 / r.height)));
+      const x = Math.max(0, Math.min(SCREEN_WIDTH - 1, Math.floor((ev.clientX - r.left) * SCREEN_WIDTH / r.width)));
+      const y = Math.max(0, Math.min(SCREEN_HEIGHT - 1, Math.floor((ev.clientY - r.top) * SCREEN_HEIGHT / r.height)));
       return [x, y];
     }
 
     img.addEventListener('pointerdown', (ev) => {
-      pointerDown = true;
+      if (ev.shiftKey) {
+        const [x,y] = mapCoords(ev);
+        fetch('/inspect?x=' + x + '&y=' + y).then(r=>r.text()).then(t=>document.getElementById('inspected').textContent=t || '无命中节点');
+        return;
+      }
+      if (contacts.has(ev.pointerId)) return;
+      const occupied = new Set(contacts.values());
+      let id = 1;
+      while (occupied.has(id)) id++;
+      if (id > 255) return;
+      contacts.set(ev.pointerId, id);
       img.setPointerCapture(ev.pointerId);
       const [x, y] = mapCoords(ev);
-      sendInput('down', 1, x, y);
+      sendInput('down', id, x, y);
     });
     img.addEventListener('pointermove', (ev) => {
-      if (!pointerDown) return;
+      const id = contacts.get(ev.pointerId);
+      if (id === undefined) return;
       const [x, y] = mapCoords(ev);
-      sendInput('move', 1, x, y);
+      sendInput('move', id, x, y);
     });
     img.addEventListener('pointerup', (ev) => {
-      if (!pointerDown) return;
-      pointerDown = false;
+      const id = contacts.get(ev.pointerId);
+      if (id === undefined) return;
+      contacts.delete(ev.pointerId);
       const [x, y] = mapCoords(ev);
-      sendInput('up', 1, x, y);
+      sendInput('up', id, x, y);
     });
-    img.addEventListener('pointercancel', () => {
-      if (!pointerDown) return;
-      pointerDown = false;
-      sendInput('cancel', 1);
+    img.addEventListener('pointercancel', (ev) => {
+      const id = contacts.get(ev.pointerId);
+      if (id === undefined) return;
+      contacts.delete(ev.pointerId);
+      sendInput('cancel', id);
     });
 
+    const ime = document.getElementById('ime');
+    function sendText(op, body = '') {
+      enqueue(async () => {
+        const res = await fetch('/text?op=' + op, {method: 'POST', body});
+        if (res.ok) applyState(await res.json());
+        else document.getElementById('input-error').textContent = await res.text();
+      });
+    }
+    // Use composition events for preedit. A plain input event commits direct typing or paste.
+    let composing = false;
+    ime.addEventListener('compositionstart', () => { composing = true; });
+    ime.addEventListener('compositionupdate', ev => sendText('compose', ev.data));
+    ime.addEventListener('compositionend', ev => {
+      composing = false;
+      sendText(ev.data ? 'commit' : 'cancel', ev.data || '');
+      ime.value = '';
+    });
+    ime.addEventListener('input', ev => {
+      if (composing || ev.isComposing || ev.inputType === 'insertFromComposition') return;
+      if (ime.value) sendText('commit', ime.value);
+      ime.value = '';
+    });
+    ime.addEventListener('keydown', ev => {
+      if (composing || ev.isComposing) return;
+      const op = {Backspace:'backspace', ArrowLeft:'left', ArrowRight:'right', Escape:'cancel'}[ev.key];
+      if (op) { ev.preventDefault(); sendText(op); }
+    });
     window.addEventListener('keydown', (ev) => {
+      if (ev.target === ime) return;
       if (ev.key === 'ArrowUp' || ev.key === 'ArrowLeft') { ev.preventDefault(); sendInput('prev'); }
       else if (ev.key === 'ArrowDown' || ev.key === 'ArrowRight') { ev.preventDefault(); sendInput('next'); }
       else if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); sendInput('activate'); }
@@ -284,6 +337,7 @@
       enqueue(async () => {
         const res = await fetch('/tick', { method: 'POST' });
         if (res.ok) applyState(await res.json());
+        else document.getElementById('input-error').textContent = await res.text();
       });
     }, 100);
 

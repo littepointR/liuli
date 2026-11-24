@@ -1,0 +1,7 @@
+budget = 16384
+[[font]]
+source = "example.ttf"
+charset = "charset.txt"
+output = "body.lf4"
+px = 16
+fallback = "□"

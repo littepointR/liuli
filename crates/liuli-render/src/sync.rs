@@ -7,7 +7,26 @@ use liuli_core::paint::{CommandList, SceneResources};
 use liuli_text::FontSet;
 
 use crate::band::{BandIter, BandTarget};
-use crate::raster::render_band;
+use crate::raster::{blend_solid, render_band_with_pixels};
+use liuli_text::storage::{GlyphPixels, InlinePixels};
+#[derive(Debug, PartialEq, Eq)]
+pub enum FrameError<D, F> {
+    Display(PresentError<D>),
+    Font(F),
+}
+impl<D, F> From<PresentError<D>> for FrameError<D, F> {
+    fn from(e: PresentError<D>) -> Self {
+        Self::Display(e)
+    }
+}
+impl<D> FrameError<D, core::convert::Infallible> {
+    pub fn into_display(self) -> PresentError<D> {
+        match self {
+            Self::Display(e) => e,
+            Self::Font(never) => match never {},
+        }
+    }
+}
 
 pub fn present_sync<T, R>(
     target: &mut T,
@@ -46,8 +65,75 @@ pub fn present_sync_with<T, R, Fin>(
     damage: &mut DamageSet,
     resources: &R,
     fonts: &FontSet<'_>,
-    mut finish: Fin,
+    finish: Fin,
 ) -> Result<(PresentStatus, FrameMetrics), PresentError<T::Error>>
+where
+    T: DrawTarget<Color = Rgb565>,
+    R: SceneResources + ?Sized,
+    Fin: FnMut(&mut T) -> Result<(), T::Error>,
+{
+    present_sync_with_blend(
+        target,
+        scratch,
+        screen,
+        configured_band_h,
+        cmds,
+        damage,
+        resources,
+        fonts,
+        finish,
+        blend_solid,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn present_sync_with_blend<T, R, Fin>(
+    target: &mut T,
+    scratch: &mut [u16],
+    screen: Rect,
+    configured_band_h: u32,
+    cmds: &CommandList,
+    damage: &mut DamageSet,
+    resources: &R,
+    fonts: &FontSet<'_>,
+    finish: Fin,
+    blend: impl Fn(&mut [u16], Rgb565, u8) + Copy,
+) -> Result<(PresentStatus, FrameMetrics), PresentError<T::Error>>
+where
+    T: DrawTarget<Color = Rgb565>,
+    R: SceneResources + ?Sized,
+    Fin: FnMut(&mut T) -> Result<(), T::Error>,
+{
+    present_sync_with_pixels(
+        target,
+        scratch,
+        screen,
+        configured_band_h,
+        cmds,
+        damage,
+        resources,
+        fonts,
+        finish,
+        blend,
+        &mut InlinePixels,
+    )
+    .map_err(FrameError::into_display)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn present_sync_with_pixels<T, R, Fin, G: GlyphPixels>(
+    target: &mut T,
+    scratch: &mut [u16],
+    screen: Rect,
+    configured_band_h: u32,
+    cmds: &CommandList,
+    damage: &mut DamageSet,
+    resources: &R,
+    fonts: &FontSet<'_>,
+    mut finish: Fin,
+    blend: impl Fn(&mut [u16], Rgb565, u8) + Copy,
+    glyphs: &mut G,
+) -> Result<(PresentStatus, FrameMetrics), FrameError<T::Error, G::Error>>
 where
     T: DrawTarget<Color = Rgb565>,
     R: SceneResources + ?Sized,
@@ -57,7 +143,7 @@ where
         return Ok((PresentStatus::Idle, FrameMetrics::default()));
     }
     if scratch.len() < screen.w as usize {
-        return Err(PresentError::BufferTooSmall);
+        return Err(PresentError::BufferTooSmall.into());
     }
 
     let target_bb = Rect::from_eg(target.bounding_box());
@@ -67,12 +153,10 @@ where
 
     for band_rect in bands {
         let mut band_target = BandTarget::new(scratch, band_rect)?;
-        metrics.commands_replayed = metrics.commands_replayed.saturating_add(render_band(
-            &mut band_target,
-            cmds,
-            resources,
-            fonts,
-        ));
+        metrics.commands_replayed = metrics.commands_replayed.saturating_add(
+            render_band_with_pixels(&mut band_target, cmds, resources, fonts, blend, glyphs)
+                .map_err(|err| FrameError::Font(err))?,
+        );
 
         let phys_rect = band_rect.translate(target_bb.x, target_bb.y);
         let vis_phys = phys_rect.intersect(target_bb);
@@ -95,7 +179,7 @@ where
 
         if let Err(err) = target.fill_contiguous(&vis_phys.to_eg(), color_iter) {
             damage.mark_full_screen(screen);
-            return Err(PresentError::Target(err));
+            return Err(PresentError::Target(err).into());
         }
 
         metrics.bands += 1;
@@ -106,7 +190,7 @@ where
 
     if let Err(err) = finish(target) {
         damage.mark_full_screen(screen);
-        return Err(PresentError::Target(err));
+        return Err(PresentError::Target(err).into());
     }
 
     damage.clear();

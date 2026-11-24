@@ -1,0 +1,10 @@
+I (846) app_init: Project name:     liuli_amoled
+I (846) app_init: ELF file SHA256:  b2afc63aa...
+I (847) heap_init: At 3FCAA7F8 len 0003EF18 (251 KiB): RAM
+I (847) heap_init: At 3FCE9710 len 00005724 (21 KiB): RAM
+I (847) heap_init: At 3FCF0000 len 00008000 (32 KiB): DRAM
+I (847) heap_init: At 600FE000 len 00001FE8 (7 KiB): RTCRAM
+I (848) spi_flash: detected chip: winbond
+I (860) liuli: ui_task_stack_reserved=49152 ui_static_with_bands=70688
+I (1140) liuli: font_probe reads=1 bytes=4096 hits=112 psram_cache=4096
+I (1260) liuli: timestamp_us=414310 pixels=128640 frame_us=118846 transfer_us=16757 free_internal=258019 free_psram=8380180

@@ -1,389 +1,175 @@
-use std::collections::VecDeque;
-
 use liuli::core::focus::{FocusState, PointerState};
 use liuli::core::node::RetainedTree;
 use liuli::core::paint::CommandList;
 use liuli::prelude::*;
-use liuli::render::BandIter;
+
 use liuli_settings::{
     PageId, SettingsApp, SettingsModel, TerminalApp, TerminalModel, TerminalMsg, app_fonts,
 };
 
-use crate::screen::{MemoryScreen, render_reference_fullscreen};
+use crate::screen::MemoryScreen;
+use crate::session::rects_to_json;
 
-pub const MAX_PNG_HISTORY: usize = 16;
-
+pub use crate::session::{AppSession, FrameLookupError, FrameSnapshot, MAX_PNG_HISTORY};
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum SimScenario {
     Settings,
     Terminal,
 }
 
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
-pub enum FrameLookupError {
-    Expired,
-    NotFound,
+pub enum SimEngine<'a, 's> {
+    Settings(&'a Engine<'s, 'static, SettingsApp>),
+    Terminal(&'a Engine<'s, 'static, TerminalApp>),
 }
-
-#[derive(Clone, Debug)]
-pub struct FrameSnapshot {
-    pub frame_id: u64,
-    pub now_ms: u64,
-    pub status: PresentStatus,
-    pub damage: Vec<Rect>,
-    pub band_rects: Vec<Rect>,
-    pub bands: u32,
-    pub pixels_sent: u32,
-    pub measured_nodes: u32,
-    pub commands_replayed: u32,
-    pub wakeup: NextWakeup,
-    pub last_completed_frame_id: u64,
-    pub last_completed_metrics: FrameMetrics,
+pub enum SimSession<'s> {
+    Settings(AppSession<'s, 'static, SettingsApp>),
+    Terminal(AppSession<'s, 'static, TerminalApp>),
 }
-
-pub enum SimEngine<'s> {
-    Settings(Engine<'s, 'static, SettingsApp>),
-    Terminal(Engine<'s, 'static, TerminalApp>),
-}
-
-pub struct SimSession<'s> {
-    scenario: SimScenario,
-    engine: SimEngine<'s>,
-    screen_rect: Rect,
-    screen: MemoryScreen,
-    scratch: [u16; DEFAULT_BAND_PIXELS],
-    last_now: InstantMs,
-    completed_frame_id: u64,
-    oldest_retained_frame: u64,
-    last_completed_metrics: FrameMetrics,
-    png_history: VecDeque<(u64, Vec<u8>)>,
-    snapshot: FrameSnapshot,
-}
-
 impl<'s> SimSession<'s> {
     pub fn new(
         scenario: SimScenario,
         storage: &'s mut Storage,
-        start_now: InstantMs,
-        verify_ref: bool,
+        now: InstantMs,
+        verify: bool,
     ) -> Result<Self, String> {
-        let screen_rect = Rect::new(0, 0, DEFAULT_SCREEN_WIDTH, DEFAULT_SCREEN_HEIGHT);
-        let fonts = app_fonts();
-        let mut engine = match scenario {
-            SimScenario::Settings => SimEngine::Settings(
-                Engine::<SettingsApp>::new_in_place_with_fonts(
-                    storage,
-                    SettingsModel::new(start_now),
-                    fonts,
-                    screen_rect,
-                    start_now,
-                )
-                .map_err(|e| format!("SettingsApp init failed: {e:?}"))?,
-            ),
-            SimScenario::Terminal => SimEngine::Terminal(
-                Engine::<TerminalApp>::new_in_place_with_fonts(
-                    storage,
-                    TerminalModel::new(start_now),
-                    fonts,
-                    screen_rect,
-                    start_now,
-                )
-                .map_err(|e| format!("TerminalApp init failed: {e:?}"))?,
-            ),
-        };
-
-        match &mut engine {
-            SimEngine::Settings(e) => e.set_focus_ring_visible(true),
-            SimEngine::Terminal(e) => e.set_focus_ring_visible(true),
+        let size = Size::new(DEFAULT_SCREEN_WIDTH, DEFAULT_SCREEN_HEIGHT);
+        match scenario {
+            SimScenario::Settings => Ok(Self::Settings(AppSession::new(
+                storage,
+                SettingsModel::new(now),
+                app_fonts(),
+                size,
+                now,
+                verify,
+            )?)),
+            SimScenario::Terminal => Ok(Self::Terminal(AppSession::with_frame_callback(
+                storage,
+                TerminalModel::new(now),
+                app_fonts(),
+                size,
+                now,
+                verify,
+                Some(TerminalModel::record_completed_frame),
+            )?)),
         }
-
-        let placeholder_snap = FrameSnapshot {
-            frame_id: 0,
-            now_ms: start_now.0,
-            status: PresentStatus::Idle,
-            damage: Vec::new(),
-            band_rects: Vec::new(),
-            bands: 0,
-            pixels_sent: 0,
-            measured_nodes: 0,
-            commands_replayed: 0,
-            wakeup: NextWakeup::OnEvent,
-            last_completed_frame_id: 0,
-            last_completed_metrics: FrameMetrics::default(),
-        };
-
-        let mut session = Self {
-            scenario,
-            engine,
-            screen_rect,
-            screen: MemoryScreen::new(DEFAULT_SCREEN_WIDTH, DEFAULT_SCREEN_HEIGHT),
-            scratch: [0u16; DEFAULT_BAND_PIXELS],
-            last_now: start_now,
-            completed_frame_id: 0,
-            oldest_retained_frame: 1,
-            last_completed_metrics: FrameMetrics::default(),
-            png_history: VecDeque::with_capacity(MAX_PNG_HISTORY),
-            snapshot: placeholder_snap,
-        };
-        session.present_and_record(start_now, verify_ref)?;
-        Ok(session)
     }
-
-    #[inline]
-    pub const fn scenario(&self) -> SimScenario {
-        self.scenario
+    pub fn scenario(&self) -> SimScenario {
+        match self {
+            Self::Settings(_) => SimScenario::Settings,
+            Self::Terminal(_) => SimScenario::Terminal,
+        }
     }
-
-    #[inline]
-    pub fn engine(&self) -> &SimEngine<'s> {
-        &self.engine
+    pub fn engine(&self) -> SimEngine<'_, 's> {
+        match self {
+            Self::Settings(s) => SimEngine::Settings(s.engine()),
+            Self::Terminal(s) => SimEngine::Terminal(s.engine()),
+        }
     }
-
-    #[inline]
     pub fn screen(&self) -> &MemoryScreen {
-        &self.screen
+        match self {
+            Self::Settings(s) => s.screen(),
+            Self::Terminal(s) => s.screen(),
+        }
     }
-
-    #[inline]
     pub fn snapshot(&self) -> &FrameSnapshot {
-        &self.snapshot
+        match self {
+            Self::Settings(s) => s.snapshot(),
+            Self::Terminal(s) => s.snapshot(),
+        }
     }
-
+    pub fn png_for_frame(&self, id: Option<u64>) -> Result<(u64, &[u8]), FrameLookupError> {
+        match self {
+            Self::Settings(s) => s.png_for_frame(id),
+            Self::Terminal(s) => s.png_for_frame(id),
+        }
+    }
+    pub fn step(
+        &mut self,
+        now: InstantMs,
+        input: Option<RawInput>,
+        verify: bool,
+    ) -> Result<&FrameSnapshot, String> {
+        match self {
+            Self::Settings(s) => s.step(now, input, verify),
+            Self::Terminal(s) => s.step(now, input, verify),
+        }
+    }
     pub fn active_tree(&self) -> &RetainedTree {
-        match &self.engine {
+        match self.engine() {
             SimEngine::Settings(e) => e.active_tree(),
             SimEngine::Terminal(e) => e.active_tree(),
         }
     }
 
     pub fn active_commands(&self) -> &CommandList {
-        match &self.engine {
+        match self.engine() {
             SimEngine::Settings(e) => e.active_commands(),
             SimEngine::Terminal(e) => e.active_commands(),
         }
     }
 
     pub fn focus(&self) -> &FocusState {
-        match &self.engine {
+        match self.engine() {
             SimEngine::Settings(e) => e.focus(),
             SimEngine::Terminal(e) => e.focus(),
         }
     }
 
     pub fn pointer(&self) -> &PointerState {
-        match &self.engine {
+        match self.engine() {
             SimEngine::Settings(e) => e.pointer(),
             SimEngine::Terminal(e) => e.pointer(),
         }
     }
 
     pub fn damage(&self) -> &DamageSet {
-        match &self.engine {
+        match self.engine() {
             SimEngine::Settings(e) => e.damage(),
             SimEngine::Terminal(e) => e.damage(),
         }
     }
 
     pub fn fonts(&self) -> &FontSet<'static> {
-        match &self.engine {
+        match self.engine() {
             SimEngine::Settings(e) => e.fonts(),
             SimEngine::Terminal(e) => e.fonts(),
         }
     }
 
     pub fn band_height(&self) -> u32 {
-        match &self.engine {
+        match self.engine() {
             SimEngine::Settings(e) => e.band_height(),
             SimEngine::Terminal(e) => e.band_height(),
         }
     }
 
     pub fn last_metrics(&self) -> FrameMetrics {
-        match &self.engine {
+        match self.engine() {
             SimEngine::Settings(e) => e.last_metrics(),
             SimEngine::Terminal(e) => e.last_metrics(),
         }
     }
 
     pub fn next_wakeup(&self, now: InstantMs) -> NextWakeup {
-        match &self.engine {
+        match self.engine() {
             SimEngine::Settings(e) => e.next_wakeup(now, false),
             SimEngine::Terminal(e) => e.next_wakeup(now, false),
         }
     }
 
-    /// Shared deterministic simulation step:
-    /// 1. Advance virtual time (`advance`)
-    /// 2. Dispatch optional input (`dispatch`)
-    /// 3. Capture pre-present damage and band rectangles
-    /// 4. Present synchronous bands (and verify against fullscreen reference if requested)
-    /// 5. Save `FrameSnapshot`, PNG ring history, and next wakeup
-    pub fn step(
-        &mut self,
-        target_now: InstantMs,
-        input: Option<RawInput>,
-        verify_ref: bool,
-    ) -> Result<&FrameSnapshot, String> {
-        if target_now < self.last_now {
-            return Err(format!(
-                "timestamp {} goes backwards before {}",
-                target_now.0, self.last_now.0
-            ));
-        }
-        self.last_now = target_now;
-
-        match &mut self.engine {
-            SimEngine::Settings(e) => {
-                e.advance(target_now, false)
-                    .map_err(|err| format!("advance error: {err:?}"))?;
-                if let Some(inp) = input {
-                    e.dispatch(inp, target_now, false)
-                        .map_err(|err| format!("dispatch error: {err:?}"))?;
-                }
-            }
-            SimEngine::Terminal(e) => {
-                e.advance(target_now, false)
-                    .map_err(|err| format!("advance error: {err:?}"))?;
-                if let Some(inp) = input {
-                    e.dispatch(inp, target_now, false)
-                        .map_err(|err| format!("dispatch error: {err:?}"))?;
-                }
-            }
-        }
-
-        self.present_and_record(target_now, verify_ref)?;
-        Ok(&self.snapshot)
-    }
-
     pub fn select_terminal_page(
         &mut self,
         page: PageId,
-        target_now: InstantMs,
-        verify_ref: bool,
+        now: InstantMs,
+        verify: bool,
     ) -> Result<&FrameSnapshot, String> {
-        if target_now < self.last_now {
-            return Err(format!(
-                "timestamp {} goes backwards before {}",
-                target_now.0, self.last_now.0
-            ));
-        }
-        self.last_now = target_now;
-        match &mut self.engine {
-            SimEngine::Terminal(e) => {
-                e.advance(target_now, false)
-                    .map_err(|err| format!("advance error: {err:?}"))?;
-                e.message(TerminalMsg::SelectPage(page), target_now, false)
-                    .map_err(|err| format!("select page failed: {err:?}"))?;
-            }
-            SimEngine::Settings(_) => {
-                return Err("'page' op requires 'scenario terminal'".into());
-            }
-        }
-        self.present_and_record(target_now, verify_ref)?;
-        Ok(&self.snapshot)
-    }
-
-    fn present_and_record(&mut self, now: InstantMs, verify_ref: bool) -> Result<(), String> {
-        let pre_damage: Vec<Rect> = self.damage().as_slice().to_vec();
-        let band_rects: Vec<Rect> = if pre_damage.is_empty() {
-            Vec::new()
-        } else {
-            BandIter::new::<()>(
-                &pre_damage,
-                self.screen_rect,
-                self.band_height(),
-                DEFAULT_BAND_PIXELS,
-            )
-            .map_err(|e| format!("BandIter error: {e:?}"))?
-            .collect()
-        };
-
-        let (status, metrics) = match &mut self.engine {
-            SimEngine::Settings(e) => {
-                let st = e
-                    .present_sync(&mut self.screen, &mut self.scratch)
-                    .map_err(|err| format!("present_sync failed: {err:?}"))?;
-                (st, e.last_metrics())
-            }
-            SimEngine::Terminal(e) => {
-                let st = e
-                    .present_sync(&mut self.screen, &mut self.scratch)
-                    .map_err(|err| format!("present_sync failed: {err:?}"))?;
-                (st, e.last_metrics())
-            }
-        };
-
-        if status == PresentStatus::Presented {
-            if verify_ref {
-                let ref_scr = render_reference_fullscreen(
-                    self.active_commands(),
-                    self.active_tree(),
-                    self.fonts(),
-                );
-                if let Some((x, y, got, exp)) = self.screen.diff_first_mismatch(&ref_scr) {
-                    return Err(format!(
-                        "band/incremental render diverged from full-screen reference at ({x},{y}): got 0x{got:04X}, expected 0x{exp:04X}"
-                    ));
-                }
-            }
-
-            self.completed_frame_id += 1;
-            self.last_completed_metrics = metrics;
-            let png = self.screen.to_png();
-            if self.png_history.len() == MAX_PNG_HISTORY {
-                self.png_history.pop_front();
-            }
-            self.png_history.push_back((self.completed_frame_id, png));
-            self.oldest_retained_frame = self
-                .png_history
-                .front()
-                .map(|(id, _)| *id)
-                .unwrap_or(self.completed_frame_id + 1);
-
-            if let SimEngine::Terminal(e) = &mut self.engine {
-                let _ = e.try_with_model(|m| m.record_completed_frame(metrics, now));
-            }
-        }
-
-        let wakeup = self.next_wakeup(now);
-        self.snapshot = FrameSnapshot {
-            frame_id: self.completed_frame_id,
-            now_ms: now.0,
-            status,
-            damage: pre_damage,
-            band_rects,
-            bands: metrics.bands,
-            pixels_sent: metrics.pixels_sent,
-            measured_nodes: metrics.measured_nodes,
-            commands_replayed: metrics.commands_replayed,
-            wakeup,
-            last_completed_frame_id: self.completed_frame_id,
-            last_completed_metrics: self.last_completed_metrics,
-        };
-        Ok(())
-    }
-
-    pub fn png_for_frame(&self, frame_id: Option<u64>) -> Result<(u64, &[u8]), FrameLookupError> {
-        match frame_id {
-            None => self
-                .png_history
-                .back()
-                .map(|(id, bytes)| (*id, bytes.as_slice()))
-                .ok_or(FrameLookupError::NotFound),
-            Some(id) => {
-                if let Some((_, bytes)) = self.png_history.iter().find(|(fid, _)| *fid == id) {
-                    Ok((id, bytes.as_slice()))
-                } else if id > 0 && id < self.oldest_retained_frame {
-                    Err(FrameLookupError::Expired)
-                } else {
-                    Err(FrameLookupError::NotFound)
-                }
-            }
+        match self {
+            Self::Terminal(s) => s.message(now, TerminalMsg::SelectPage(page), verify),
+            Self::Settings(_) => Err("'page' op requires 'scenario terminal'".into()),
         }
     }
-
     pub fn state_json(&self, paused: bool, rate_x: u32) -> String {
-        let s = &self.snapshot;
+        let s = self.snapshot();
         let status_str = match s.status {
             PresentStatus::Idle => "idle",
             PresentStatus::Pending => "pending",
@@ -400,7 +186,7 @@ impl<'s> SimSession<'s> {
         let dmg_json = rects_to_json(&s.damage);
         let bands_json = rects_to_json(&s.band_rects);
 
-        match &self.engine {
+        match self.engine() {
             SimEngine::Settings(e) => {
                 let m = e.model();
                 let scroll_y = e
@@ -483,19 +269,4 @@ impl<'s> SimSession<'s> {
             }
         }
     }
-}
-
-fn rects_to_json(rects: &[Rect]) -> String {
-    let mut out = String::from("[");
-    for (i, r) in rects.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        out.push_str(&format!(
-            "{{\"x\":{},\"y\":{},\"w\":{},\"h\":{}}}",
-            r.x, r.y, r.w, r.h
-        ));
-    }
-    out.push(']');
-    out
 }

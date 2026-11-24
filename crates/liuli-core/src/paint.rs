@@ -15,6 +15,20 @@ pub struct TextId(pub u16);
 #[repr(u8)]
 pub enum PaintCmd {
     Empty = 0,
+    Bitmap {
+        angle: u8,
+        alpha: u8,
+        rect: Rect,
+        clip: Rect,
+        source: &'static crate::bitmap::Bitmap,
+    } = 8,
+    Surface {
+        rect: Rect,
+        clip: Rect,
+        index: u16,
+        angle: u8,
+        alpha: u8,
+    } = 9,
     FillRect {
         rect: Rect,
         clip: Rect,
@@ -102,7 +116,9 @@ impl PaintCmd {
     pub fn bounds(&self) -> Rect {
         match *self {
             Self::Empty => Rect::ZERO,
-            Self::FillRect { rect, clip, .. }
+            Self::Surface { rect, clip, .. }
+            | Self::Bitmap { rect, clip, .. }
+            | Self::FillRect { rect, clip, .. }
             | Self::StrokeRect { rect, clip, .. }
             | Self::FillRoundedRect { rect, clip, .. }
             | Self::Overlay { rect, clip, .. }
@@ -114,6 +130,8 @@ impl PaintCmd {
 }
 
 pub struct CommandList {
+    #[cfg(feature = "owned-images")]
+    surfaces: Option<alloc::vec::Vec<alloc::sync::Arc<crate::bitmap::OwnedBitmap>>>,
     pub cmds: [PaintCmd; MAX_COMMANDS],
     pub count: usize,
     pub root_bg: Rgb565,
@@ -122,6 +140,8 @@ pub struct CommandList {
 
 impl CommandList {
     pub const ZERO: Self = Self {
+        #[cfg(feature = "owned-images")]
+        surfaces: None,
         cmds: [PaintCmd::EMPTY; MAX_COMMANDS],
         count: 0,
         root_bg: Rgb565::new(0, 0, 0),
@@ -134,8 +154,22 @@ impl CommandList {
 
     pub fn reset(&mut self) {
         self.count = 0;
+        #[cfg(feature = "owned-images")]
+        if let Some(v) = &mut self.surfaces {
+            v.clear();
+        }
     }
 
+    pub fn image(&self, cmd: PaintCmd) -> Option<crate::bitmap::BitmapView<'_>> {
+        match cmd {
+            PaintCmd::Bitmap { source, .. } => Some(*source),
+            #[cfg(feature = "owned-images")]
+            PaintCmd::Surface { index, .. } => {
+                Some(self.surfaces.as_ref()?.get(usize::from(index))?.view())
+            }
+            _ => None,
+        }
+    }
     pub fn as_slice(&self) -> &[PaintCmd] {
         &self.cmds[..self.count]
     }
@@ -216,12 +250,110 @@ struct PaintDepthFrame {
     next_child: SlotLink,
 }
 
+/// Coordinates supplied to fill are relative to the widget.
+pub struct WidgetCanvas<'a> {
+    bounds: Rect,
+    clip: Rect,
+    commands: &'a mut CommandList,
+    pub pressed: bool,
+}
+impl WidgetCanvas<'_> {
+    pub fn size(&self) -> crate::geometry::Size {
+        self.bounds.size()
+    }
+    #[cfg(feature = "owned-images")]
+    pub fn surface(
+        &mut self,
+        rect: Rect,
+        source: alloc::sync::Arc<crate::bitmap::OwnedBitmap>,
+        angle: u8,
+        alpha: u8,
+    ) -> Result<(), BuildError> {
+        let rect = rect.translate(self.bounds.x, self.bounds.y);
+        if alpha == 0 || !rect.intersects(self.clip) {
+            return Ok(());
+        }
+        if self.commands.count >= MAX_COMMANDS {
+            return Err(BuildError::Commands);
+        }
+        let surfaces = self
+            .commands
+            .surfaces
+            .get_or_insert_with(alloc::vec::Vec::new);
+        let index = surfaces.len() as u16;
+        surfaces.push(source);
+        self.commands.push(PaintCmd::Surface {
+            rect,
+            clip: self.clip,
+            index,
+            alpha: alpha.min(15),
+            angle,
+        })
+    }
+    pub fn bitmap(
+        &mut self,
+        rect: Rect,
+        source: &'static crate::bitmap::Bitmap,
+        angle: u8,
+        alpha: u8,
+    ) -> Result<(), BuildError> {
+        let rect = Rect::new(
+            self.bounds.x.saturating_add(rect.x),
+            self.bounds.y.saturating_add(rect.y),
+            rect.w,
+            rect.h,
+        );
+        if alpha != 0 && rect.intersects(self.clip) {
+            self.commands.push(PaintCmd::Bitmap {
+                rect,
+                clip: self.clip,
+                source,
+                angle,
+                alpha: alpha.min(15),
+            })?;
+        }
+        Ok(())
+    }
+    pub fn fill(&mut self, rect: Rect, color: Rgb565) -> Result<(), BuildError> {
+        let rect = Rect::new(
+            self.bounds.x.saturating_add(rect.x),
+            self.bounds.y.saturating_add(rect.y),
+            rect.w,
+            rect.h,
+        )
+        .intersect(self.clip);
+        if !rect.is_empty() {
+            self.commands.push(PaintCmd::FillRect {
+                rect,
+                clip: self.clip,
+                color,
+            })?;
+        }
+        Ok(())
+    }
+}
+
 pub fn emit_commands(
     tree: &RetainedTree,
     anims: &AnimPool,
     focus: PaintFocusInfo,
     screen: Rect,
     out: &mut CommandList,
+) -> Result<(), BuildError> {
+    emit_commands_with(tree, anims, focus, screen, out, |_, _, _| Ok(()))
+}
+
+pub fn emit_commands_with(
+    tree: &RetainedTree,
+    anims: &AnimPool,
+    focus: PaintFocusInfo,
+    screen: Rect,
+    out: &mut CommandList,
+    mut custom: impl FnMut(
+        crate::view::Key,
+        &crate::view::StoredProps,
+        &mut WidgetCanvas<'_>,
+    ) -> Result<(), BuildError>,
 ) -> Result<(), BuildError> {
     out.reset();
     out.screen = screen;
@@ -262,6 +394,15 @@ pub fn emit_commands(
 
             if visible || node.kind == NodeKind::Modal {
                 match node.kind {
+                    NodeKind::Custom => {
+                        let mut canvas = WidgetCanvas {
+                            bounds: rect,
+                            clip: clip.intersect(rect),
+                            commands: out,
+                            pressed: node.pressed,
+                        };
+                        custom(node.key, &node.props, &mut canvas)?;
+                    }
                     NodeKind::Root => {
                         if let Some(bg) = node.props.bg() {
                             out.push(PaintCmd::FillRect {

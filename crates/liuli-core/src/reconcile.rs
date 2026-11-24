@@ -273,7 +273,8 @@ pub fn reconcile_into(
         let sparkline_changed = node.kind == NodeKind::Sparkline
             && active.sparklines.slice(op.series) != candidate.sparklines.slice(np.series);
 
-        let visual_changed = op.bg() != np.bg()
+        let visual_changed = (node.kind == NodeKind::Custom && op != np)
+            || op.bg() != np.bg()
             || op.border_color() != np.border_color()
             || op.fg != np.fg
             || op.accent != np.accent
@@ -339,7 +340,8 @@ pub fn reconcile_into(
     }
 
     if global_invalidate {
-        candidate.nodes[root_c].dirty_measure = true;
+        candidate.nodes[root_c].dirty_measure |=
+            !has_active || old_screen != screen || modal_changed;
         candidate.nodes[root_c].dirty_paint = true;
         outcome.tree_changed = true;
     }

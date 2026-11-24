@@ -1,0 +1,6 @@
+idf_component_register(SRCS "board.c" "blend.c" "blend_s3.S" INCLUDE_DIRS "." REQUIRES driver spi_flash esp_partition esp_timer esp_psram)
+if(NOT EXISTS "${LIULI_RUNTIME}")
+  message(FATAL_ERROR "Set LIULI_RUNTIME to the absolute path of libliuli_s3_runtime.a")
+endif()
+add_prebuilt_library(liuli_runtime "${LIULI_RUNTIME}")
+target_link_libraries(${COMPONENT_LIB} PUBLIC liuli_runtime)

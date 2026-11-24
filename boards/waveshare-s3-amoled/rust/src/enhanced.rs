@@ -1,0 +1,111 @@
+use core::alloc::{GlobalAlloc, Layout};
+use liuli::text::storage::{Cached, ReadAt, StoredFont};
+extern crate alloc;
+unsafe extern "C" {
+    fn board_alloc(size: usize, alignment: usize) -> *mut u8;
+    fn board_free(ptr: *mut u8);
+    fn board_read_font(offset: usize, data: *mut u8, len: usize) -> i32;
+    fn board_font_metrics(reads: u64, bytes: u64, hits: u64, cache_size: usize);
+}
+struct Psram;
+// ESP-IDF heap_caps_aligned_alloc honors the supplied alignment and supports
+// concurrent callers. All live allocations belong to this allocator.
+unsafe impl GlobalAlloc for Psram {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        unsafe { board_alloc(layout.size().max(1), layout.align().max(4)) }
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, _: Layout) {
+        unsafe { board_free(ptr) }
+    }
+}
+#[global_allocator]
+static ALLOCATOR: Psram = Psram;
+struct Partition(usize);
+impl ReadAt for Partition {
+    type Error = i32;
+    fn byte_len(&self) -> usize {
+        self.0
+    }
+    fn read_at(&mut self, offset: usize, out: &mut [u8]) -> Result<usize, i32> {
+        let n = out.len().min(self.0.saturating_sub(offset));
+        let result = unsafe { board_read_font(offset, out.as_mut_ptr(), n) };
+        if result == 0 { Ok(n) } else { Err(result) }
+    }
+}
+use liuli::prelude::{FontId, Rect};
+use liuli::text::GlyphBitmap;
+use liuli::text::storage::{GlyphPixels, IoMetrics, ReadError};
+pub struct Reader<'a> {
+    font: StoredFont<Cached<'a, Partition>>,
+    scratch: [u8; 512],
+    band: u32,
+    seen: alloc::vec::Vec<(u32, u32)>,
+    cross_band: u32,
+    requests: u32,
+    baseline: IoMetrics,
+}
+impl<'a> Reader<'a> {
+    pub fn new(len: usize, cache: &'a mut [u8]) -> Result<Self, ReadError<i32>> {
+        let cache_size = cache.len();
+        let font = StoredFont::open(Cached::new(Partition(len), cache))?;
+        let m = font.source().metrics();
+        unsafe {
+            board_font_metrics(m.reads, m.bytes, m.cache_hits, cache_size);
+        }
+        let seen = alloc::vec::Vec::with_capacity(font.glyph_count().into());
+        Ok(Self {
+            font,
+            scratch: [0; 512],
+            band: 0,
+            seen,
+            cross_band: 0,
+            requests: 0,
+            baseline: m,
+        })
+    }
+}
+impl super::FrameGlyphs for Reader<'_> {
+    fn start(&mut self) {
+        self.baseline = self.font.source().metrics();
+        self.cross_band = 0;
+        self.requests = 0;
+        self.seen.clear();
+        self.band = 0;
+    }
+    fn finish(&self) {
+        let m = self.font.source().metrics();
+        unsafe {
+            board_font_frame(
+                self.requests,
+                self.cross_band,
+                (m.reads - self.baseline.reads) as u32,
+                (m.bytes - self.baseline.bytes) as u32,
+            );
+        }
+    }
+}
+unsafe extern "C" {
+    fn board_font_frame(requests: u32, repeated: u32, reads: u32, bytes: u32);
+}
+impl GlyphPixels for Reader<'_> {
+    type Error = ReadError<i32>;
+    fn begin_band(&mut self, _: Rect) {
+        self.band += 1;
+    }
+    fn pixels<'a>(&'a mut self, _: FontId, g: GlyphBitmap<'a>) -> Result<&'a [u8], Self::Error> {
+        let key = g.metrics.unicode;
+        self.requests += 1;
+        if let Some((_, last)) = self.seen.iter_mut().find(|(ch, _)| *ch == key) {
+            if *last != self.band {
+                self.cross_band += 1;
+                *last = self.band;
+            }
+        } else {
+            self.seen.push((key, self.band));
+        }
+        Ok(self.font.read_bitmap(g.metrics, &mut self.scratch)?.data)
+    }
+}
+pub fn cache() -> alloc::vec::Vec<u8> {
+    alloc::vec![0;4096]
+}

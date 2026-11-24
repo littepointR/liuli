@@ -3,9 +3,9 @@ resolver = "3"
 
 [package]
 name = "liuli-firmware"
-version = "0.2.0"
+version = "0.3.0-dev.1"
 edition = "2024"
-license = "Apache-2.0 OR MIT"
+license = "MIT"
 publish = false
 
 [dependencies]

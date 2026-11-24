@@ -1,6 +1,9 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+#[cfg(any(feature = "owned-images", feature = "inspector"))]
+extern crate alloc;
+pub mod bitmap;
 pub mod capacity;
 pub mod damage;
 pub mod focus;
@@ -10,6 +13,7 @@ pub mod layout;
 pub mod node;
 pub mod paint;
 pub mod reconcile;
+pub mod style_source;
 pub mod time;
 pub mod view;
 

@@ -1,0 +1,8 @@
+I (840) app_init: Application information:
+I (841) app_init: Project name:     liuli_amoled
+I (841) app_init: App version:      0.3.0-dev.1
+I (841) app_init: Compile time:     Nov 24 2026 14:33:06
+I (841) app_init: ELF file SHA256:  543ad9938...
+I (841) app_init: ESP-IDF:          -128-NOTFOUND
+I (855) liuli: ui_task_stack_reserved=16384 ui_static_with_bands=70688
+I (1195) liuli: timestamp_us=348795 pixels=128640 frame_us=58558 transfer_us=16732 free_internal=291315 free_psram=8385180

@@ -1,6 +1,9 @@
 pub mod clock;
 pub mod image;
 pub mod preview;
+#[cfg(feature = "demos")]
 pub mod replay;
 pub mod screen;
+pub mod session;
+#[cfg(feature = "demos")]
 pub mod sim;

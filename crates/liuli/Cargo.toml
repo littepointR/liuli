@@ -10,3 +10,10 @@ embedded-graphics-core.workspace = true
 liuli-core.workspace = true
 liuli-text.workspace = true
 liuli-render.workspace = true
+liuli-enhanced = { version = "=0.3.0-dev.1", path = "../liuli-enhanced", optional = true }
+
+[features]
+default = []
+enhanced = ["dep:liuli-enhanced"]
+platform-blend = []
+inspector=["liuli-core/inspector"]

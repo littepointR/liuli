@@ -56,7 +56,10 @@ $AllowedLocalExternalEdges = @{
     'liuli-render'   = @('embedded-graphics')
     'liuli'          = @('embedded-graphics-core')
     'liuli-settings' = @()
-    'liuli-fontpack' = @()
+    'liuli-widgets' = @()
+    'liuli-enhanced' = @('ab_glyph_rasterizer','libm','harfrust','ttf-parser','unicode-bidi','unicode-script','unicode-segmentation')
+    'liuli-alarms' = @()
+    'liuli-fontpack' = @('ab_glyph_rasterizer', 'serde', 'toml', 'ttf-parser')
     'liuli-sim'      = @('embedded-graphics')
     'liuli-firmware' = @('embedded-graphics-core')
 }
@@ -105,12 +108,27 @@ function Assert-Lockfile([string]$Path) {
 
     $pkgs = Parse-CargoLock $Path
     $extFound = @{}
+    $hostOnly = @{}
+    $registryNames = @($pkgs | Where-Object { $_.source } | ForEach-Object { $_.name })
+    if ($Path -eq $RootLock) {
+        $pending = [System.Collections.Generic.Stack[string]]::new()
+        foreach ($name in ($AllowedLocalExternalEdges['liuli-fontpack'] + $AllowedLocalExternalEdges['liuli-enhanced'])) { $pending.Push($name) }
+        while ($pending.Count -gt 0) {
+            $name = $pending.Pop()
+            if ($hostOnly.ContainsKey($name)) { continue }
+            $hostOnly[$name] = $true
+            foreach ($pkg in @($pkgs | Where-Object name -eq $name)) {
+                foreach ($dep in $pkg.deps) { $pending.Push(($dep -split ' ')[0]) }
+            }
+        }
+    }
 
     foreach ($p in $pkgs) {
         if ($null -ne $p.source) {
             if ($p.source -ne $ExpectedRegistry) {
                 throw "${Path}: unexpected source '$($p.source)' on package '$($p.name)'"
             }
+            if ($hostOnly.ContainsKey($p.name) -and -not $ExpectedExternal.ContainsKey($p.name)) { continue }
             if (-not $ExpectedExternal.ContainsKey($p.name)) {
                 throw "${Path}: unexpected external dependency '$($p.name) $($p.version)'"
             }
@@ -131,7 +149,7 @@ function Assert-Lockfile([string]$Path) {
             if (-not $AllowedLocalExternalEdges.ContainsKey($p.name)) {
                 throw "${Path}: unexpected local package '$($p.name)'"
             }
-            $extDeps = @($p.deps | Where-Object { $ExpectedExternal.ContainsKey($_) } | Sort-Object) -join ','
+            $extDeps = @($p.deps | Where-Object { $registryNames -contains $_ } | Sort-Object) -join ','
             $expLocalExt = ($AllowedLocalExternalEdges[$p.name] | Sort-Object) -join ','
             if ($extDeps -ne $expLocalExt) {
                 throw "${Path}: local package '$($p.name)' external edges changed: got [$extDeps], expected [$expLocalExt]"

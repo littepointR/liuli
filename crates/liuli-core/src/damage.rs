@@ -55,6 +55,33 @@ impl DamageSet {
         self.normalize(screen);
     }
 
+    /// Expand to the display controller's address grid, measured from the screen origin.
+    pub fn align_windows(
+        &mut self,
+        screen: Rect,
+        x_step: core::num::NonZeroU16,
+        y_step: core::num::NonZeroU16,
+    ) {
+        if self.is_empty() || self.full_screen {
+            return;
+        }
+        let expand = |start: i32, len: u32, base: i32, limit: u32, step: core::num::NonZeroU16| {
+            let step = u64::from(step.get());
+            let start = (i64::from(start) - i64::from(base)).max(0) as u64;
+            let left = start / step * step;
+            let right = (start + u64::from(len)).div_ceil(step) * step;
+            (
+                (i64::from(base) + left as i64).clamp(i32::MIN.into(), i32::MAX.into()) as i32,
+                right.min(limit.into()).saturating_sub(left) as u32,
+            )
+        };
+        for rect in &mut self.rects[..self.count] {
+            let (x, w) = expand(rect.x, rect.w, screen.x, screen.w, x_step);
+            let (y, h) = expand(rect.y, rect.h, screen.y, screen.h, y_step);
+            *rect = Rect::new(x, y, w, h);
+        }
+        self.normalize(screen);
+    }
     pub fn as_slice(&self) -> &[Rect] {
         &self.rects[..self.count]
     }

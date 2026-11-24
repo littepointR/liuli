@@ -7,3 +7,7 @@ license.workspace = true
 
 [dependencies]
 embedded-graphics-core.workspace = true
+
+[features]
+owned-images=[]
+inspector=[]

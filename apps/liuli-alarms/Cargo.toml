@@ -1,0 +1,20 @@
+[package]
+name = "liuli-alarms"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+liuli.workspace = true
+liuli-widgets = { version = "=0.3.0-dev.1", path = "../../crates/liuli-widgets" }
+
+[dev-dependencies]
+liuli-sim = { version = "=0.3.0-dev.1", path = "../../host/liuli-sim", default-features = false }
+
+[features]
+enhanced = ["liuli/enhanced"]
+
+[[example]]
+name = "editor"
+required-features = ["enhanced"]

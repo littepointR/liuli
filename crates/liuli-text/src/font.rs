@@ -235,7 +235,7 @@ impl<'a> FontSet<'a> {
 }
 
 #[inline]
-fn read_entry(bytes: &[u8], off: usize) -> GlyphMetrics {
+pub(crate) fn read_entry(bytes: &[u8], off: usize) -> GlyphMetrics {
     GlyphMetrics {
         unicode: read_u32(bytes, off),
         advance: read_u16(bytes, off + 4),

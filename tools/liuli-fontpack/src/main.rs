@@ -2,6 +2,7 @@
 
 mod atlas;
 mod pack;
+mod project;
 
 use atlas::Atlas;
 use pack::{pack_lf4, verify_lf4_invariants};
@@ -172,6 +173,19 @@ fn run_verify(root: &Path) -> Result<(), String> {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let cmd = args.get(1).map(String::as_str).unwrap_or("verify");
+    if args.len() > 2 {
+        let result = match args.as_slice() {
+            [_, op, flag, path] if flag == "--project" && (op == "pack" || op == "verify") => {
+                project::run(Path::new(path), op == "verify")
+            }
+            _ => Err("usage: liuli-fontpack [pack|verify] [--project fonts.toml]".into()),
+        };
+        if let Err(err) = result {
+            eprintln!("liuli-fontpack: {err}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let root = workspace_root();
     let res = match cmd {
         "pack" => run_pack(&root),

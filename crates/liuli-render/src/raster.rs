@@ -43,8 +43,53 @@ pub fn render_band<'f, R>(
 where
     R: SceneResources + ?Sized,
 {
+    render_band_with_blend(target, cmds, resources, fonts, blend_solid)
+}
+
+/// Scalar RGB565 reference used by hosts and unaccelerated boards.
+pub fn blend_solid(row: &mut [u16], color: Rgb565, alpha: u8) {
+    for word in row {
+        *word = rgb565_to_u16(blend_rgb565_a4(color, u16_to_rgb565(*word), alpha));
+    }
+}
+
+pub fn render_band_with_blend<'f, R>(
+    target: &mut BandTarget<'_>,
+    cmds: &CommandList,
+    resources: &R,
+    fonts: &FontSet<'f>,
+    blend: impl Fn(&mut [u16], Rgb565, u8) + Copy,
+) -> u32
+where
+    R: SceneResources + ?Sized,
+{
+    match render_band_with_pixels(
+        target,
+        cmds,
+        resources,
+        fonts,
+        blend,
+        &mut liuli_text::storage::InlinePixels,
+    ) {
+        Ok(count) => count,
+        Err(never) => match never {},
+    }
+}
+
+pub fn render_band_with_pixels<'f, R, G: liuli_text::storage::GlyphPixels>(
+    target: &mut BandTarget<'_>,
+    cmds: &CommandList,
+    resources: &R,
+    fonts: &FontSet<'f>,
+    blend: impl Fn(&mut [u16], Rgb565, u8) + Copy,
+    glyphs: &mut G,
+) -> Result<u32, G::Error>
+where
+    R: SceneResources + ?Sized,
+{
     let _ = target.clear(cmds.root_bg);
     let band_rect = target.band_rect();
+    glyphs.begin_band(band_rect);
     let mut replayed = 0u32;
 
     for cmd in cmds.as_slice() {
@@ -55,6 +100,48 @@ where
 
         match *cmd {
             PaintCmd::Empty => {}
+            PaintCmd::Bitmap {
+                rect,
+                clip,
+                angle,
+                alpha,
+                ..
+            }
+            | PaintCmd::Surface {
+                rect,
+                clip,
+                angle,
+                alpha,
+                ..
+            } => {
+                let Some(source) = cmds.image(*cmd) else {
+                    continue;
+                };
+                let area = rect.intersect(clip).intersect(band_rect);
+                let stride = target.width() as usize;
+                let pixels = target.words_mut();
+                for py in 0..area.h {
+                    for px in 0..area.w {
+                        let x = area.x as i64 + i64::from(px);
+                        let y = area.y as i64 + i64::from(py);
+                        if let Some(raw) = source.sample(
+                            (x - i64::from(rect.x)) as u32,
+                            (y - i64::from(rect.y)) as u32,
+                            rect.w,
+                            rect.h,
+                            angle,
+                        ) {
+                            let index = (y - i64::from(band_rect.y)) as usize * stride
+                                + (x - i64::from(band_rect.x)) as usize;
+                            let bg = liuli_core::geometry::u16_to_rgb565(pixels[index]);
+                            let fg = liuli_core::geometry::u16_to_rgb565(raw);
+                            pixels[index] =
+                                liuli_core::geometry::rgb565_to_u16(blend_rgb565_a4(fg, bg, alpha));
+                        }
+                    }
+                }
+            }
+
             PaintCmd::FillRect { rect, clip, color } => {
                 let eff = rect.intersect(clip).intersect(band_rect);
                 if !eff.is_empty() {
@@ -126,10 +213,7 @@ where
                 } else {
                     for ly in y0..y1 {
                         let row = &mut words[ly * stride + x0..ly * stride + x1];
-                        for w in row {
-                            let bg = u16_to_rgb565(*w);
-                            *w = rgb565_to_u16(blend_rgb565_a4(color, bg, alpha));
-                        }
+                        blend(row, color, alpha);
                     }
                 }
             }
@@ -163,6 +247,7 @@ where
                 let stride = target.width() as usize;
                 let words = target.words_mut();
 
+                let mut resource_error = None;
                 visit_layout_glyphs(
                     font,
                     s,
@@ -173,8 +258,11 @@ where
                         align,
                     },
                     |pg| {
-                        let gx = pos.x + pg.x;
-                        let gy = pos.y + pg.y;
+                        if resource_error.is_some() {
+                            return;
+                        }
+                        let gx = pos.x.saturating_add(pg.x);
+                        let gy = pos.y.saturating_add(pg.y);
                         let gw = pg.glyph.metrics.width;
                         let gh = pg.glyph.metrics.height;
                         if gw == 0 || gh == 0 {
@@ -185,13 +273,20 @@ where
                         if vis.is_empty() {
                             return;
                         }
+                        let data = match glyphs.pixels(font_id, pg.glyph) {
+                            Ok(bytes) => bytes,
+                            Err(e) => {
+                                resource_error = Some(e);
+                                return;
+                            }
+                        };
                         for py in vis.y..(vis.y + vis.h as i32) {
                             let src_y = (py - gy) as u16;
                             let ly = (py - band_rect.y) as usize;
                             let row_off = ly * stride;
                             for px in vis.x..(vis.x + vis.w as i32) {
                                 let src_x = (px - gx) as u16;
-                                let cov = a4_pixel(pg.glyph.data, gw, src_x, src_y);
+                                let cov = a4_pixel(data, gw, src_x, src_y);
                                 if cov == 0 {
                                     continue;
                                 }
@@ -203,6 +298,9 @@ where
                         }
                     },
                 );
+                if let Some(e) = resource_error {
+                    return Err(e);
+                }
             }
             PaintCmd::Icon {
                 rect,
@@ -235,7 +333,7 @@ where
         }
     }
 
-    replayed
+    Ok(replayed)
 }
 
 #[inline]

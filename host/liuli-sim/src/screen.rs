@@ -187,6 +187,48 @@ pub fn render_reference_fullscreen(
     for cmd in cmds.as_slice() {
         match *cmd {
             PaintCmd::Empty => {}
+            PaintCmd::Bitmap {
+                rect,
+                clip,
+                angle,
+                alpha,
+                ..
+            }
+            | PaintCmd::Surface {
+                rect,
+                clip,
+                angle,
+                alpha,
+                ..
+            } => {
+                let Some(source) = cmds.image(*cmd) else {
+                    continue;
+                };
+                let area = rect.intersect(clip).intersect(full);
+                let pixels = screen.words_mut();
+                for py in 0..area.h {
+                    for px in 0..area.w {
+                        let x = area.x as i64 + i64::from(px);
+                        let y = area.y as i64 + i64::from(py);
+                        if let Some(raw) = source.sample(
+                            (x - i64::from(rect.x)) as u32,
+                            (y - i64::from(rect.y)) as u32,
+                            rect.w,
+                            rect.h,
+                            angle,
+                        ) {
+                            let index = (y - i64::from(full.y)) as usize * stride
+                                + (x - i64::from(full.x)) as usize;
+                            let bg = liuli::core::geometry::u16_to_rgb565(pixels[index]);
+                            let fg = liuli::core::geometry::u16_to_rgb565(raw);
+                            pixels[index] = liuli::core::geometry::rgb565_to_u16(blend_rgb565_a4(
+                                fg, bg, alpha,
+                            ));
+                        }
+                    }
+                }
+            }
+
             PaintCmd::FillRect { rect, clip, color } => {
                 let eff = rect.intersect(clip).intersect(full);
                 if !eff.is_empty() {

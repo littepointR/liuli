@@ -1,5 +1,6 @@
 [package]
 name = "liuli-sim"
+default-run = "liuli-sim"
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true
@@ -7,5 +8,38 @@ license.workspace = true
 
 [dependencies]
 embedded-graphics.workspace = true
-liuli.workspace = true
-liuli-settings.workspace = true
+liuli = { workspace = true, features = ["inspector"] }
+liuli-settings = { workspace = true, optional = true }
+
+[features]
+default = ["demos"]
+demos = ["dep:liuli-settings"]
+
+[[bin]]
+name = "liuli-sim"
+path = "src/main.rs"
+required-features = ["demos"]
+
+[[example]]
+name = "headless"
+required-features = ["demos"]
+
+[[test]]
+name = "allocation"
+required-features = ["demos"]
+
+[[test]]
+name = "golden"
+required-features = ["demos"]
+
+[[test]]
+name = "incremental"
+required-features = ["demos"]
+
+[[test]]
+name = "preview"
+required-features = ["demos"]
+
+[[test]]
+name = "replay"
+required-features = ["demos"]

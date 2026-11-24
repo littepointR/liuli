@@ -53,3 +53,42 @@ jobs:
         run: cargo build --target thumbv7em-none-eabihf --release --locked --features startup-probe --target-dir target/startup-probe
       - shell: pwsh
         run: .\checks\audit-firmware.ps1 -Elf checks/firmware/target/startup-probe/thumbv7em-none-eabihf/release/liuli-firmware -Profile StartupProbe
+
+  desktop-consumers:
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: cargo fetch --locked
+      - run: cargo test --workspace --all-features --release --locked
+      - run: cargo run -p liuli-fontpack --locked -- verify --project apps/liuli-alarms/assets/fonts.toml
+      - run: python checks/package-sdk.py --fetch-toolchain-inputs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: liuli-sdk-${{ matrix.os }}
+          path: target/dist/liuli-sdk-*.zip
+          if-no-files-found: error
+
+  esp32s3:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        profile: [basic, enhanced, benchmark]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: esp-rs/xtensa-toolchain@v1.5
+        with:
+          buildtargets: esp32s3
+      - run: python3 boards/waveshare-s3-amoled/build.py --rust-only --profile ${{ matrix.profile }}
+      - uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.1
+          target: esp32s3
+          path: boards/waveshare-s3-amoled
+          command: idf.py -DLIULI_RUNTIME=$PWD/../../target/s3/rust/xtensa-esp32s3-none-elf/release/libliuli_s3_runtime.a build

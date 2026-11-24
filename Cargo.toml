@@ -6,6 +6,9 @@ members = [
     "crates/liuli-render",
     "crates/liuli",
     "apps/liuli-settings",
+    "crates/liuli-widgets",
+    "crates/liuli-enhanced",
+    "apps/liuli-alarms",
     "host/liuli-sim",
     "tools/liuli-fontpack",
 ]
@@ -14,14 +17,14 @@ exclude = ["checks/firmware"]
 [workspace.package]
 edition = "2024"
 rust-version = "1.100"
-version = "0.2.0"
+version = "0.3.0-dev.1"
 license = "MIT"
 
 [workspace.dependencies]
 embedded-graphics-core = { version = "=0.4.1", default-features = false }
 embedded-graphics = { version = "=0.8.2", default-features = false }
-liuli-core = { path = "crates/liuli-core" }
-liuli-text = { path = "crates/liuli-text" }
-liuli-render = { path = "crates/liuli-render" }
-liuli = { path = "crates/liuli" }
-liuli-settings = { path = "apps/liuli-settings" }
+liuli-core = { version = "=0.3.0-dev.1", path = "crates/liuli-core" }
+liuli-text = { version = "=0.3.0-dev.1", path = "crates/liuli-text" }
+liuli-render = { version = "=0.3.0-dev.1", path = "crates/liuli-render" }
+liuli = { version = "=0.3.0-dev.1", path = "crates/liuli" }
+liuli-settings = { version = "=0.3.0-dev.1", path = "apps/liuli-settings" }

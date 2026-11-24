@@ -3,6 +3,8 @@
 
 pub mod engine;
 pub mod storage;
+#[cfg(feature = "enhanced")]
+pub use liuli_enhanced as enhanced;
 
 pub use liuli_core as core;
 pub use liuli_render as render;
@@ -16,6 +18,7 @@ pub mod prelude {
     pub use embedded_graphics_core::pixelcolor::{PixelColor, Rgb565};
     pub use embedded_graphics_core::primitives::Rectangle;
 
+    pub use liuli_core::bitmap::Bitmap;
     pub use liuli_core::capacity::{
         BuildError, DEFAULT_BAND_HEIGHT, DEFAULT_BAND_PIXELS, DEFAULT_BAND_WIDTH,
         DEFAULT_SCREEN_HEIGHT, DEFAULT_SCREEN_WIDTH, DispatchError, FrameMetrics, LayoutError,
@@ -25,12 +28,16 @@ pub mod prelude {
     };
     pub use liuli_core::damage::DamageSet;
     pub use liuli_core::geometry::Rect;
-    pub use liuli_core::input::{ActionKind, HoldKey, NavDir, PointerId, RawInput, UiAction};
-    pub use liuli_core::paint::{SceneResources, SliceSceneResources, TextId};
+    pub use liuli_core::input::TextInput;
+    pub use liuli_core::input::{
+        ActionKind, GesturePhase, HoldKey, NavDir, PointerId, RawInput, TransformGesture, UiAction,
+    };
+    pub use liuli_core::paint::{SceneResources, SliceSceneResources, TextId, WidgetCanvas};
     pub use liuli_core::time::{
         Easing, InstantMs, MAX_REPEAT_STEPS_PER_ADVANCE, NextWakeup, REPEAT_DELAY_MS,
         REPEAT_PERIOD_MS,
     };
+    pub use liuli_core::view::StoredProps;
     pub use liuli_core::view::{
         Align, App, Change, Children, EdgeInsets, FontId, IconKind, Key, Length, NodeKind,
         NodeProps, PageRestore, SampleRing, TextAlign, TextRef, ViewBuilder,

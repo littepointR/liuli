@@ -1,6 +1,25 @@
-# `liuli` (`v0.2.0`) — Pure-Rust `#![no_std]` Embedded GUI Engine on `embedded-graphics`
+# 琉璃 · MCU UI 框架
 
-`liuli` (琉璃) is a deterministic, zero-heap-allocation (`#![no_std]`, `#![forbid(unsafe_code)]`) embedded GUI engine and 3-page Chinese terminal demo targeting `embedded-graphics` (`0.8.2`) / `embedded-graphics-core` (`0.4.1`) RGB565 displays and Cortex-M microcontrollers within a **128 KiB static RAM budget** (`73,248 B` measured on `thumbv7em-none-eabihf`, `0 B` `.data`).
+当前开发版本为 **0.3.0-dev.1**。基础档使用有界的 Rust 状态和 RGB565 条带渲染。增强档在 ESP32-S3 上增加 PSRAM 字库缓存和像素混合加速。两个配置共用应用的 `App::view` 和 `App::update`。
+
+| 从这里开始 | 内容 |
+|---|---|
+| [独立 SDK 与组件教程](docs/sdk.md) | 离线安装、应用模板、控件、主题、字体、回放和事务恢复 |
+| [参考板指南](docs/waveshare-s3.md) | 构建、分区、烧录、输入、接线与恢复 |
+| [硬件与发布记录](docs/qualification.md) | 测量边界、实板结果和 1.0 验收状态 |
+| [底层架构](docs/architecture.md) | 树、布局、按条带绘制和 DMA |
+
+从源码运行产品应用：
+
+```sh
+cargo run -p liuli-alarms --example preview -- apps/liuli-alarms/assets/body.lf4
+cargo test -p liuli-alarms --release
+cargo run -p liuli-fontpack -- verify --project apps/liuli-alarms/assets/fonts.toml
+cargo fetch --locked
+python checks/package-sdk.py --fetch-toolchain-inputs
+```
+
+以下保留 v0.2 的两个兼容应用、回放入口及其历史基线。
 
 ## Highlights (`v0.2.0`)
 
@@ -54,7 +73,7 @@ Pop-Location
 - [Event Replay Script Format](docs/replay-format.md)
 - [Memory & Transfer Budget](docs/memory-budget.md)
 
-## Design Boundaries (`v0.2.0`)
+## Historical Design Boundaries (`v0.2.0`)
 
 - **Horizontal LTR CJK + ASCII text**: Fixed dual bitmap slots (`Body16` & `Small12`); complex BiDi/shaping (Arabic/Indic/emoji sequences) remains out of scope.
 - **Single Modal Layer & Single Pointer**: Bounded to `MAX_MODALS = 1` active modal dialog and single active touch pointer ID (`Toast` overlays sit non-focusable and click-through).
@@ -62,4 +81,4 @@ Pop-Location
 
 ## License
 
-Dual-licensed under [Apache-2.0 or MIT](LICENSE). Font atlas generated from SIL OFL 1.1 Noto Sans CJK SC ([FONT-LICENSE.txt](tools/liuli-fontpack/source/FONT-LICENSE.txt)).
+Code is licensed under [MIT](LICENSE). Font atlas generated from SIL OFL 1.1 Noto Sans CJK SC ([FONT-LICENSE.txt](tools/liuli-fontpack/source/FONT-LICENSE.txt)).

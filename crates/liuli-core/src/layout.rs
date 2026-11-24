@@ -55,6 +55,10 @@ pub struct TextMeasureOut {
 }
 
 pub trait TextMeasurer {
+    fn custom_size(&self, _key: crate::view::Key, _font: FontId, _available: Size) -> Size {
+        Size::zero()
+    }
+
     fn line_height(&self, font: FontId) -> u32;
     fn measure_text(
         &self,
@@ -240,6 +244,16 @@ fn measure_leaf(
         NodeKind::Slider => {
             let w = resolve_axis_size(width_prop, 120u32.saturating_add(pad_w), c.max_w);
             let h = resolve_axis_size(height_prop, 24u32.saturating_add(pad_h), c.max_h);
+            c.clamp_size(Size::new(w, h))
+        }
+        NodeKind::Custom => {
+            let content = measurer.custom_size(
+                n.key,
+                font,
+                Size::new(c.max_w.saturating_sub(pad_w), c.max_h.saturating_sub(pad_h)),
+            );
+            let w = resolve_axis_size(width_prop, content.width.saturating_add(pad_w), c.max_w);
+            let h = resolve_axis_size(height_prop, content.height.saturating_add(pad_h), c.max_h);
             c.clamp_size(Size::new(w, h))
         }
         NodeKind::ProgressBar => {

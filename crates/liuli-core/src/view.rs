@@ -35,6 +35,62 @@ pub trait App {
     fn view(model: &Self::Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildError>;
     fn on_action(model: &Self::Model, event: UiAction) -> Option<Self::Msg>;
 
+    fn accepts_text(_model: &Self::Model, _key: Key) -> bool {
+        false
+    }
+    fn on_text(
+        _model: &Self::Model,
+        _key: Key,
+        _input: crate::input::TextInput<'_>,
+    ) -> Option<Self::Msg> {
+        None
+    }
+    /// Intrinsic content size of a custom leaf, excluding padding.
+    fn measure_custom(
+        _key: Key,
+        _font: FontId,
+        _available: crate::geometry::Size,
+    ) -> crate::geometry::Size {
+        crate::geometry::Size::zero()
+    }
+
+    /// Emit bounded paint commands for a custom leaf. All paint dependencies
+    /// must be represented by its retained properties so damage stays correct.
+    fn paint_custom(
+        _key: Key,
+        _props: &StoredProps,
+        _canvas: &mut crate::paint::WidgetCanvas<'_>,
+    ) -> Result<(), BuildError> {
+        Ok(())
+    }
+
+    /// Paint immutable resources held by the current model. Update the custom node's theme_id
+    /// (or another retained visual property) whenever its resource changes.
+    fn paint_model(
+        _model: &Self::Model,
+        key: Key,
+        props: &StoredProps,
+        canvas: &mut crate::paint::WidgetCanvas<'_>,
+    ) -> Result<(), BuildError> {
+        Self::paint_custom(key, props, canvas)
+    }
+    /// Opt this node into two-contact gesture arbitration.
+    fn accepts_transform(_model: &Self::Model, _key: Key) -> bool {
+        false
+    }
+    fn on_transform(
+        _model: &Self::Model,
+        _key: Key,
+        _gesture: crate::input::TransformGesture,
+    ) -> Option<Self::Msg> {
+        None
+    }
+
+    /// Update a virtualized viewport after the router changes its scroll offset.
+    fn on_scroll(_model: &Self::Model, _key: Key, _offset: i32) -> Option<Self::Msg> {
+        None
+    }
+
     fn next_deadline(_model: &Self::Model, _now: InstantMs) -> Option<InstantMs> {
         None
     }
@@ -261,6 +317,7 @@ pub enum NodeKind {
     Modal = 9,
     ProgressBar = 10,
     Sparkline = 11,
+    Custom = 12,
 }
 
 impl NodeKind {
@@ -274,6 +331,7 @@ impl NodeKind {
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct NodeProps {
+    pub style_source: crate::style_source::StyleSource,
     pub width: Length,
     pub height: Length,
     pub padding: EdgeInsets,
@@ -307,6 +365,8 @@ pub struct NodeProps {
     pub series: u8,
     pub anim_easing: Easing,
     pub repeatable: bool,
+    pub swipeable: bool,
+    pub long_press: bool,
 }
 
 impl Default for NodeProps {
@@ -316,8 +376,10 @@ impl Default for NodeProps {
 }
 
 impl NodeProps {
+    #[cfg_attr(feature = "inspector", track_caller)]
     pub const fn new() -> Self {
         Self {
+            style_source: crate::style_source::StyleSource::named("NodeProps").declared(),
             width: Length::Content,
             height: Length::Content,
             padding: EdgeInsets::ZERO,
@@ -351,6 +413,8 @@ impl NodeProps {
             series: 0,
             anim_easing: Easing::Linear,
             repeatable: false,
+            swipeable: false,
+            long_press: false,
         }
     }
 }
@@ -368,6 +432,8 @@ const FLAG_FONT_SMALL12: u16 = 1 << 9;
 const TEXT_ALIGN_SHIFT: u16 = 10;
 const TEXT_ALIGN_MASK: u16 = 0b11 << TEXT_ALIGN_SHIFT;
 const FLAG_EASE_OUT_CUBIC: u16 = 1 << 12;
+const FLAG_SWIPE: u16 = 1 << 14;
+const FLAG_LONG_PRESS: u16 = 1 << 15;
 const FLAG_REPEATABLE: u16 = 1 << 13;
 
 /// Zero-initializable node property representation stored in static pools (`Storage`).
@@ -469,6 +535,12 @@ impl StoredProps {
         flags |= ((p.text_align as u16) << TEXT_ALIGN_SHIFT) & TEXT_ALIGN_MASK;
         if p.anim_easing == Easing::EaseOutCubic {
             flags |= FLAG_EASE_OUT_CUBIC;
+        }
+        if p.swipeable {
+            flags |= FLAG_SWIPE;
+        }
+        if p.long_press {
+            flags |= FLAG_LONG_PRESS;
         }
         if p.repeatable {
             flags |= FLAG_REPEATABLE;
@@ -599,6 +671,12 @@ impl StoredProps {
     }
 
     #[inline]
+    pub const fn swipeable(&self) -> bool {
+        self.flags & FLAG_SWIPE != 0
+    }
+    pub const fn long_press(&self) -> bool {
+        self.flags & FLAG_LONG_PRESS != 0
+    }
     pub const fn repeatable(&self) -> bool {
         (self.flags & FLAG_REPEATABLE) != 0
     }
@@ -778,6 +856,8 @@ impl DraftNode {
 }
 
 pub struct ViewDraft {
+    #[cfg(feature = "inspector")]
+    pub inspection: Option<alloc::boxed::Box<crate::style_source::StyleInspection>>,
     pub nodes: [DraftNode; MAX_NODES],
     pub count: u16,
     pub text_buf: [u8; MAX_TEXT_BYTES],
@@ -789,6 +869,8 @@ pub struct ViewDraft {
 
 impl ViewDraft {
     pub const ZERO: Self = Self {
+        #[cfg(feature = "inspector")]
+        inspection: None,
         nodes: [DraftNode::EMPTY; MAX_NODES],
         count: 0,
         text_buf: [0; MAX_TEXT_BYTES],
@@ -803,6 +885,10 @@ impl ViewDraft {
     }
 
     pub fn reset(&mut self) {
+        #[cfg(feature = "inspector")]
+        if let Some(i) = self.inspection.as_mut() {
+            i.staging.clear();
+        }
         self.count = 0;
         self.text_len = 0;
         self.sparklines.reset();
@@ -859,6 +945,7 @@ pub struct ViewBuilder<'a> {
     stack: [SlotLink; MAX_DEPTH],
     depth: usize,
     first_error: Option<BuildError>,
+    operation_key: Option<Key>,
 }
 
 /// Scoped child builder passed into container closures.
@@ -951,6 +1038,10 @@ impl<'a, 'b> Children<'a, 'b> {
     }
 
     #[inline]
+    pub fn custom(&mut self, key: Key, props: NodeProps) -> Result<(), BuildError> {
+        self.builder.leaf(key, NodeKind::Custom, props)
+    }
+
     pub fn label(&mut self, key: Key, props: NodeProps) -> Result<(), BuildError> {
         self.builder.leaf(key, NodeKind::Label, props)
     }
@@ -1014,10 +1105,21 @@ impl<'a> ViewBuilder<'a> {
             stack: [SlotLink::NONE; MAX_DEPTH],
             depth: 0,
             first_error: None,
+            operation_key: None,
         }
     }
 
     #[inline]
+    pub const fn operation_key(&self) -> Option<Key> {
+        self.operation_key
+    }
+    fn current_container(&self) -> Option<Key> {
+        self.depth
+            .checked_sub(1)
+            .and_then(|d| self.stack[d].get())
+            .map(|slot| self.draft.nodes[slot].key)
+    }
+
     fn fail(&mut self, err: BuildError) -> BuildError {
         if self.first_error.is_none() {
             self.first_error = Some(err);
@@ -1060,6 +1162,9 @@ impl<'a> ViewBuilder<'a> {
     }
 
     pub fn text_fmt(&mut self, args: fmt::Arguments<'_>) -> Result<TextRef, BuildError> {
+        if self.first_error.is_none() {
+            self.operation_key = self.current_container();
+        }
         let start = self.draft.text_len as usize;
         let mut writer = DraftTextWriter {
             buf: &mut self.draft.text_buf,
@@ -1079,6 +1184,9 @@ impl<'a> ViewBuilder<'a> {
     }
 
     pub fn text_dyn(&mut self, s: &str) -> Result<TextRef, BuildError> {
+        if self.first_error.is_none() {
+            self.operation_key = self.current_container();
+        }
         let start = self.draft.text_len as usize;
         let bytes = s.as_bytes();
         if start + bytes.len() > self.draft.text_buf.len() {
@@ -1093,6 +1201,9 @@ impl<'a> ViewBuilder<'a> {
     }
 
     pub fn begin(&mut self, key: Key, kind: NodeKind, props: NodeProps) -> Result<(), BuildError> {
+        if self.first_error.is_none() {
+            self.operation_key = Some(key);
+        }
         if !kind.is_container() {
             return Err(self.fail(BuildError::InvalidKind));
         }
@@ -1103,6 +1214,9 @@ impl<'a> ViewBuilder<'a> {
     }
 
     pub fn leaf(&mut self, key: Key, kind: NodeKind, props: NodeProps) -> Result<(), BuildError> {
+        if self.first_error.is_none() {
+            self.operation_key = Some(key);
+        }
         if kind.is_container() {
             return Err(self.fail(BuildError::InvalidKind));
         }
@@ -1241,6 +1355,10 @@ impl<'a> ViewBuilder<'a> {
             last_child: SlotLink::NONE,
             next_sibling: SlotLink::NONE,
         };
+        #[cfg(feature = "inspector")]
+        if let Some(i) = self.draft.inspection.as_mut() {
+            i.staging.push((key, props.style_source));
+        }
         self.draft.count += 1;
 
         if let Some(p) = parent_link.get() {

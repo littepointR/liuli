@@ -1,0 +1,12 @@
+[package]
+name = "liuli-widgets"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+liuli.workspace = true
+
+[dev-dependencies]
+liuli-sim={version="=0.3.0-dev.1",path="../../host/liuli-sim",default-features=false}

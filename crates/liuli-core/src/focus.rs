@@ -593,7 +593,11 @@ pub fn dispatch_input(
                         kind: ActionKind::Toggle,
                     }),
                 ),
-                NodeKind::Button | NodeKind::Row | NodeKind::Column | NodeKind::Stack => (
+                NodeKind::Button
+                | NodeKind::Row
+                | NodeKind::Column
+                | NodeKind::Stack
+                | NodeKind::Custom => (
                     true,
                     Some(UiAction {
                         key: node.key,
@@ -772,9 +776,27 @@ pub fn dispatch_input(
 
                     let dx = pos.x.saturating_sub(start_pos.x);
                     let dy = pos.y.saturating_sub(start_pos.y);
-                    let adx = dx.abs();
-                    let ady = dy.abs();
+                    let adx = dx.saturating_abs();
+                    let ady = dy.saturating_abs();
 
+                    if tree.nodes[candidate_slot as usize].props.swipeable()
+                        && adx >= DRAG_THRESHOLD_PX
+                        && adx > ady
+                    {
+                        release_pressed_if_valid(tree, candidate, damage, screen);
+                        pointer.capture = CaptureKind::None;
+                        return (
+                            true,
+                            Some(UiAction {
+                                key: tree.nodes[candidate_slot as usize].key,
+                                kind: if dx < 0 {
+                                    ActionKind::SwipeLeft
+                                } else {
+                                    ActionKind::SwipeRight
+                                },
+                            }),
+                        );
+                    }
                     if slider_candidate && adx >= DRAG_THRESHOLD_PX && adx > ady {
                         if tree.nodes[candidate_slot as usize].pressed {
                             tree.nodes[candidate_slot as usize].pressed = false;
@@ -796,7 +818,13 @@ pub fn dispatch_input(
                             start_pos,
                             start_offset,
                         };
-                        apply_scroll_drag(tree, scroll_slot, start_offset - dy, screen, damage);
+                        apply_scroll_drag(
+                            tree,
+                            scroll_slot,
+                            start_offset.saturating_sub(dy),
+                            screen,
+                            damage,
+                        );
                         return (true, None);
                     }
 
@@ -819,7 +847,13 @@ pub fn dispatch_input(
                         return (false, None);
                     };
                     let dy = pos.y.saturating_sub(start_pos.y);
-                    apply_scroll_drag(tree, scroll_slot, start_offset - dy, screen, damage);
+                    apply_scroll_drag(
+                        tree,
+                        scroll_slot,
+                        start_offset.saturating_sub(dy),
+                        screen,
+                        damage,
+                    );
                     (true, None)
                 }
             }
@@ -953,7 +987,7 @@ pub fn is_valid_repeat_target(
                 && n.pressed
                 && n.key == repeat.key
                 && n.kind == NodeKind::Button
-                && n.props.repeatable()
+                && (n.props.repeatable() || n.props.long_press())
                 && tree.is_effectively_enabled_and_visible(slot)
         }
         RepeatSource::Key => {

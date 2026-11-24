@@ -4,6 +4,7 @@
 pub mod coverage;
 pub mod font;
 pub mod layout;
+pub mod storage;
 
 pub use coverage::{a4_pixel, blend_rgb565_a4};
 pub use font::{FontError, FontSet, GlyphBitmap, GlyphMetrics, Lf4Font};

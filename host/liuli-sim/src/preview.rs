@@ -7,7 +7,10 @@ use std::time::{Duration, Instant};
 use liuli::prelude::*;
 
 use crate::clock::ClockController;
-use crate::sim::{FrameLookupError, SimScenario, SimSession};
+use crate::session::{AppSession, FrameLookupError, FrameSnapshot, rects_to_json};
+#[cfg(feature = "demos")]
+use crate::sim::{SimScenario, SimSession};
+use liuli::core::node::RetainedTree;
 
 const PREVIEW_HTML: &str = include_str!("preview.html");
 const MAX_HTTP_HEADER_BYTES: usize = 8192;
@@ -18,15 +21,23 @@ pub struct PreviewServer {
     listener: TcpListener,
     addr: SocketAddr,
     stop: Arc<AtomicBool>,
+    #[cfg(feature = "demos")]
     scenario: SimScenario,
 }
 
 impl PreviewServer {
     pub fn bind(port: u16) -> Result<Self, String> {
-        Self::bind_scenario(port, SimScenario::Terminal)
+        Self::bind_socket(port)
     }
 
+    #[cfg(feature = "demos")]
     pub fn bind_scenario(port: u16, scenario: SimScenario) -> Result<Self, String> {
+        let mut server = Self::bind_socket(port)?;
+        server.scenario = scenario;
+        Ok(server)
+    }
+
+    fn bind_socket(port: u16) -> Result<Self, String> {
         let addr = SocketAddr::from(([127, 0, 0, 1], port));
         let listener =
             TcpListener::bind(addr).map_err(|e| format!("failed to bind {addr}: {e}"))?;
@@ -40,7 +51,8 @@ impl PreviewServer {
             listener,
             addr: local_addr,
             stop: Arc::new(AtomicBool::new(false)),
-            scenario,
+            #[cfg(feature = "demos")]
+            scenario: SimScenario::Terminal,
         })
     }
 
@@ -48,6 +60,7 @@ impl PreviewServer {
         self.addr
     }
 
+    #[cfg(feature = "demos")]
     pub fn scenario(&self) -> SimScenario {
         self.scenario
     }
@@ -56,15 +69,25 @@ impl PreviewServer {
         self.stop.clone()
     }
 
+    #[cfg(feature = "demos")]
     pub fn serve(&self) -> Result<(), String> {
         let mut storage = Box::new(Storage::new());
         let mut session = SimSession::new(self.scenario, &mut storage, InstantMs(0), false)?;
-        let mut clock = ClockController::new(InstantMs(0), Instant::now());
+        self.serve_session(&mut session)
+    }
 
+    pub fn serve_app<A: App>(&self, session: &mut AppSession<'_, '_, A>) -> Result<(), String> {
+        self.serve_session(session)
+    }
+
+    fn serve_session(&self, session: &mut impl PreviewSession) -> Result<(), String> {
+        let mut clock = ClockController::new(InstantMs(session.snapshot().now_ms), Instant::now());
+
+        let mut trace = Trace::new();
         while !self.stop.load(Ordering::Relaxed) {
             match self.listener.accept() {
                 Ok((mut stream, _)) => {
-                    let _ = handle_connection(&mut stream, &mut session, &mut clock);
+                    let _ = handle_connection(&mut stream, session, &mut clock, &mut trace);
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     std::thread::sleep(Duration::from_millis(10));
@@ -73,6 +96,132 @@ impl PreviewServer {
             }
         }
         Ok(())
+    }
+}
+
+trait PreviewSession {
+    fn source(&self, key: Key) -> Option<&liuli::core::style_source::StyleSource>;
+    fn text(&mut self, _now: InstantMs, _input: TextInput<'_>) -> Result<(), String> {
+        Err("no focused text field".into())
+    }
+    fn frame_report(&self, id: u64) -> Option<&str>;
+    fn step(
+        &mut self,
+        now: InstantMs,
+        input: Option<RawInput>,
+        verify: bool,
+    ) -> Result<&FrameSnapshot, String>;
+    fn next_wakeup(&self, now: InstantMs) -> NextWakeup;
+    fn png_for_frame(&self, id: Option<u64>) -> Result<(u64, &[u8]), FrameLookupError>;
+    fn state_json(&self, paused: bool, rate: u32) -> String;
+    fn tree(&self) -> &RetainedTree;
+    fn snapshot(&self) -> &FrameSnapshot;
+    fn size(&self) -> (u32, u32);
+}
+#[cfg(feature = "demos")]
+impl PreviewSession for SimSession<'_> {
+    fn source(&self, key: Key) -> Option<&liuli::core::style_source::StyleSource> {
+        match self {
+            SimSession::Settings(s) => s.engine().style_source(key),
+            SimSession::Terminal(s) => s.engine().style_source(key),
+        }
+    }
+    fn frame_report(&self, id: u64) -> Option<&str> {
+        match self {
+            SimSession::Settings(s) => s.frame_report(id),
+            SimSession::Terminal(s) => s.frame_report(id),
+        }
+    }
+    fn step(
+        &mut self,
+        now: InstantMs,
+        input: Option<RawInput>,
+        verify: bool,
+    ) -> Result<&FrameSnapshot, String> {
+        self.step(now, input, verify)
+    }
+    fn png_for_frame(&self, id: Option<u64>) -> Result<(u64, &[u8]), FrameLookupError> {
+        self.png_for_frame(id)
+    }
+    fn snapshot(&self) -> &FrameSnapshot {
+        self.snapshot()
+    }
+    fn size(&self) -> (u32, u32) {
+        (self.screen().width(), self.screen().height())
+    }
+    fn tree(&self) -> &RetainedTree {
+        self.active_tree()
+    }
+    fn next_wakeup(&self, now: InstantMs) -> NextWakeup {
+        self.next_wakeup(now)
+    }
+    fn state_json(&self, paused: bool, rate: u32) -> String {
+        self.state_json(paused, rate)
+    }
+}
+impl<A: App> PreviewSession for AppSession<'_, '_, A> {
+    fn text(&mut self, now: InstantMs, input: TextInput<'_>) -> Result<(), String> {
+        AppSession::text(self, now, input, false).map(|_| ())
+    }
+    fn source(&self, key: Key) -> Option<&liuli::core::style_source::StyleSource> {
+        self.engine().style_source(key)
+    }
+    fn frame_report(&self, id: u64) -> Option<&str> {
+        self.frame_report(id)
+    }
+    fn step(
+        &mut self,
+        now: InstantMs,
+        input: Option<RawInput>,
+        verify: bool,
+    ) -> Result<&FrameSnapshot, String> {
+        self.step(now, input, verify)
+    }
+    fn png_for_frame(&self, id: Option<u64>) -> Result<(u64, &[u8]), FrameLookupError> {
+        self.png_for_frame(id)
+    }
+    fn snapshot(&self) -> &FrameSnapshot {
+        self.snapshot()
+    }
+    fn size(&self) -> (u32, u32) {
+        (self.screen().width(), self.screen().height())
+    }
+    fn tree(&self) -> &RetainedTree {
+        self.engine().active_tree()
+    }
+    fn next_wakeup(&self, now: InstantMs) -> NextWakeup {
+        self.engine().next_wakeup(now, false)
+    }
+    fn state_json(&self, paused: bool, rate: u32) -> String {
+        let frame = self.snapshot();
+        let engine = self.engine();
+        let tree = engine.active_tree();
+        let focus = engine
+            .focus()
+            .focused_key()
+            .map_or("null".into(), |k| k.0.to_string());
+        let capture = engine
+            .pointer()
+            .captured_id()
+            .filter(|id| tree.is_id_valid(*id))
+            .map_or("null".into(), |id| {
+                tree.nodes[id.slot() as usize].key.0.to_string()
+            });
+        format!(
+            r#"{{"frame_id":{},"now_ms":{},"paused":{},"rate_x":{},"measured_nodes":{},"pixels_sent":{},"damage":{},"band_rects":{},"focus":{focus},"capture":{capture},"text_input":{},"active_nodes":{},"commands":{},"text_bytes":{}}}"#,
+            frame.frame_id,
+            frame.now_ms,
+            paused,
+            rate,
+            frame.measured_nodes,
+            frame.pixels_sent,
+            rects_to_json(&frame.damage),
+            rects_to_json(&frame.band_rects),
+            engine.text_target().is_some(),
+            tree.active_count,
+            engine.active_commands().count,
+            tree.text_len
+        )
     }
 }
 
@@ -213,10 +362,25 @@ fn read_http_request(stream: &mut TcpStream) -> std::io::Result<ReadRequestOutco
     }))
 }
 
+// Pick the last painted visible descendant, including non-interactive labels and custom paint.
+fn pick_visible(tree: &RetainedTree, slot: u16, point: Point) -> Option<u16> {
+    let node = &tree.nodes[usize::from(slot)];
+    if !node.occupied || !node.props.visible() {
+        return None;
+    }
+    let mut hit = node.visible_rect.contains_point(point).then_some(slot);
+    let mut child = node.first_child.get_u16();
+    while let Some(slot) = child {
+        hit = pick_visible(tree, slot, point).or(hit);
+        child = tree.nodes[usize::from(slot)].next_sibling.get_u16();
+    }
+    hit
+}
 fn handle_connection(
     stream: &mut TcpStream,
-    session: &mut SimSession<'_>,
+    session: &mut impl PreviewSession,
     clock: &mut ClockController,
+    trace: &mut Trace,
 ) -> std::io::Result<()> {
     let _ = stream.set_nonblocking(false);
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
@@ -230,13 +394,116 @@ fn handle_connection(
     };
 
     match (req.method.as_str(), req.path.as_str()) {
-        ("GET", "/") => write_http(
-            stream,
-            "200 OK",
-            "text/html; charset=utf-8",
-            &[],
-            PREVIEW_HTML.as_bytes(),
-        ),
+        ("GET", "/") => {
+            let (w, h) = session.size();
+            let html = PREVIEW_HTML
+                .replace("SCREEN_WIDTH", &w.to_string())
+                .replace("SCREEN_HEIGHT", &h.to_string());
+            write_http(
+                stream,
+                "200 OK",
+                "text/html; charset=utf-8",
+                &[],
+                html.as_bytes(),
+            )
+        }
+        ("GET", "/trace") => {
+            if trace.overflow {
+                return write_http(
+                    stream,
+                    "409 Conflict",
+                    "text/plain",
+                    &[],
+                    b"trace capacity exceeded; restart preview for a new recording",
+                );
+            }
+            write_http(
+                stream,
+                "200 OK",
+                "text/plain; charset=utf-8",
+                b"Content-Disposition: attachment; filename=liuli.trace\r\n",
+                trace.data.as_bytes(),
+            )
+        }
+        ("GET", "/inspect") => {
+            let Some((x, y)) = req
+                .query
+                .strip_prefix("x=")
+                .and_then(|q| q.split_once("&y="))
+                .and_then(|(x, y)| Some((x.parse::<i32>().ok()?, y.parse::<i32>().ok()?)))
+            else {
+                return write_http(
+                    stream,
+                    "400 Bad Request",
+                    "text/plain",
+                    &[],
+                    b"expected x and y",
+                );
+            };
+            let tree = session.tree();
+            let point = Point::new(x, y);
+            let scope = liuli::core::focus::active_scope_root(tree);
+            let hit =
+                scope.and_then(|root| liuli::core::focus::hit_test_in_scope(tree, root, point));
+            let mut chain = vec![format!(
+                "input_target={:?}",
+                hit.map(|slot| tree.nodes[usize::from(slot)].key)
+            )];
+            let mut current = scope.and_then(|root| pick_visible(tree, root, point));
+            while let Some(slot) = current {
+                let node = &tree.nodes[slot as usize];
+                chain.push(format!("key={} {:?} width={:?} height={:?} measured={:?} layout={:?} clip={:?} visible={:?} font={:?} fg={:?} bg={:?}",node.key.0,node.kind,node.props.width,node.props.height,node.measured_size,node.layout_rect,node.clip_rect,node.visible_rect,node.props.font(),node.props.fg,node.props.bg()));
+                if let Some(source) = session.source(node.key) {
+                    chain.push(format!(
+                        "  style={} declaration={}",
+                        source.theme,
+                        source
+                            .declaration
+                            .map_or_else(|| "unknown".into(), |l| l.to_string())
+                    ));
+                    for (token, location) in liuli::core::style_source::StyleSource::TOKENS
+                        .iter()
+                        .zip(source.overrides)
+                    {
+                        if let Some(l) = location {
+                            chain.push(format!("  {token} override={l}"));
+                        }
+                    }
+                }
+                current = node.parent.get_u16();
+            }
+            write_http(
+                stream,
+                "200 OK",
+                "text/plain; charset=utf-8",
+                &[],
+                chain.join("\n").as_bytes(),
+            )
+        }
+        ("GET", "/diagnostics") => {
+            let id = match parse_frame_query(&req.query) {
+                Ok(id) => id.unwrap_or(session.snapshot().frame_id),
+                Err(e) => {
+                    return write_http(stream, "400 Bad Request", "text/plain", &[], e.as_bytes());
+                }
+            };
+            match session.frame_report(id) {
+                Some(text) => write_http(
+                    stream,
+                    "200 OK",
+                    "text/plain; charset=utf-8",
+                    &[],
+                    text.as_bytes(),
+                ),
+                None => write_http(
+                    stream,
+                    "404 Not Found",
+                    "text/plain",
+                    &[],
+                    b"frame diagnostics unavailable",
+                ),
+            }
+        }
         ("GET", "/state") => {
             let json = session.state_json(clock.is_paused(), clock.rate());
             write_http(
@@ -283,9 +550,28 @@ fn handle_connection(
         }
         ("POST", "/tick") => {
             let now = clock.sample_wall(Instant::now());
+            trace.append(now, "tick");
             if let Err(err) = session.step(now, None, false) {
                 return write_http(stream, "400 Bad Request", "text/plain", &[], err.as_bytes());
             }
+            let json = session.state_json(clock.is_paused(), clock.rate());
+            write_http(
+                stream,
+                "200 OK",
+                "application/json; charset=utf-8",
+                &[],
+                json.as_bytes(),
+            )
+        }
+        ("POST", "/text") => {
+            let op = req.query.strip_prefix("op=").unwrap_or("");
+            let now = clock.sample_wall(Instant::now());
+            let result = parse_text(op, &req.body).and_then(|input| session.text(now, input));
+            if let Err(err) = result {
+                return write_http(stream, "400 Bad Request", "text/plain", &[], err.as_bytes());
+            }
+            let hex: String = req.body.bytes().map(|b| format!("{b:02x}")).collect();
+            trace.append(now, &format!("text {op} {hex}"));
             let json = session.state_json(clock.is_paused(), clock.rate());
             write_http(
                 stream,
@@ -309,6 +595,7 @@ fn handle_connection(
                 }
             };
             let now = clock.sample_wall(Instant::now());
+            trace.append(now, req.body.trim());
             if let Err(err) = session.step(now, Some(input), false) {
                 return write_http(stream, "400 Bad Request", "text/plain", &[], err.as_bytes());
             }
@@ -323,7 +610,7 @@ fn handle_connection(
         }
         ("POST", "/clock") => {
             let wall = Instant::now();
-            match handle_clock_op(&req.body, wall, clock, session) {
+            match handle_clock_op(&req.body, wall, clock, session, trace) {
                 Ok(()) => {
                     let json = session.state_json(clock.is_paused(), clock.rate());
                     write_http(
@@ -365,7 +652,85 @@ fn parse_frame_query(query: &str) -> Result<Option<u64>, String> {
     Ok(frame_id)
 }
 
+struct Trace {
+    data: String,
+    overflow: bool,
+}
+impl Trace {
+    fn new() -> Self {
+        Self {
+            data: "liuli-trace 1\n".into(),
+            overflow: false,
+        }
+    }
+    fn append(&mut self, now: InstantMs, entry: &str) {
+        use std::fmt::Write;
+        if self.data.len() + entry.len() + 32 > 8 * 1024 * 1024 {
+            self.overflow = true;
+        }
+        if !self.overflow {
+            writeln!(self.data, "{} {}", now.0, entry).expect("String write");
+        }
+    }
+}
+
+/// Replay a preview trace on a freshly initialized instance of the same application.
+/// Each rendered frame is compared with a full redraw.
+pub fn replay_trace<A: App>(
+    session: &mut AppSession<'_, '_, A>,
+    trace: &str,
+) -> Result<(), String> {
+    let mut lines = trace.lines();
+    if lines.next() != Some("liuli-trace 1") {
+        return Err("unsupported trace header".into());
+    }
+    for (i, line) in lines.enumerate() {
+        let result = (|| -> Result<(), String> {
+            let (time, op) = line.split_once(' ').ok_or("missing event")?;
+            let time = InstantMs(time.parse().map_err(|_| "invalid time")?);
+            if let Some(event) = op.strip_prefix("text ") {
+                let (kind, hex) = event.split_once(' ').unwrap_or((event, ""));
+                if hex.len() > MAX_HTTP_BODY_BYTES * 2
+                    || hex.len() % 2 != 0
+                    || !hex.bytes().all(|b| b.is_ascii_hexdigit())
+                {
+                    return Err("invalid text bytes".into());
+                }
+                let mut bytes = Vec::with_capacity(hex.len() / 2);
+                for i in (0..hex.len()).step_by(2) {
+                    bytes.push(u8::from_str_radix(&hex[i..i + 2], 16).map_err(|_| "invalid hex")?);
+                }
+                let body = std::str::from_utf8(&bytes).map_err(|_| "invalid UTF-8")?;
+                session.text(time, parse_text(kind, body)?, true)?;
+            } else {
+                let input = if op == "tick" {
+                    None
+                } else {
+                    Some(parse_input_strict(op)?)
+                };
+                session.step(time, input, true)?;
+            }
+            Ok(())
+        })();
+        result.map_err(|e| format!("trace line {}: {e}", i + 2))?;
+    }
+    Ok(())
+}
+fn parse_text<'a>(op: &str, body: &'a str) -> Result<TextInput<'a>, String> {
+    match op {
+        "compose" => Ok(TextInput::Compose(body)),
+        "commit" => Ok(TextInput::Commit(body)),
+        "cancel" if body.is_empty() => Ok(TextInput::Cancel),
+        "backspace" if body.is_empty() => Ok(TextInput::Backspace),
+        "left" if body.is_empty() => Ok(TextInput::Left),
+        "right" if body.is_empty() => Ok(TextInput::Right),
+        _ => Err("invalid text operation or unexpected body".into()),
+    }
+}
 fn parse_input_strict(body: &str) -> Result<RawInput, String> {
+    if body.trim().bytes().any(|b| b.is_ascii_control()) {
+        return Err("control character in input".into());
+    }
     let mut kind: Option<&str> = None;
     let mut key_name: Option<&str> = None;
     let mut v: Option<i64> = None;
@@ -471,7 +836,8 @@ fn handle_clock_op(
     body: &str,
     wall: Instant,
     clock: &mut ClockController,
-    session: &mut SimSession<'_>,
+    session: &mut impl PreviewSession,
+    trace: &mut Trace,
 ) -> Result<(), String> {
     let mut op: Option<&str> = None;
     let mut ms: Option<u64> = None;
@@ -505,6 +871,7 @@ fn handle_clock_op(
     match op {
         Some("pause") => {
             clock.pause(wall);
+            trace.append(clock.now(), "tick");
             session.step(clock.now(), None, false)?;
             Ok(())
         }
@@ -518,12 +885,14 @@ fn handle_clock_op(
                 return Err(format!("step ms={delta} exceeds {MAX_CLOCK_STEP_MS}"));
             }
             let target = clock.step_ms(delta, wall);
+            trace.append(target, "tick");
             session.step(target, None, false)?;
             Ok(())
         }
         Some("next_deadline") => {
             let wakeup = session.next_wakeup(clock.now());
             let target = clock.jump_next_deadline(wakeup, wall);
+            trace.append(target, "tick");
             session.step(target, None, false)?;
             Ok(())
         }

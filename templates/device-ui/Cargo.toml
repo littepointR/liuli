@@ -1,0 +1,13 @@
+[package]
+name="device-ui"
+version="0.1.0"
+edition="2024"
+
+[dependencies]
+liuli="=0.3.0-dev.1"
+liuli-widgets="=0.3.0-dev.1"
+
+[dev-dependencies]
+liuli-sim={version="=0.3.0-dev.1",default-features=false}
+
+[workspace]
