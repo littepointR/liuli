@@ -45,23 +45,24 @@ fn check_focus_outline(app: &Session<'_>) {
     let tree = app.engine().active_tree();
     let key = app.engine().focus().focused_key().unwrap();
     let node = tree.node_by_key(key).unwrap();
-    let bounds = node
-        .layout_rect
-        .expand(2)
-        .intersect(node.clip_rect)
-        .intersect(app.engine().screen());
+    let clip = node.clip_rect.intersect(app.engine().screen());
+    let (bounds, radius) =
+        node.props
+            .focus_ring()
+            .outline_geometry(node.layout_rect, clip, node.props.radius);
     assert_eq!(node.layout_rect, node.layout_rect.intersect(node.clip_rect));
     let width = app.engine().screen().w as usize;
     let color = liuli::core::geometry::rgb565_to_u16(node.props.focus_color);
     let at = |x: i32, y: i32| app.screen().words()[y as usize * width + x as usize];
     let right = bounds.x + bounds.w as i32 - 1;
     let bottom = bounds.y + bounds.h as i32 - 1;
-    for y in bounds.y..=bottom {
+    let radius = i32::from(radius);
+    for y in bounds.y + radius..=bottom - radius {
         for x in [bounds.x, right] {
             assert_eq!(at(x, y), color, "focus {key:?} at ({x},{y})");
         }
     }
-    for x in bounds.x..=right {
+    for x in bounds.x + radius..=right - radius {
         for y in [bounds.y, bottom] {
             assert_eq!(at(x, y), color, "focus {key:?} at ({x},{y})");
         }
@@ -312,10 +313,17 @@ fn exercise_motion(
     }
     shot(app, dir, "animations-halfway")?;
     tap(app, clock, 406)?;
+    let paused_positions = positions(app);
+    *clock += 200;
+    app.step(InstantMs(*clock), None, true)?;
+    assert_eq!(positions(app), paused_positions);
     let paused = app.screen().words().to_vec();
     *clock += 1500;
     app.step(InstantMs(*clock), None, true)?;
-    assert_eq!(paused, app.screen().words());
+    assert!(
+        paused == app.screen().words(),
+        "paused frame changed after release settled"
+    );
     assert_eq!(
         Catalog::next_deadline(app.engine().model(), InstantMs(*clock)),
         None
@@ -371,6 +379,9 @@ fn exercise_depth(
     tap(app, clock, 306)?;
     #[cfg(feature = "enhanced")]
     {
+        // Isolate projection-only cache reuse after the stamp button's release transition.
+        *clock += 200;
+        app.step(InstantMs(*clock), None, true)?;
         tap(app, clock, 307)?;
         let start = *clock;
         *clock = start + 160;
@@ -448,7 +459,7 @@ fn exercise_depth(
     }
     Ok(())
 }
-fn save_scanout(app: &Session<'_>, path: &Path) -> Result<(), String> {
+fn save_scanout<A: App>(app: &AppSession<'_, '_, A>, path: &Path) -> Result<(), String> {
     let bytes: Vec<u8> = app
         .screen()
         .words()
@@ -505,21 +516,24 @@ fn panel_checkpoints(app: &mut Session<'_>, dir: &Path) -> Result<(), String> {
 fn main() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
     let mut headless = false;
+    let mut showcase = true;
     let mut directory = None;
     let mut replay = None;
     let mut scanout = None;
     let mut port = 7878u16;
     let mut panel_frames = None;
-    let mut size = Size::new(240, 536);
+    let mut size = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--headless" => headless = true,
+            "--showcase" => showcase = true,
+            "--studio" => showcase = false,
             "--size" => {
-                size = match args.next().as_deref() {
+                size = Some(match args.next().as_deref() {
                     Some("800x480") => Size::new(800, 480),
                     Some("240x536") => Size::new(240, 536),
                     _ => return Err("expected --size 800x480 or 240x536".into()),
-                };
+                });
             }
             "--panel-frames" => {
                 panel_frames = Some(PathBuf::from(
@@ -546,7 +560,7 @@ fn main() -> Result<(), String> {
             }
             "-h" | "--help" => {
                 println!(
-                    "liuli-widget-demo [--port PORT] [--headless] [--size 240x536|800x480] [--screenshots DIR] [--panel-frames DIR] [--replay TRACE [--scanout FILE]]"
+                    "liuli-widget-demo [--showcase|--studio] [--port PORT] [--headless] [--size 240x536|800x480] [--screenshots DIR] [--panel-frames DIR] [--replay TRACE [--scanout FILE]]"
                 );
                 return Ok(());
             }
@@ -554,6 +568,48 @@ fn main() -> Result<(), String> {
         }
     }
     let mut storage = Storage::new();
+    if scanout.is_some() && (replay.is_none() || panel_frames.is_some()) {
+        return Err("--scanout requires --replay without --panel-frames".into());
+    }
+    if showcase && panel_frames.is_none() {
+        use liuli_widget_demo::showcase::{ShowcaseApp, ShowcaseModel, showcase_fonts};
+        let size = size.unwrap_or(Size::new(800, 480));
+        let mut app = AppSession::<ShowcaseApp>::new(
+            &mut storage,
+            ShowcaseModel::for_size(size),
+            showcase_fonts().map_err(|e| format!("{e:?}"))?,
+            size,
+            InstantMs(0),
+            true,
+        )?;
+        #[cfg(feature = "enhanced")]
+        app.engine_mut()
+            .set_layer_budget(1024 * 1024)
+            .map_err(|e| format!("{e:?}"))?;
+        if headless || replay.is_some() || directory.is_some() {
+            let trace = match replay {
+                Some(path) => std::fs::read_to_string(path).map_err(|e| e.to_string())?,
+                None if size.width < 600 => {
+                    include_str!("../tests/fixtures/portrait-motion.trace").into()
+                }
+                None => include_str!("../tests/fixtures/h743-style.trace").into(),
+            };
+            replay_trace(&mut app, &trace)?;
+            if let Some(path) = scanout {
+                save_scanout(&app, &path)?;
+            }
+            if let Some(dir) = directory {
+                std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+                std::fs::write(dir.join("showcase.png"), app.screen().to_png())
+                    .map_err(|e| e.to_string())?;
+            }
+            return Ok(());
+        }
+        let server = PreviewServer::bind(port)?;
+        println!("Widget Demo   http://{}", server.addr());
+        return server.serve_app(&mut app);
+    }
+    let size = size.unwrap_or(Size::new(240, 536));
     let fonts =
         liuli_widget_demo::studio_fonts(Lf4Font::from_bytes(FONT).map_err(|e| format!("{e:?}"))?)
             .map_err(|e| format!("{e:?}"))?;
@@ -570,9 +626,6 @@ fn main() -> Result<(), String> {
         app.engine_mut()
             .set_layer_budget(1024 * 1024)
             .map_err(|e| format!("{e:?}"))?;
-    }
-    if scanout.is_some() && (replay.is_none() || panel_frames.is_some()) {
-        return Err("--scanout requires --replay without --panel-frames".into());
     }
     if let Some(dir) = panel_frames {
         return panel_checkpoints(&mut app, &dir);

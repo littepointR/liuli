@@ -1,5 +1,4 @@
 use super::*;
-use core::num::NonZeroU32;
 use liuli_widgets::{ButtonVariant, Compositor, Elevation, Material, SurfaceSpec, ThemedUi};
 
 pub struct Depth {
@@ -25,17 +24,6 @@ impl Depth {
             floating: true,
         }
     }
-    pub(super) fn deadline(&self, now: InstantMs) -> Option<InstantMs> {
-        self.motion.next_deadline(now, NonZeroU32::new(16).unwrap())
-    }
-    pub(super) fn advance(&mut self, now: InstantMs) -> bool {
-        let next = self.motion.value(now);
-        if self.turn == next {
-            return false;
-        }
-        self.turn = next;
-        true
-    }
     pub(super) fn stop(&mut self, now: InstantMs) {
         self.motion.cancel(now);
         self.turn = self.motion.value(now);
@@ -55,6 +43,19 @@ impl Depth {
             _ => return Change::Unchanged,
         }
         Change::View
+    }
+}
+impl Animation for Depth {
+    fn advance(&mut self, now: InstantMs) -> bool {
+        let changed = self.motion.advance(now);
+        self.turn = self.motion.current();
+        changed
+    }
+    fn next_wakeup(&self, now: InstantMs) -> NextWakeup {
+        self.motion.next_wakeup(now)
+    }
+    fn cancel(&mut self, now: InstantMs) {
+        self.stop(now);
     }
 }
 pub(super) fn backdrop(m: &Model, canvas: &mut WidgetCanvas<'_>) -> Result<(), BuildError> {

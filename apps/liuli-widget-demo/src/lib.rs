@@ -130,7 +130,7 @@ impl Model {
             effects: EffectsConfig::GLASS,
             blur_radius: 5,
             tint_alpha: None,
-            rounded_focus: false,
+            rounded_focus: FocusRingStyle::DEFAULT.rounded,
             text_gamma: TextGamma::Perceptual,
             height: size.height.min(u16::MAX.into()) as u16,
             landscape: size.width >= 540,
@@ -241,15 +241,13 @@ impl App for Catalog {
             PageRestore::default()
         }
     }
+    fn animations(m: &mut Model, bind: &mut dyn FnMut(Key, &mut dyn Animation)) {
+        bind(Key(300), &mut m.depth);
+        bind(Key(400), &mut m.motion.tween);
+    }
     fn next_deadline(m: &Model, now: InstantMs) -> Option<InstantMs> {
-        let animation = match m.page {
-            Page::Depth => m.depth.deadline(now),
-            Page::Motion => m.motion.deadline(now),
-            _ => None,
-        };
         m.toast_until
             .into_iter()
-            .chain(animation)
             .chain(m.deck.deadline(now).filter(|_| m.confirm.is_none()))
             .min()
     }
@@ -258,12 +256,6 @@ impl App for Catalog {
         let transport_changed = m.confirm.is_none() && m.deck.advance(now);
         if seconds != (m.deck.elapsed(), m.deck.recording_seconds) {
             m.sample_input(now.0 / 1000);
-        }
-        if m.page == Page::Depth && m.depth.advance(now) {
-            return Change::View;
-        }
-        if m.page == Page::Motion && m.motion.advance(now) {
-            return Change::View;
         }
         if m.toast_until.is_some_and(|end| now >= end) {
             m.toast_until = None;

@@ -495,6 +495,11 @@ pub(super) fn paint_image(m: &Model, c: &mut WidgetCanvas<'_>) -> Result<(), Bui
 
 #[cfg(feature = "enhanced")]
 pub(super) fn text_field(t: Theme) -> liuli::enhanced::field::TextField<'static> {
+    shaped_field(t, "Pier A / سلام कि")
+}
+
+#[cfg(feature = "enhanced")]
+pub(super) fn shaped_field(t: Theme, text: &str) -> liuli::enhanced::field::TextField<'static> {
     use liuli::enhanced::{
         ShapingFont,
         field::{FieldStyle, TextField},
@@ -508,7 +513,7 @@ pub(super) fn text_field(t: Theme) -> liuli::enhanced::field::TextField<'static>
     .map(|bytes| ShapingFont::from_bytes(bytes, 0).expect("bundled demo typeface"))
     .collect();
     TextField::new(
-        "Pier A / سلام कि".into(),
+        text.into(),
         faces,
         FieldStyle {
             width: 200,

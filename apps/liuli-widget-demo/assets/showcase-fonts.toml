@@ -1,0 +1,17 @@
+budget = 65536
+
+[[font]]
+source = "showcase.ttf"
+charset = "showcase-charset.txt"
+output = "showcase_body.lf4"
+px = 16
+fallback = "□"
+stem_darken = 0.25
+
+[[font]]
+source = "showcase.ttf"
+charset = "showcase-charset.txt"
+output = "showcase_small.lf4"
+px = 13
+fallback = "□"
+stem_darken = 0.25

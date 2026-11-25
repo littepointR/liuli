@@ -1,10 +1,51 @@
-# Spool 便携录音台 · Widget Demo
+# Widget Demo 功能展台
+
+运行 SDK 中的 `tools/bin/liuli-widget-demo`，打开终端打印的预览地址。六个页面共用库里的 Tabs。横屏和竖屏使用同一份页面声明，标题和语言、主题操作按文字测量。空间紧张时，页签栏移到下一行，页签最多换成两行，仍放不下即可横滚。顶部页签用跟随标签宽度的下划线标明活动页，切页时下划线平移。控件样例页使用带圆角的填充选中态和淡变。两处都通过主题配置库里的 Tabs。
+
+| 页面 | 可以动手验证的功能 |
+|---|---|
+| Overview | 观察实时采样和渐变仪表，调整负载、切换语言及主题。 |
+| Forms | 点击复选框、单选项和滚轮，编辑多行文字，从下拉选择器切换驱动。竖屏可纵向滚动。 |
+| Charts | 追加采样，观察柱状图和折线图，点选数据表中的行。竖屏保留模块和状态两列。 |
+| Layout | 点选网格项，用手指拖或点箭头横滚。横屏可以比较六种主轴对齐模式。 |
+| Motion | 在 Standard、Snappy、Reduced 之间切换，对照内置开关与自绘表头。比较主题时长与局部 480 ms 覆盖，重播 16 种转场，拖动滑块观察进度条。 |
+| Widgets | 在第二组顶部 Tabs 中选择调节、列表、图形、输入或按钮。 |
+
+### 控件页
+
+| 分组 | 可以动手验证的功能 |
+|---|---|
+| 调节 | 拖动弧形旋钮、有刻度的滑块或数值编辑器，观察同一数值和趋势线。用选择器切换预设，点带数值徽标的按钮打开确认框，确认后显示定时提示条。 |
+| 列表 | 拖动 1,000 条有稳定标识的记录，点一条查看编号。可在模拟器检查器中观察条目随视口创建。 |
+| 图形 | 旋转 RGB565 图片，调节缩放和透明度。增强档支持双触点平移、捏合、旋转，以及投影和毛玻璃合成；基础档可使用单指控制并查看抬升表面。 |
+| 输入 | 在可定位光标的输入框中使用屏幕键盘或宿主文本输入。键盘支持英文、数字、符号、拼音和 T9。演示词典包含“中文、琉璃、输入、动效、图表”。增强档还能切换阿拉伯文、天城文和混排塑形样本。 |
+| 按钮 | 操作六种按钮变体，比较禁用态，点选全部 11 种内置图标。缩小视口时按钮与图标会换行。 |
+
+从源码运行横屏、竖屏和固定轨迹回放：
+
+~~~sh
+cargo run --release -p liuli-widget-demo --features desktop,enhanced
+cargo run --release -p liuli-widget-demo --features desktop,enhanced -- --size 240x536
+cargo run --release -p liuli-widget-demo --features desktop,enhanced -- --replay apps/liuli-widget-demo/tests/fixtures/h743-style.trace --scanout target/theme.rgb565
+~~~
+
+动效页的竖屏轨迹为 `portrait-motion.trace`。控件页的横竖屏轨迹分别为 `h743-widgets.trace` 和 `portrait-widgets.trace`，覆盖顶部切页、预设确认、列表滚动、图形操作、按钮与软键盘输入。从解压的 SDK 运行时，把命令中的程序换成 `tools/bin/liuli-widget-demo`，轨迹路径从 `liuli-widget-demo/tests/fixtures/` 开始。H743 可通过 J-Link 注入同一条横屏轨迹，并与桌面输出比对。
+
+~~~sh
+python boards/fk743m2-iit6/jlink.py --speed 12000 --themed-motion apps/liuli-widget-demo/tests/fixtures/h743-style.trace target/theme.rgb565
+cargo run --release -p liuli-widget-demo --features desktop,enhanced -- --replay apps/liuli-widget-demo/tests/fixtures/h743-widgets.trace --scanout target/widgets.rgb565
+python boards/fk743m2-iit6/jlink.py --speed 12000 --widget-samples apps/liuli-widget-demo/tests/fixtures/h743-widgets.trace target/widgets.rgb565
+~~~
+
+## Spool 便携录音台
+
+使用 `--studio` 打开这个独立产品风格的例子。
 
 Spool 用一盘磁带串起整套控件。打开 **Tapes** 选一条素材，录音台会载入它的名字、时长和波形。点 **Play** 开始走带，再去 **Mixer → Routing** 换输入源、调增益。回到 **Deck** 可以看到新设置，播放位置也会继续前进。
 
 <img src="hardware/widget-deck-wide.png" width="640" alt="Spool 横屏录音台，左侧为磁带和时间轴，右侧为播放和波形控制">
 
-在解压的 SDK 里运行 `tools/bin/liuli-widget-demo`，Windows 使用同名 `.exe`。打开终端打印的网址。默认使用 240 × 536 的单列界面，`--size 800x480` 切换横屏双栏。**Day / Night** 切换配色，**Back** 回到上一级。预览器支持原始指针、导航键和 Shift + 点选检查器。
+在解压的 SDK 里运行 `tools/bin/liuli-widget-demo --studio`，Windows 使用同名 `.exe`。打开终端打印的网址。默认使用 240 × 536 的单列界面，`--size 800x480` 切换横屏双栏。**Day / Night** 切换配色，**Back** 回到上一级。预览器支持原始指针、导航键和 Shift + 点选检查器。
 
 ## 录一条新素材
 
@@ -28,22 +69,22 @@ Spool 用一盘磁带串起整套控件。打开 **Tapes** 选一条素材，录
 <img src="hardware/widget-animations.gif" width="200" alt="播放头和淡入包络同步推进"> <img src="hardware/widget-data.png" width="200" alt="输入信号检查"> <img src="hardware/widget-tilt.png" width="200" alt="翻转中的磁带套">
 
 ~~~sh
-tools/bin/liuli-widget-demo --headless
-tools/bin/liuli-widget-demo --screenshots widget-shots
-tools/bin/liuli-widget-demo --replay recorded.trace
+tools/bin/liuli-widget-demo --studio --headless
+tools/bin/liuli-widget-demo --studio --screenshots widget-shots
+tools/bin/liuli-widget-demo --studio --replay recorded.trace
 ~~~
 
 无头模式用原始触摸录制、保存、重新载入和播放，验证停表、列表偏移与焦点恢复；也覆盖界面切换、逐帧像素对照、选中框、翻转、文本组合和可取消动效。使用 `--port 0` 可为交互模式分配空闲本机端口。
 
 日常开发可运行 `python tools/check-ui.py`，同时执行控件目录和告警产品的无头回归。[离线运行和编写夹具](sdk.md#无人值守的-ui-回归)
 
-从仓库源码启动完整演示：
+从仓库源码启动录音台：
 
 ~~~sh
-cargo run -p liuli-widget-demo --features desktop,enhanced
+cargo run -p liuli-widget-demo --features desktop,enhanced -- --studio
 ~~~
 
-参考板固件包内的 `widget-demo.bin` 与日常告警程序共用分区表和 LF4 字库。已安装本框架的板子可单独替换应用分区。空白板的完整写入步骤见板级指南。使用 SDK 从源码重建演示固件：
+参考板固件包内的 `widget-demo.bin` 与日常告警程序共用分区表。功能展台使用随应用链接的两档 LF4 字库。已安装本框架的板子可单独替换应用分区。空白板的完整写入步骤见板级指南。使用 SDK 从源码重建演示固件：
 
 ~~~sh
 python boards/waveshare-s3-amoled/build.py --profile widget-demo --offline --out target/widget-demo
@@ -65,3 +106,18 @@ python boards/waveshare-s3-amoled/build.py --profile widget-demo --offline --out
 ~~~sh
 python boards/waveshare-s3-amoled/build.py --profile widget-demo --effects-benchmark --offline --out target/effects-bench
 ~~~
+
+## H743 动画展台
+
+进入「网格布局」，用底部左右箭头切换 16 种动效，点 Replay 重播。桌面可运行同一个 800×480 应用：
+
+```sh
+cargo run --release -p liuli-widget-demo --features desktop,enhanced -- --showcase
+```
+
+以下命令用原始触摸和固定时钟回放切页、切到 Flip 和重播，并导出桌面 RGB565 参考帧。H743 上装入增强档 `--showcase` 固件后，第二条命令通过 J-Link 注入触摸并核对 LTDC 帧缓冲。指定多个探头时用 `--serial` 选择目标。
+
+```sh
+cargo run --release -p liuli-widget-demo --features desktop,enhanced -- --showcase --replay apps/liuli-widget-demo/tests/fixtures/h743-motion.trace --scanout target/motion-flip.rgb565
+python boards/fk743m2-iit6/jlink.py --speed 12000 --motion-gallery target/motion-flip.rgb565
+```

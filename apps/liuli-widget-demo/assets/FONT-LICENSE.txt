@@ -1,5 +1,6 @@
-Liuli Example SC is a renamed subset of Noto Sans SC, default weight, for the alarm example.
-Original font notices are preserved in example.ttf.
+Liuli Example SC and Liuli Gallery SC are renamed subsets of Noto Sans SC.
+The Widget Demo uses the regular-weight Liuli Gallery SC subset for its LF4 fonts.
+The bundled source font subsets retain the upstream font notices.
 
 This Font Software is licensed under the SIL Open Font License,
 Version 1.1.

@@ -69,6 +69,90 @@ fn fonts() -> FontSet<'static> {
     liuli_widget_demo::studio_fonts(Lf4Font::from_bytes(liuli_widget_demo::FONT).unwrap()).unwrap()
 }
 
+#[test]
+fn changing_focus_geometry_repaints_the_old_and_new_outline() {
+    struct FocusButton;
+    impl App for FocusButton {
+        type Model = (FocusRingStyle, u8);
+        type Msg = Self::Model;
+        fn update(model: &mut Self::Model, msg: Self::Msg, _: InstantMs) -> Change {
+            *model = msg;
+            Change::View
+        }
+        fn view(
+            &(ring, radius): &Self::Model,
+            out: &mut ViewBuilder<'_>,
+        ) -> Result<(), BuildError> {
+            out.root(Key(1), NodeProps::new().padding(EdgeInsets::all(8)), |ui| {
+                ui.button(
+                    Key(2),
+                    NodeProps {
+                        focus_ring: ring,
+                        focusable: true,
+                        width: Length::Px(32),
+                        height: Length::Px(20),
+                        radius,
+                        focus_color: Rgb565::new(31, 63, 31),
+                        ..NodeProps::new()
+                    },
+                )
+            })
+        }
+        fn on_action(_: &Self::Model, _: UiAction) -> Option<Self::Msg> {
+            None
+        }
+    }
+    let mut storage = Storage::new();
+    let default = FocusRingStyle::DEFAULT;
+    let mut app = AppSession::<FocusButton>::new(
+        &mut storage,
+        (default, 6),
+        fonts(),
+        Size::new(64, 48),
+        InstantMs(0),
+        true,
+    )
+    .unwrap();
+    let rect = app
+        .engine()
+        .active_tree()
+        .node_by_key(Key(2))
+        .unwrap()
+        .layout_rect;
+    let pixel = |app: &AppSession<'_, '_, FocusButton>, x: i32, y: i32| {
+        app.screen().pixel((rect.x + x) as u32, (rect.y + y) as u32)
+    };
+    let wide = FocusRingStyle {
+        offset: 3,
+        ..default
+    };
+    // Check both the outside corner and the middle of the top edge after every commit.
+    for (i, (ring, radius, corner, edge)) in [
+        (wide, 10, false, true),
+        (
+            FocusRingStyle {
+                rounded: false,
+                ..wide
+            },
+            10,
+            true,
+            true,
+        ),
+        (wide, 0, true, true),
+        (default, 6, false, false),
+        (FocusRingStyle::OFF, 6, false, false),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        app.message(InstantMs((i as u64 + 1) * 16), (ring, radius), true)
+            .unwrap();
+        assert_eq!(pixel(&app, -3, -3) == 0xffff, corner);
+        assert_eq!(pixel(&app, 16, -3) == 0xffff, edge);
+        assert_eq!(pixel(&app, 16, -2) == 0xffff, ring.enabled);
+    }
+}
+
 #[cfg(feature = "enhanced")]
 #[test]
 fn h743_scrolls_glass_card_out_and_back_without_changing_its_pixels() {
@@ -85,7 +169,7 @@ fn h743_scrolls_glass_card_out_and_back_without_changing_its_pixels() {
     )
     .unwrap();
     app.engine_mut().set_layer_budget(1024 * 1024).unwrap();
-    let mut by_position = std::collections::BTreeMap::new();
+    let mut by_position = std::collections::BTreeMap::<i32, Vec<u16>>::new();
     let mut heights = Vec::new();
     for event in include_str!("fixtures/h743-depth-scroll.trace")
         .lines()
@@ -98,10 +182,8 @@ fn h743_scrolls_glass_card_out_and_back_without_changing_its_pixels() {
             heights.push(card.visible_rect.h);
             let position = card.layout_rect.y;
             if let Some(expected) = by_position.get(&position) {
-                assert!(
-                    expected == app.screen().words(),
-                    "different scanout at card y={position}"
-                );
+                let mismatch = app.screen().words().iter().zip(expected).position(|(a,b)|a!=b);
+                assert!(mismatch.is_none(),"different scanout at card y={position}, first pixel {:?}", mismatch.map(|p|(p%800,p/800)));
             } else {
                 by_position.insert(position, app.screen().words().to_vec());
             }
@@ -459,8 +541,9 @@ fn depth_page_granular_theme_and_effect_controls_verify_pixel_exact() {
     tap_key(&mut app, &mut clock, 321);
     assert!(app.engine().model().tint_alpha.is_some());
 
-    tap_key(&mut app, &mut clock, 322);
     assert!(app.engine().model().rounded_focus);
+    tap_key(&mut app, &mut clock, 322);
+    assert!(!app.engine().model().rounded_focus);
 }
 
 #[cfg(feature = "enhanced")]
@@ -635,6 +718,8 @@ fn rounded_glass_and_outline_button_have_no_square_or_black_corners() {
         true,
     )
     .unwrap();
+    // Sample the themed press transition after the pointer-down frame.
+    app.step(InstantMs(76),None,true).unwrap();
     let pressed_bg = app
         .screen()
         .pixel((out_rect.x + 12) as u32, (out_rect.y + 4) as u32);

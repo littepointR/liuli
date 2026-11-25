@@ -1,4 +1,3 @@
-use core::num::NonZeroU32;
 use liuli::prelude::*;
 use liuli_widgets::{ButtonVariant, SurfaceSpec, ThemedUi};
 
@@ -11,9 +10,7 @@ const DURATIONS_UI: [(Key, TextRef); 3] = [
 ];
 
 pub(super) struct Motion {
-    tween: Tween,
-    position: i32,
-    playing: bool,
+    pub(super) tween: Tween,
     duration: usize,
 }
 
@@ -21,8 +18,6 @@ impl Motion {
     pub(super) fn new() -> Self {
         Self {
             tween: Tween::at(0),
-            position: 0,
-            playing: false,
             duration: 1,
         }
     }
@@ -33,45 +28,20 @@ impl Motion {
 
     pub(super) fn reset(&mut self) {
         self.tween = Tween::at(0);
-        self.position = 0;
-        self.playing = false;
-    }
-
-    pub(super) fn deadline(&self, now: InstantMs) -> Option<InstantMs> {
-        self.playing.then(|| {
-            self.tween
-                .next_deadline(now, NonZeroU32::new(16).unwrap())
-                .unwrap_or(now)
-        })
-    }
-
-    pub(super) fn advance(&mut self, now: InstantMs) -> bool {
-        let next = self.tween.value(now);
-        let changed = self.position != next;
-        self.position = next;
-        if next == END {
-            self.playing = false;
-        }
-        changed
     }
 
     fn play(&mut self, now: InstantMs) {
-        let remaining =
-            (DURATIONS[self.duration] * (END - self.position) as u32).div_ceil(END as u32);
-        self.tween = Tween::at(self.position);
+        let position = self.tween.value(now);
+        let remaining = (DURATIONS[self.duration] * (END - position) as u32).div_ceil(END as u32);
         self.tween.animate_to(now, END, remaining, Easing::Linear);
-        self.playing = true;
     }
 
     pub(super) fn action(&mut self, key: Key, now: InstantMs) -> Change {
-        self.advance(now);
+        let playing = self.tween.value(now) != END && self.tween.running();
         match key.0 {
-            406 if self.playing => {
-                self.tween.cancel(now);
-                self.playing = false;
-            }
+            406 if playing => self.tween.cancel(now),
             406 => {
-                if self.position == END {
+                if self.tween.value(now) == END {
                     self.reset();
                 }
                 self.play(now);
@@ -79,7 +49,7 @@ impl Motion {
             407 => self.reset(),
             410..=412 => {
                 self.duration = (key.0 - 410) as usize;
-                if self.playing {
+                if playing {
                     self.play(now);
                 }
             }
@@ -101,7 +71,7 @@ impl Motion {
                     NodeProps {
                         width: Length::Fill(1),
                         height: Length::Px(32),
-                        value: curve.apply(i64::from(self.position)) as i16,
+                        value: curve.apply(i64::from(self.tween.current())) as i16,
                         fg: color,
                         accent: t.border,
                         ..NodeProps::new()
@@ -119,7 +89,7 @@ impl Motion {
                 ..NodeProps::new()
             },
             |row| {
-                let label = match (self.playing, self.position) {
+                let label = match (self.tween.running(), self.tween.current()) {
                     (true, _) => "Pause",
                     (_, 0) => "Play",
                     (_, END) => "Replay",

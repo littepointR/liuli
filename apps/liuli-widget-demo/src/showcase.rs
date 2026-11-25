@@ -1,11 +1,14 @@
 use core::fmt::{self, Write};
 
+pub mod samples;
+pub use samples::{SamplePage, Samples};
+
 use liuli::prelude::*;
 use liuli_widgets::tokens::rgb8;
 use liuli_widgets::{
-    ChartSeries, DropdownState, GaugeSpec, MultiLineState, PageTransition, RollerState,
-    TableColumn, TextSpan, Theme, TransitionKind, checkbox, data_table, dropdown, gauge,
-    multi_line_editor, paint_bar_chart, paint_checkbox, paint_gauge, paint_multi_line_chart,
+    ChartSeries, DropdownState, GaugeSpec, MultiLineState, PageTransition, RollerState, TabLayout,
+    TabPage, TableColumn, Tabs, TextSpan, Theme, TransitionKind, checkbox, data_table, dropdown,
+    gauge, multi_line_editor, paint_bar_chart, paint_checkbox, paint_gauge, paint_multi_line_chart,
     paint_multi_line_editor, paint_radio, paint_rich_text, paint_roller, paint_spinner, radio,
     rich_text, roller, spinner,
 };
@@ -26,6 +29,8 @@ pub enum ShowcaseTab {
     Forms = 1,
     Charts = 2,
     Layout = 3,
+    Motion = 4,
+    Widgets = 5,
 }
 
 impl ShowcaseTab {
@@ -38,6 +43,8 @@ impl ShowcaseTab {
             1 => Self::Forms,
             2 => Self::Charts,
             3 => Self::Layout,
+            4 => Self::Motion,
+            5 => Self::Widgets,
             _ => Self::Overview,
         }
     }
@@ -70,10 +77,12 @@ pub mod i18n_keys {
     pub const BTN_TRANS_SLIDE_L: TextKey = TextKey(21);
     pub const BTN_TRANS_SLIDE_U: TextKey = TextKey(22);
     pub const BTN_TRANS_FADE: TextKey = TextKey(23);
+    pub const TAB_MOTION: TextKey = TextKey(24);
+    pub const TAB_WIDGETS: TextKey = TextKey(25);
 }
 
 pub const EN_ENTRIES: &[&str] = &[
-    "liuli M1-M6 SDK",
+    "Widget Demo",
     "Overview",
     "Forms",
     "Charts",
@@ -97,10 +106,12 @@ pub const EN_ENTRIES: &[&str] = &[
     "Trans: SlideL",
     "Trans: SlideU",
     "Trans: Fade",
+    "Motion",
+    "Widgets",
 ];
 
 pub const ZH_ENTRIES: &[&str] = &[
-    "琉璃 M1-M6 演示",
+    "琉璃 UI 演示",
     "主仪表盘",
     "表单输入",
     "数据图表",
@@ -124,6 +135,8 @@ pub const ZH_ENTRIES: &[&str] = &[
     "动效: 左滑",
     "动效: 上滑",
     "动效: 淡入",
+    "动效",
+    "控件",
 ];
 
 pub const LOCALES: [LocaleTable; 2] = [
@@ -155,7 +168,14 @@ const TABLE_ROWS: [&[&str]; 3] = [
 ];
 
 const GRID_TILES: [&str; 8] = [
-    "M1 Cap", "M2 Grid", "M3 L565", "M4 Forms", "M5 i18n", "M6 Drv", "M7 Figma", "M8 Sim",
+    "M1 Capacity",
+    "M2 Grid",
+    "M3 L565",
+    "M4 Forms",
+    "M5 Localization",
+    "M6 Drivers",
+    "M7 Figma",
+    "M8 Simulator",
 ];
 
 const SCROLL_CARDS: [(&str, Rgb565); 6] = [
@@ -166,6 +186,9 @@ const SCROLL_CARDS: [(&str, Rgb565); 6] = [
     ("05 Locale", rgb8(48, 126, 74)),
     ("06 Drivers", rgb8(146, 54, 96)),
 ];
+
+const CARD_WIDTH: u16 = 150;
+const CARD_GAP: u16 = 8;
 
 struct StackBuf<const N: usize> {
     bytes: [u8; N],
@@ -201,11 +224,19 @@ impl<const N: usize> Write for StackBuf<N> {
 #[derive(Clone)]
 pub struct ShowcaseModel {
     pub tab: ShowcaseTab,
+    pub compact: bool,
+    pub samples: Samples,
+    pub motion: liuli_widgets::Motion,
+    pub local_slow: bool,
+    pub indicator_on: bool,
+    pub level: i16,
     pub locale: LocaleId,
     pub dark: bool,
     pub now: InstantMs,
     pub transition: PageTransition,
     pub trans_kind: TransitionKind,
+    pub preview: PageTransition,
+    pub preset_index: usize,
     pub live_sample: bool,
     pub load: i16,
     pub temp: i16,
@@ -230,11 +261,19 @@ impl ShowcaseModel {
     pub fn new() -> Self {
         Self {
             tab: ShowcaseTab::Overview,
+            compact: false,
+            samples: Samples::new(),
+            motion: liuli_widgets::Motion::STANDARD,
+            local_slow: true,
+            indicator_on: false,
+            level: 35,
             locale: LocaleId(1),
             dark: true,
             now: InstantMs(0),
             transition: PageTransition::IDLE,
             trans_kind: TransitionKind::SlideLeft,
+            preview: PageTransition::IDLE.with_easing(Easing::Linear),
+            preset_index: 0,
             live_sample: true,
             load: 62,
             temp: 44,
@@ -248,11 +287,18 @@ impl ShowcaseModel {
             selected_row: Some(0),
             justify: Justify::SpaceBetween,
             grid_selected: 0,
-            scroll_physics: ScrollPhysics::new(0, 460).with_bounce(44).with_snap(158),
+            scroll_physics: ScrollPhysics::ZERO.with_snap(CARD_WIDTH + CARD_GAP),
             sample_phase: 0,
             chart_rev: 1,
             banner_rev: 1,
             rich_rev: 1,
+        }
+    }
+
+    pub fn for_size(size: Size) -> Self {
+        Self {
+            compact: size.width < 600,
+            ..Self::new()
         }
     }
 
@@ -265,7 +311,7 @@ impl ShowcaseModel {
     }
 
     fn theme(&self) -> Theme {
-        if self.dark { Theme::DARK } else { Theme::LIGHT }
+        (if self.dark { Theme::DARK } else { Theme::LIGHT }).with_motion(self.motion)
     }
 
     fn bump_telemetry_rev(&mut self) {
@@ -310,11 +356,24 @@ impl ShowcaseModel {
         }
     }
 
+    fn play_page(&mut self, now: InstantMs) {
+        self.transition.play_styled(
+            self.motion,
+            liuli_widgets::TransitionRole::Page,
+            Some(self.motion.page.with_kind(self.trans_kind)),
+            now,
+        );
+    }
+
     fn switch_tab(&mut self, tab: ShowcaseTab, now: InstantMs) {
         if self.tab != tab {
+            self.samples.leave();
             self.tab = tab;
+            if tab == ShowcaseTab::Layout {
+                self.preview = PageTransition::IDLE.with_easing(Easing::Linear);
+            }
             self.dropdown.open = false;
-            self.transition.start(self.trans_kind, now, 260);
+            self.play_page(now);
         }
     }
 }
@@ -331,11 +390,20 @@ impl Default for ShowcaseModel {
 #[derive(Clone, Copy, Debug)]
 pub enum ShowcaseMsg {
     SelectTab(ShowcaseTab),
+    SampleAction(UiAction),
+    SamplePointer(Key, PointerEvent),
+    ImageGesture(TransformGesture),
+    ListOffset(i32),
+    SetMotion(liuli_widgets::Motion),
+    ToggleLocal,
+    ToggleIndicator,
+    SetLevel(i16),
     ToggleLocale,
     ToggleTheme,
     LoadDelta(i16),
     ToggleLive,
     CycleTransition,
+    Preview(i8),
     ToggleBright,
     ToggleDiag,
     SetTransKind(TransitionKind),
@@ -359,9 +427,49 @@ impl App for ShowcaseApp {
     type Model = ShowcaseModel;
     type Msg = ShowcaseMsg;
 
+    fn animations(model: &mut Self::Model, bind: &mut dyn FnMut(Key, &mut dyn Animation)) {
+        bind(Key(50), &mut model.transition);
+        bind(Key(450), &mut model.scroll_physics);
+        bind(Key(475), &mut model.preview);
+    }
+
+    fn scroll_controller(model: &mut Self::Model, key: Key) -> Option<&mut ScrollPhysics> {
+        (key == Key(450)).then_some(&mut model.scroll_physics)
+    }
+
     fn update(model: &mut Self::Model, msg: Self::Msg, now: InstantMs) -> Change {
-        model.now = now;
         match msg {
+            ShowcaseMsg::SampleAction(action) => {
+                let theme = model.theme();
+                model.samples.action(action, now, theme)
+            }
+            ShowcaseMsg::SamplePointer(key, event) => model.samples.pointer(key, event),
+            ShowcaseMsg::ImageGesture(gesture) => model.samples.transform(gesture),
+            ShowcaseMsg::ListOffset(y) => {
+                model.samples.offset = y;
+                Change::View
+            }
+            ShowcaseMsg::SetMotion(motion) => {
+                model.motion = motion;
+                model.transition.apply_motion(motion, now);
+                model.preview.apply_motion(motion, now);
+                if motion.reduced {
+                    Animation::cancel(&mut model.scroll_physics, now);
+                }
+                Change::View
+            }
+            ShowcaseMsg::SetLevel(level) => {
+                model.level = level.clamp(0, 100);
+                Change::View
+            }
+            ShowcaseMsg::ToggleLocal => {
+                model.local_slow = !model.local_slow;
+                Change::View
+            }
+            ShowcaseMsg::ToggleIndicator => {
+                model.indicator_on = !model.indicator_on;
+                Change::View
+            }
             ShowcaseMsg::SelectTab(tab) => {
                 model.switch_tab(tab, now);
                 Change::View
@@ -378,6 +486,10 @@ impl App for ShowcaseApp {
             }
             ShowcaseMsg::ToggleTheme => {
                 model.dark = !model.dark;
+                #[cfg(feature = "enhanced")]
+                if model.samples.page == SamplePage::Keyboard {
+                    model.samples.refresh_script(model.theme());
+                }
                 model.banner_rev = model.banner_rev.wrapping_add(1).max(1);
                 model.chart_rev = model.chart_rev.wrapping_add(1).max(1);
                 model.rich_rev = model.rich_rev.wrapping_add(1).max(1);
@@ -393,13 +505,30 @@ impl App for ShowcaseApp {
                 model.banner_rev = model.banner_rev.wrapping_add(1).max(1);
                 Change::View
             }
+            ShowcaseMsg::Preview(delta) => {
+                let count = TransitionKind::ALL.len() as isize;
+                model.preset_index =
+                    (model.preset_index as isize + isize::from(delta)).rem_euclid(count) as usize;
+                model.preview.play_styled(
+                    model.motion,
+                    liuli_widgets::TransitionRole::Entrance,
+                    Some(
+                        model
+                            .motion
+                            .entrance
+                            .with_kind(TransitionKind::ALL[model.preset_index]),
+                    ),
+                    now,
+                );
+                Change::View
+            }
             ShowcaseMsg::CycleTransition => {
                 model.trans_kind = match model.trans_kind {
                     TransitionKind::SlideLeft => TransitionKind::SlideUp,
                     TransitionKind::SlideUp => TransitionKind::Fade,
                     _ => TransitionKind::SlideLeft,
                 };
-                model.transition.start(model.trans_kind, now, 260);
+                model.play_page(now);
                 Change::View
             }
             ShowcaseMsg::ToggleBright => {
@@ -472,36 +601,71 @@ impl App for ShowcaseApp {
                 Change::View
             }
             ShowcaseMsg::FlingScroll(vel) => {
-                model.scroll_physics.release_with_velocity(vel, now);
+                if model.motion.reduced {
+                    let x = model.scroll_physics.offset()
+                        + vel.signum() * i32::from(CARD_WIDTH + CARD_GAP);
+                    model.scroll_physics.set_offset(x.clamp(
+                        model.scroll_physics.min_offset,
+                        model.scroll_physics.max_offset,
+                    ));
+                } else {
+                    model.scroll_physics.release_with_velocity(vel, now);
+                }
                 Change::View
             }
         }
     }
 
     fn accepts_text(model: &Self::Model, key: Key) -> bool {
-        model.tab == ShowcaseTab::Forms && key == Key(240)
+        (model.tab == ShowcaseTab::Forms && key == Key(240))
+            || (model.tab == ShowcaseTab::Widgets && model.samples.accepts_text(key))
     }
 
-    fn on_text(_model: &Self::Model, key: Key, input: TextInput<'_>) -> Option<Self::Msg> {
+    fn update_text(
+        model: &mut Self::Model,
+        key: Key,
+        input: TextInput<'_>,
+        now: InstantMs,
+    ) -> Option<Change> {
+        if model.tab == ShowcaseTab::Widgets {
+            return model.samples.text(key, input);
+        }
         if key != Key(240) {
             return None;
         }
-        match input {
-            TextInput::Commit(s) if !s.is_empty() => Some(ShowcaseMsg::EditorText(true)),
-            TextInput::Backspace | TextInput::Left | TextInput::Right => {
-                Some(ShowcaseMsg::EditorBackspace)
-            }
-            _ => None,
-        }
+        let changed = model.editor.apply_text(input);
+        Some(Self::update(model, ShowcaseMsg::EditorText(changed), now))
     }
 
     fn on_action(model: &Self::Model, ev: UiAction) -> Option<Self::Msg> {
         let k = ev.key.0;
+        if let Some(tab) = Tabs::new(&page_declarations(model), model.tab)
+            .ok()?
+            .selection(ev)
+        {
+            return Some(ShowcaseMsg::SelectTab(tab));
+        }
+        if model.tab == ShowcaseTab::Widgets && (k >= 700 || ev.kind == ActionKind::Dismiss) {
+            return Some(ShowcaseMsg::SampleAction(ev));
+        }
         match k {
-            11 => Some(ShowcaseMsg::SelectTab(ShowcaseTab::Overview)),
-            12 => Some(ShowcaseMsg::SelectTab(ShowcaseTab::Forms)),
-            13 => Some(ShowcaseMsg::SelectTab(ShowcaseTab::Charts)),
-            14 => Some(ShowcaseMsg::SelectTab(ShowcaseTab::Layout)),
+            601 => Some(ShowcaseMsg::SetMotion(liuli_widgets::Motion::STANDARD)),
+            602 => Some(ShowcaseMsg::SetMotion(liuli_widgets::Motion::SNAPPY)),
+            603 => Some(ShowcaseMsg::SetMotion(liuli_widgets::Motion::REDUCED)),
+            604 => Some(ShowcaseMsg::ToggleLocal),
+            605 | 606 => Some(ShowcaseMsg::ToggleIndicator),
+            610 => match ev.kind {
+                ActionKind::SetValue(v) => Some(ShowcaseMsg::SetLevel(v)),
+                ActionKind::Adjust(d) => Some(ShowcaseMsg::SetLevel(
+                    model.level.saturating_add(d.saturating_mul(5)),
+                )),
+                _ => None,
+            },
+            612 => Some(ShowcaseMsg::SetLevel(if model.level < 50 {
+                85
+            } else {
+                15
+            })),
             16 => Some(ShowcaseMsg::ToggleLocale),
             17 => Some(ShowcaseMsg::ToggleTheme),
             111 => Some(ShowcaseMsg::LoadDelta(-8)),
@@ -535,6 +699,9 @@ impl App for ShowcaseApp {
             405 => Some(ShowcaseMsg::SetJustify(Justify::SpaceAround)),
             406 => Some(ShowcaseMsg::SetJustify(Justify::SpaceEvenly)),
             421..=428 => Some(ShowcaseMsg::SelectGrid((k - 421) as usize)),
+            471 => Some(ShowcaseMsg::Preview(-1)),
+            472 => Some(ShowcaseMsg::Preview(0)),
+            473 => Some(ShowcaseMsg::Preview(1)),
             448 => Some(ShowcaseMsg::FlingScroll(-1100)),
             449 => Some(ShowcaseMsg::FlingScroll(1100)),
             _ if model.tab == ShowcaseTab::Charts && k >= 420 && (k - 420).is_multiple_of(16) => {
@@ -545,38 +712,58 @@ impl App for ShowcaseApp {
         }
     }
 
+    fn on_scroll(model: &Self::Model, key: Key, offset: i32) -> Option<Self::Msg> {
+        (model.tab == ShowcaseTab::Widgets && key == samples::LIST)
+            .then_some(ShowcaseMsg::ListOffset(offset))
+    }
+    fn on_pointer(model: &Self::Model, key: Key, event: PointerEvent) -> Option<Self::Msg> {
+        (model.tab == ShowcaseTab::Widgets && samples::captures(key))
+            .then_some(ShowcaseMsg::SamplePointer(key, event))
+    }
+    fn accepts_transform(model: &Self::Model, key: Key) -> bool {
+        model.tab == ShowcaseTab::Widgets && key == samples::IMAGE
+    }
+    fn on_transform(_: &Self::Model, key: Key, gesture: TransformGesture) -> Option<Self::Msg> {
+        (key == samples::IMAGE).then_some(ShowcaseMsg::ImageGesture(gesture))
+    }
+    fn paint_override(
+        _: &Self::Model,
+        key: Key,
+        _: NodeKind,
+        props: &StoredProps,
+        state: PaintState,
+        canvas: &mut WidgetCanvas<'_>,
+    ) -> Result<PaintOverride, BuildError> {
+        if key == samples::TICKS {
+            liuli_widgets::paint_ticked_slider(props, state, 5, canvas)
+        } else {
+            Ok(PaintOverride::Default)
+        }
+    }
     fn next_deadline(model: &Self::Model, now: InstantMs) -> Option<InstantMs> {
-        let mut earliest: Option<InstantMs> = None;
-        if let NextWakeup::At(t) = model.transition.next_wakeup(now) {
-            earliest = Some(t);
-        }
-        match model.scroll_physics.next_wakeup(now) {
-            NextWakeup::Now => return Some(now),
-            NextWakeup::At(t) => {
-                earliest = Some(earliest.map_or(t, |e| if t < e { t } else { e }));
-            }
-            NextWakeup::OnEvent => {}
-        }
-        if model.live_sample {
-            let step = InstantMs(((now.0 / ANIM_PERIOD_MS) + 1).saturating_mul(ANIM_PERIOD_MS));
-            earliest = Some(earliest.map_or(step, |e| if step < e { step } else { e }));
-        }
-        earliest
+        let period = if model.motion.reduced {
+            SAMPLE_PERIOD_MS
+        } else {
+            ANIM_PERIOD_MS
+        };
+        model
+            .live_sample
+            .then(|| InstantMs((now.0 / period).saturating_add(1).saturating_mul(period)))
+            .into_iter()
+            .chain(model.samples.toast_until)
+            .min()
     }
 
     fn on_timer(model: &mut Self::Model, now: InstantMs) -> Change {
         let prev_now = model.now;
-        let mut dirty = model.scroll_physics.advance(now);
-        if model.transition.is_active(now) || model.transition.is_active(prev_now) {
-            dirty = true;
-        }
+        let mut dirty = model.samples.expire(now);
         if model.live_sample {
             let sample_due = (now.0 / SAMPLE_PERIOD_MS) != (prev_now.0 / SAMPLE_PERIOD_MS);
             let anim_due = (now.0 / ANIM_PERIOD_MS) != (prev_now.0 / ANIM_PERIOD_MS);
             if sample_due {
                 model.push_sample();
                 dirty = true;
-            } else if anim_due {
+            } else if anim_due && !model.motion.reduced {
                 dirty = true;
             }
         }
@@ -604,12 +791,25 @@ impl App for ShowcaseApp {
                     .height(Length::Fill(1))
                     .gap(8),
                 |col| {
-                    build_topbar(model, theme, col)?;
-                    build_content(model, theme, col)?;
-                    build_footer(model, theme, col)?;
+                    let pages = page_declarations(model);
+                    let tabs = Tabs::new(&pages, model.tab)?;
+                    build_topbar(&tabs, model, theme, col)?;
+                    build_content(&tabs, model, theme, col)?;
+                    if !model.compact {
+                        build_footer(model, theme, col)?;
+                    }
                     Ok(())
                 },
-            )
+            )?;
+            if model.tab == ShowcaseTab::Widgets && model.samples.confirm {
+                liuli_widgets::centered_confirm_dialog(
+                    ui,
+                    [Key(760), Key(761), Key(762), Key(763)],
+                    [TextRef::Static("Reset"), TextRef::Static("Cancel")],
+                    theme,
+                )?;
+            }
+            Ok(())
         })
     }
 
@@ -619,9 +819,12 @@ impl App for ShowcaseApp {
         props: &StoredProps,
         canvas: &mut WidgetCanvas<'_>,
     ) -> Result<(), BuildError> {
+        if model.tab == ShowcaseTab::Widgets && key.0 >= 700 {
+            return model.samples.paint(key, props, canvas, model.theme());
+        }
         match key.0 {
-            15 => paint_spinner(
-                if model.tab == ShowcaseTab::Overview {
+            131 => paint_spinner(
+                if model.motion.reduced {
                     InstantMs(0)
                 } else {
                     model.now
@@ -629,7 +832,7 @@ impl App for ShowcaseApp {
                 props,
                 canvas,
             ),
-            131 => paint_spinner(model.now, props, canvas),
+            606 => paint_meter(props, canvas),
             100 => paint_gradient_banner(model, props, canvas),
             110 => paint_gauge(model.load_gauge(), props, canvas),
             120 => paint_gauge(model.temp_gauge(), props, canvas),
@@ -670,35 +873,6 @@ impl App for ShowcaseApp {
     }
 }
 
-fn tab_btn(
-    ui: &mut Children<'_, '_>,
-    key: Key,
-    label: &'static str,
-    active: bool,
-    theme: Theme,
-) -> Result<(), BuildError> {
-    let bg = if active {
-        theme.accent
-    } else {
-        theme.surface_alt
-    };
-    let fg = if active { theme.background } else { theme.text };
-    ui.button(
-        key,
-        NodeProps::new()
-            .width(Length::Px(88))
-            .height(Length::Px(34))
-            .bg(bg)
-            .fg(fg)
-            .border(theme.border, 1)
-            .radius(6)
-            .font(FontId::Body16)
-            .text(TextRef::Static(label))
-            .focusable(true)
-            .clickable(true),
-    )
-}
-
 fn small_btn(
     ui: &mut Children<'_, '_>,
     key: Key,
@@ -710,7 +884,9 @@ fn small_btn(
 ) -> Result<(), BuildError> {
     ui.button(
         key,
-        NodeProps::new()
+        theme
+            .button(liuli_widgets::ButtonVariant::Surface)
+            .padding(EdgeInsets::ZERO)
             .width(width)
             .height(Length::Px(32))
             .bg(bg)
@@ -724,136 +900,119 @@ fn small_btn(
     )
 }
 
+fn page_declarations(m: &ShowcaseModel) -> [TabPage<ShowcaseTab, ShowcaseModel>; 6] {
+    [
+        TabPage::new(
+            ShowcaseTab::Overview,
+            Key(11),
+            TextRef::Static(m.tr(i18n_keys::TAB_OVERVIEW)),
+            build_tab_overview,
+        ),
+        TabPage::new(
+            ShowcaseTab::Forms,
+            Key(12),
+            TextRef::Static(m.tr(i18n_keys::TAB_FORMS)),
+            build_tab_forms,
+        ),
+        TabPage::new(
+            ShowcaseTab::Charts,
+            Key(13),
+            TextRef::Static(m.tr(i18n_keys::TAB_CHARTS)),
+            build_tab_charts,
+        ),
+        TabPage::new(
+            ShowcaseTab::Layout,
+            Key(14),
+            TextRef::Static(m.tr(i18n_keys::TAB_LAYOUT)),
+            build_tab_layout,
+        ),
+        TabPage::new(
+            ShowcaseTab::Motion,
+            Key(19),
+            TextRef::Static(m.tr(i18n_keys::TAB_MOTION)),
+            motion_page,
+        ),
+        TabPage::new(
+            ShowcaseTab::Widgets,
+            Key(23),
+            TextRef::Static(m.tr(i18n_keys::TAB_WIDGETS)),
+            |m, t, ui| m.samples.view(t, ui, m.locale),
+        ),
+    ]
+}
+
+fn tab_theme(theme: Theme, height: u16) -> Theme {
+    theme
+        .map_density(|d| liuli_widgets::Density {
+            control_height: height,
+            spacing: 4,
+            pad_x: 2,
+            pad_y: 2,
+            ..d
+        })
+        .with_radius(6)
+}
+
 fn build_topbar(
+    tabs: &Tabs<'_, ShowcaseTab, ShowcaseModel>,
     model: &ShowcaseModel,
     theme: Theme,
     ui: &mut Children<'_, '_>,
 ) -> Result<(), BuildError> {
-    ui.row(
+    let t = tab_theme(theme, 34).map_parts(|parts| {
+        parts.with_tab(
+            parts
+                .tab
+                .with_indicator_layout(IndicatorLayout {
+                    span: IndicatorSpan::Content,
+                    thickness: 3,
+                    edge_offset: 2,
+                    ..IndicatorLayout::UNDERLINE
+                })
+                .with_indicator_radius(2)
+                .with_indicator_motion(IndicatorMotion::Slide),
+        )
+    });
+    tabs.header_with(
+        ui,
         Key(10),
-        NodeProps::new()
-            .width(Length::Fill(1))
-            .height(Length::Px(46))
-            .padding(EdgeInsets::symmetric(8, 5))
-            .gap(5)
-            .justify(Justify::SpaceBetween)
-            .align_cross(Align::Center)
-            .bg(theme.surface)
-            .border(theme.border, 1)
-            .radius(8),
+        TabLayout::Wrap { max_rows: 2 },
+        t,
         |bar| {
-            let bar_spinner_now = if model.tab == ShowcaseTab::Overview {
-                InstantMs(0)
-            } else {
-                model.now
-            };
-            spinner(bar, Key(15), 26, bar_spinner_now, theme)?;
             bar.label(
-                Key(18),
+                Key(15),
                 NodeProps::new()
-                    .width(Length::Px(144))
-                    .height(Length::Content)
-                    .fg(theme.text)
-                    .font(FontId::Body16)
+                    .font(FontId::Small12)
+                    .fg(t.text_muted)
                     .text(TextRef::Static(model.tr(i18n_keys::TITLE))),
-            )?;
-            tab_btn(
-                bar,
-                Key(11),
-                model.tr(i18n_keys::TAB_OVERVIEW),
-                model.tab == ShowcaseTab::Overview,
-                theme,
-            )?;
-            tab_btn(
-                bar,
-                Key(12),
-                model.tr(i18n_keys::TAB_FORMS),
-                model.tab == ShowcaseTab::Forms,
-                theme,
-            )?;
-            tab_btn(
-                bar,
-                Key(13),
-                model.tr(i18n_keys::TAB_CHARTS),
-                model.tab == ShowcaseTab::Charts,
-                theme,
-            )?;
-            tab_btn(
-                bar,
-                Key(14),
-                model.tr(i18n_keys::TAB_LAYOUT),
-                model.tab == ShowcaseTab::Layout,
-                theme,
-            )?;
-            small_btn(
-                bar,
-                Key(16),
-                model.tr(i18n_keys::BTN_LANG),
-                Length::Px(90),
-                theme.surface_alt,
-                theme.accent,
-                theme,
-            )?;
-            small_btn(
-                bar,
-                Key(17),
-                model.tr(i18n_keys::BTN_THEME),
-                Length::Px(90),
-                theme.surface_alt,
-                theme.text,
-                theme,
-            )?;
+            )
+        },
+        |bar| {
+            for (key, label) in [(16, i18n_keys::BTN_LANG), (17, i18n_keys::BTN_THEME)] {
+                bar.button(
+                    Key(key),
+                    t.secondary_button()
+                        .width(Length::Content)
+                        .font(FontId::Small12)
+                        .text(TextRef::Static(model.tr(label))),
+                )?;
+            }
             Ok(())
         },
     )
 }
 
 fn build_content(
+    tabs: &Tabs<'_, ShowcaseTab, ShowcaseModel>,
     model: &ShowcaseModel,
     theme: Theme,
     ui: &mut Children<'_, '_>,
 ) -> Result<(), BuildError> {
-    ui.stack(
-        Key(49),
-        NodeProps::new()
-            .width(Length::Fill(1))
-            .height(Length::Fill(1)),
-        |vp| {
-            vp.column(
-                Key(50),
-                NodeProps::new()
-                    .width(Length::Fill(1))
-                    .height(Length::Fill(1))
-                    .gap(8),
-                |body| match model.tab {
-                    ShowcaseTab::Overview => build_tab_overview(model, theme, body),
-                    ShowcaseTab::Forms => build_tab_forms(model, theme, body),
-                    ShowcaseTab::Charts => build_tab_charts(model, theme, body),
-                    ShowcaseTab::Layout => build_tab_layout(model, theme, body),
-                },
-            )?;
-
-            model
-                .transition
-                .apply(vp, Key(50), Size::new(260, 140), model.now)?;
-
-            #[cfg(feature = "enhanced")]
-            if model.transition.kind() == TransitionKind::Fade
-                && model.transition.is_active(model.now)
-            {
-                let alpha = model.transition.alpha_for(model.now);
-                vp.decorate(
-                    Key(50),
-                    SurfaceStyle {
-                        layer: Some(Layer::OPAQUE.with_opacity(alpha)),
-                        ..SurfaceStyle::FLAT
-                    },
-                )?;
-            }
-
-            Ok(())
-        },
-    )
+    let fill = NodeProps::new().size(Length::Fill(1), Length::Fill(1));
+    ui.stack(Key(49), fill, |vp| {
+        tabs.panel(vp, Key(50), fill.gap(8), model, theme)?;
+        model.transition.frame().apply(vp, Key(50))
+    })
 }
 
 fn build_tab_overview(
@@ -861,6 +1020,9 @@ fn build_tab_overview(
     theme: Theme,
     ui: &mut Children<'_, '_>,
 ) -> Result<(), BuildError> {
+    if model.compact {
+        return compact_overview(model, theme, ui);
+    }
     ui.custom(
         Key(100),
         NodeProps::new()
@@ -1012,6 +1174,9 @@ fn build_tab_forms(
     theme: Theme,
     ui: &mut Children<'_, '_>,
 ) -> Result<(), BuildError> {
+    if model.compact {
+        return compact_forms(model, theme, ui);
+    }
     let chk_theme = Theme {
         control_height: 28,
         ..theme
@@ -1204,6 +1369,9 @@ fn build_tab_charts(
     theme: Theme,
     ui: &mut Children<'_, '_>,
 ) -> Result<(), BuildError> {
+    if model.compact {
+        return compact_charts(model, theme, ui);
+    }
     ui.row(
         Key(300),
         NodeProps::new()
@@ -1292,6 +1460,9 @@ fn build_tab_layout(
     theme: Theme,
     ui: &mut Children<'_, '_>,
 ) -> Result<(), BuildError> {
+    if model.compact {
+        return compact_layout(model, theme, ui);
+    }
     let modes = [
         (401, Justify::Start, "Start"),
         (402, Justify::Center, "Center"),
@@ -1375,7 +1546,9 @@ fn build_tab_layout(
                 g.button(
                     Key(421 + i as u32),
                     NodeProps::new()
+                        .width(Length::Fill(1))
                         .height(Length::Px(46))
+                        .padding(EdgeInsets::symmetric(8, 4))
                         .bg(if sel { theme.accent } else { theme.surface })
                         .fg(if sel { theme.background } else { theme.text })
                         .border(theme.border, 1)
@@ -1390,6 +1563,11 @@ fn build_tab_layout(
         },
     )?;
 
+    scroll_strip(theme, ui)?;
+    gallery(model, theme, ui)
+}
+
+fn scroll_strip(theme: Theme, ui: &mut Children<'_, '_>) -> Result<(), BuildError> {
     ui.row(
         Key(447),
         NodeProps::new()
@@ -1422,13 +1600,13 @@ fn build_tab_layout(
                         NodeProps::new()
                             .width(Length::Content)
                             .height(Length::Fill(1))
-                            .gap(8),
+                            .gap(CARD_GAP),
                         |cards| {
                             for (i, &(label, col)) in SCROLL_CARDS.iter().enumerate() {
                                 cards.label(
                                     Key(452 + i as u32),
                                     NodeProps::new()
-                                        .width(Length::Px(150))
+                                        .width(Length::Px(CARD_WIDTH.into()))
                                         .height(Length::Fill(1))
                                         .bg(col)
                                         .fg(rgb8(248, 250, 252))
@@ -1440,9 +1618,7 @@ fn build_tab_layout(
                             }
                             Ok(())
                         },
-                    )?;
-                    let dx = -(model.scroll_physics.offset().clamp(-500, 900) as i16);
-                    sx.set_offset(Key(451), dx, 0)
+                    )
                 },
             )?;
             small_btn(
@@ -1458,6 +1634,222 @@ fn build_tab_layout(
     )
 }
 
+fn gallery(
+    model: &ShowcaseModel,
+    theme: Theme,
+    ui: &mut Children<'_, '_>,
+) -> Result<(), BuildError> {
+    if model.compact {
+        ui.row(Key(470), row_props(32), |r| {
+            for (k, s) in [(471, "<"), (472, "Replay"), (473, ">")] {
+                small_btn(
+                    r,
+                    Key(k),
+                    s,
+                    Length::Fill(1),
+                    theme.surface_alt,
+                    theme.text,
+                    theme,
+                )?;
+            }
+            Ok(())
+        })?;
+        return stage(model, theme, ui);
+    }
+    ui.row(
+        Key(470),
+        NodeProps::new()
+            .width(Length::Fill(1))
+            .height(Length::Px(62))
+            .align_cross(Align::Center)
+            .gap(8),
+        |row| {
+            small_btn(
+                row,
+                Key(471),
+                "<",
+                Length::Px(52),
+                theme.surface_alt,
+                theme.text,
+                theme,
+            )?;
+            small_btn(
+                row,
+                Key(472),
+                "Replay",
+                Length::Px(92),
+                theme.accent,
+                theme.background,
+                theme,
+            )?;
+            small_btn(
+                row,
+                Key(473),
+                ">",
+                Length::Px(52),
+                theme.surface_alt,
+                theme.text,
+                theme,
+            )?;
+            stage(model, theme, row)
+        },
+    )
+}
+
+fn stage(model: &ShowcaseModel, theme: Theme, ui: &mut Children<'_, '_>) -> Result<(), BuildError> {
+    ui.stack(
+        Key(474),
+        NodeProps::new()
+            .width(Length::Fill(1))
+            .height(Length::Px(62))
+            .bg(theme.surface)
+            .radius(8),
+        |stage| {
+            stage.label(
+                Key(475),
+                NodeProps {
+                    width: Length::Px(148),
+                    height: Length::Px(36),
+                    stack_align: StackAlign::Center,
+                    text_align: TextAlign::Center,
+                    text: TextRef::Static(TransitionKind::ALL[model.preset_index].name()),
+                    ..NodeProps::new()
+                        .bg(theme.accent)
+                        .fg(theme.background)
+                        .radius(8)
+                },
+            )?;
+            model.preview.frame().apply(stage, Key(475))
+        },
+    )
+}
+
+fn row_props(height: u32) -> NodeProps {
+    NodeProps::new()
+        .size(Length::Fill(1), Length::Px(height))
+        .gap(4)
+        .align_cross(Align::Center)
+}
+
+fn motion_page(
+    model: &ShowcaseModel,
+    theme: Theme,
+    ui: &mut Children<'_, '_>,
+) -> Result<(), BuildError> {
+    use liuli_widgets::{Motion, Style, ThemedUi};
+    ui.row(Key(600), row_props(32), |r| {
+        for (k, label, m) in [
+            (601, "Standard", Motion::STANDARD),
+            (602, "Snappy", Motion::SNAPPY),
+            (603, "Reduced", Motion::REDUCED),
+        ] {
+            let active = model.motion == m;
+            small_btn(
+                r,
+                Key(k),
+                label,
+                Length::Fill(1),
+                if active {
+                    theme.accent
+                } else {
+                    theme.surface_alt
+                },
+                if active { theme.background } else { theme.text },
+                theme,
+            )?;
+        }
+        Ok(())
+    })?;
+    small_btn(
+        ui,
+        Key(604),
+        if model.local_slow && model.motion.reduced {
+            "Local 480 ms / Reduced"
+        } else if model.local_slow {
+            "Local timing: 480 ms"
+        } else {
+            "Local timing: inherit"
+        },
+        Length::Fill(1),
+        theme.surface,
+        theme.text,
+        theme,
+    )?;
+    ui.label(
+        Key(607),
+        NodeProps::new()
+            .fg(theme.text)
+            .text(TextRef::Static("Switch and custom meter")),
+    )?;
+    ui.row(Key(608), row_props(48), |r| {
+        let mut scope = ThemedUi::new(r, theme);
+        scope.toggle(Key(605), model.indicator_on)?;
+        let motion = model.local_slow.then_some(
+            theme
+                .motion
+                .with_state_ms(480)
+                .with_state_easing(Easing::Linear),
+        );
+        scope.with_style(
+            Style {
+                motion,
+                ..Style::default()
+            },
+            |local| {
+                let t = local.theme();
+                local.raw().custom(
+                    Key(606),
+                    t.control()
+                        .size(Length::Fill(1), Length::Px(36))
+                        .checked(model.indicator_on)
+                        .clickable(true)
+                        .focusable(true)
+                        .state_motion(t.motion.state(MotionState::Checked, None)),
+                )
+            },
+        )
+    })?;
+    gallery(model, theme, ui)?;
+    let summary = ui.text_fmt(format_args!("Level {}%", model.level))?;
+    ui.label(Key(609), NodeProps::new().fg(theme.text).text(summary))?;
+    ui.row(Key(613), row_props(38), |r| {
+        let mut controls = ThemedUi::new(r, theme);
+        controls.slider_range(Key(610), 0, 100, 5, model.level)?;
+        // The raised button exposes the same press timing to the surface and control painters.
+        let raised = theme.with_effect_tier(liuli_widgets::EffectTier::Depth);
+        let props = raised
+            .button(liuli_widgets::ButtonVariant::Primary)
+            .size(Length::Px(88), Length::Px(32))
+            .padding(EdgeInsets::ZERO)
+            .text(TextRef::Static("Step"));
+        controls.raw().button(Key(612), props)?;
+        controls
+            .raw()
+            .decorate(Key(612), raised.elevation(liuli_widgets::Elevation::Raised))
+    })?;
+    ThemedUi::new(ui, theme).progress_bar(Key(611), model.level)
+}
+
+/// An application-defined control uses the same retained progress as the SDK switch.
+fn paint_meter(props: &StoredProps, canvas: &mut WidgetCanvas<'_>) -> Result<(), BuildError> {
+    let sz = canvas.size();
+    let w = sz.width.saturating_sub(8);
+    let y = sz.height.saturating_sub(12) as i32 / 2;
+    canvas.rounded_rect(
+        Rect::new(4, y, w, 12),
+        props.bg().unwrap_or(props.fg),
+        6,
+        Some(props.fg),
+        1,
+    )?;
+    let fill = (u64::from(w.saturating_sub(4)) * canvas.state.anim_progress.clamp(0, 1000) as u64
+        / 1000) as u32;
+    if fill > 0 {
+        canvas.rounded_rect(Rect::new(6, y + 2, fill, 8), props.accent, 4, None, 0)?;
+    }
+    Ok(())
+}
+
 fn build_footer(
     model: &ShowcaseModel,
     theme: Theme,
@@ -1468,7 +1860,7 @@ fn build_footer(
         NodeProps::new()
             .width(Length::Fill(1))
             .height(Length::Px(32))
-            .padding(EdgeInsets::symmetric(10, 4))
+            .padding(EdgeInsets::symmetric(10, 0))
             .justify(Justify::SpaceBetween)
             .align_cross(Align::Center)
             .bg(theme.surface)
@@ -1524,11 +1916,15 @@ fn paint_gradient_banner(
     )?;
 
     let mut line = StackBuf::<96>::new();
-    let _ = format_template(
-        &mut line,
-        model.tr(i18n_keys::STATUS_FMT),
-        &[&model.load, &model.temp, &MAX_NODES],
-    );
+    if model.compact {
+        let _ = write!(line, "Load {}%  Temp {} C", model.load, model.temp);
+    } else {
+        let _ = format_template(
+            &mut line,
+            model.tr(i18n_keys::STATUS_FMT),
+            &[&model.load, &model.temp, &MAX_NODES],
+        );
+    }
     let _ = props;
     canvas.text(
         Rect::new(14, 16, sz.width.saturating_sub(28), 24),
@@ -1595,4 +1991,171 @@ fn paint_summary_rich_text(
         TextSpan::new(") | Drivers(ST7789/GT911)"),
     ];
     paint_rich_text(&spans, props, canvas)
+}
+
+fn compact_overview(
+    model: &ShowcaseModel,
+    theme: Theme,
+    ui: &mut Children<'_, '_>,
+) -> Result<(), BuildError> {
+    ui.custom(Key(100), row_props(68).bg(theme.surface))?;
+    ui.set_custom_rev(Key(100), model.banner_rev)?;
+    gauge(ui, Key(110), model.load_gauge(), theme)?;
+    ui.row(Key(109), row_props(32), |r| {
+        for (k, label) in [(111, "-"), (112, "+")] {
+            small_btn(
+                r,
+                Key(k),
+                label,
+                Length::Fill(1),
+                theme.surface_alt,
+                theme.text,
+                theme,
+            )?;
+        }
+        Ok(())
+    })?;
+    checkbox(
+        ui,
+        Key(201),
+        TextRef::Static(model.tr(i18n_keys::CHK_LIVE)),
+        model.live_sample,
+        theme,
+    )
+}
+
+fn compact_forms(
+    model: &ShowcaseModel,
+    theme: Theme,
+    ui: &mut Children<'_, '_>,
+) -> Result<(), BuildError> {
+    ui.scroll_y(
+        Key(228),
+        NodeProps::new()
+            .width(Length::Fill(1))
+            .height(Length::Fill(1))
+            .accent(theme.accent),
+        |ui| {
+            checkbox(
+                ui,
+                Key(202),
+                TextRef::Static(model.tr(i18n_keys::CHK_BRIGHT)),
+                model.chk_bright,
+                theme,
+            )?;
+            radio(
+                ui,
+                Key(213),
+                TextRef::Static(model.tr(i18n_keys::RAD_FADE)),
+                model.trans_kind == TransitionKind::Fade,
+                theme,
+            )?;
+            roller(
+                ui,
+                Key(230),
+                Length::Fill(1),
+                70,
+                CLK_OPTIONS,
+                model.roller,
+                theme,
+            )?;
+            multi_line_editor(ui, Key(240), Length::Fill(1), 98, &model.editor, theme)?;
+            dropdown(
+                ui,
+                Key(220),
+                Key(221),
+                Key(222),
+                223,
+                DRIVER_OPTIONS,
+                model.dropdown,
+                theme,
+            )?;
+            small_btn(
+                ui,
+                Key(241),
+                model.tr(i18n_keys::BTN_ADD_TEXT),
+                Length::Fill(1),
+                theme.surface,
+                theme.text,
+                theme,
+            )
+        },
+    )
+}
+
+fn compact_charts(
+    model: &ShowcaseModel,
+    theme: Theme,
+    ui: &mut Children<'_, '_>,
+) -> Result<(), BuildError> {
+    for k in [301, 302] {
+        ui.custom(Key(k), row_props(112).bg(theme.surface))?;
+        ui.set_custom_rev(Key(k), model.chart_rev)?;
+    }
+    small_btn(
+        ui,
+        Key(310),
+        "Sample",
+        Length::Fill(1),
+        theme.surface,
+        theme.text,
+        theme,
+    )?;
+    let cols = [
+        TableColumn::new("Module", Length::Fill(2), TextAlign::Start),
+        TableColumn::new("State", Length::Fill(1), TextAlign::End),
+    ];
+    let rows = TABLE_ROWS.map(|row| [row[0], row[3]]);
+    data_table(
+        ui,
+        320,
+        &cols,
+        &[&rows[0], &rows[1], &rows[2]],
+        model.selected_row,
+        27,
+        theme,
+    )
+}
+
+fn compact_layout(
+    model: &ShowcaseModel,
+    theme: Theme,
+    ui: &mut Children<'_, '_>,
+) -> Result<(), BuildError> {
+    ui.grid(
+        Key(420),
+        2,
+        NodeProps::new().width(Length::Fill(1)).gap(4),
+        |g| {
+            for (i, label) in [
+                "Grid",
+                "Rows",
+                "Images",
+                "Forms",
+                "Locale",
+                "Input",
+                "Paint",
+                "Simulator",
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                small_btn(
+                    g,
+                    Key(421 + i as u32),
+                    label,
+                    Length::Fill(1),
+                    if model.grid_selected == i {
+                        theme.accent
+                    } else {
+                        theme.surface
+                    },
+                    theme.text,
+                    theme,
+                )?;
+            }
+            Ok(())
+        },
+    )?;
+    scroll_strip(theme, ui)
 }
