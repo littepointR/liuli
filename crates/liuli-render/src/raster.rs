@@ -87,11 +87,46 @@ pub fn render_band_with_blend<'f, R>(
 where
     R: SceneResources + ?Sized,
 {
+    let mut accel = crate::accel::SoftAccel;
     match render_range(
         target,
         cmds,
         resources,
         blend,
+        &mut accel,
+        &mut LegacyTextSource {
+            fonts,
+            glyphs: &mut liuli_text::storage::InlinePixels,
+        },
+        0..cmds.count,
+        cmds.root_bg,
+    ) {
+        Ok(count) => count,
+        Err(err) => match err {
+            GlyphReadError::Source(never) => match never {},
+            GlyphReadError::Short { .. } => 0,
+        },
+    }
+}
+
+/// Renders one band delegating solid fills and row operations to hardware [`crate::accel::DrawAccel`].
+pub fn render_band_with_accel<'f, R, A>(
+    target: &mut BandTarget<'_>,
+    cmds: &CommandList,
+    resources: &R,
+    fonts: &FontSet<'f>,
+    accel: &mut A,
+) -> u32
+where
+    R: SceneResources + ?Sized,
+    A: crate::accel::DrawAccel,
+{
+    match render_range(
+        target,
+        cmds,
+        resources,
+        blend_solid,
+        accel,
         &mut LegacyTextSource {
             fonts,
             glyphs: &mut liuli_text::storage::InlinePixels,
@@ -124,11 +159,13 @@ pub fn render_band_with_pixels<'f, R, G: liuli_text::storage::GlyphPixels>(
 where
     R: SceneResources + ?Sized,
 {
+    let mut accel = crate::accel::SoftAccel;
     render_range(
         target,
         cmds,
         resources,
         blend,
+        &mut accel,
         &mut LegacyTextSource { fonts, glyphs },
         0..cmds.count,
         cmds.root_bg,
@@ -145,11 +182,13 @@ pub fn render_band_with_provider<R, F: FontProvider>(
 where
     R: SceneResources + ?Sized,
 {
+    let mut accel = crate::accel::SoftAccel;
     render_range(
         target,
         cmds,
         resources,
         blend,
+        &mut accel,
         &mut ProviderTextSource { fonts },
         0..cmds.count,
         cmds.root_bg,
@@ -582,11 +621,12 @@ fn fill_adjacent_rects(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn render_range<R: SceneResources + ?Sized, T: BandTextSource>(
+fn render_range<R: SceneResources + ?Sized, T: BandTextSource, A: crate::accel::DrawAccel>(
     target: &mut BandTarget<'_>,
     cmds: &CommandList,
     resources: &R,
     blend: impl Fn(&mut [u16], Rgb565, u8) + Copy,
+    accel: &mut A,
     text_source: &mut T,
     range: core::ops::Range<usize>,
     clear: Rgb565,
@@ -645,6 +685,7 @@ fn render_range<R: SceneResources + ?Sized, T: BandTextSource>(
                             cmds,
                             resources,
                             blend,
+                            accel,
                             text_source,
                             local,
                             Rgb565::new(0, 0, 0),
@@ -685,6 +726,7 @@ fn render_range<R: SceneResources + ?Sized, T: BandTextSource>(
                                 cmds,
                                 resources,
                                 blend,
+                                accel,
                                 text_source,
                                 underlay.clone(),
                                 clear,
@@ -732,16 +774,20 @@ fn render_range<R: SceneResources + ?Sized, T: BandTextSource>(
                     for px in 0..area.w {
                         let x = area.x as i64 + i64::from(px);
                         let y = area.y as i64 + i64::from(py);
-                        if let Some(raw) = source.sample(
+                        if let Some((raw, px_alpha)) = source.sample_rgba(
                             (x - i64::from(rect.x)) as u32,
                             (y - i64::from(rect.y)) as u32,
                             rect.w,
                             rect.h,
                             angle,
                         ) {
-                            let index = (y - i64::from(band_rect.y)) as usize * stride
-                                + (x - i64::from(band_rect.x)) as usize;
-                            target.blend_pixel_a4(index, raw, alpha);
+                            let eff_alpha =
+                                ((u16::from(px_alpha) * u16::from(alpha) + 7) / 15) as u8;
+                            if eff_alpha > 0 {
+                                let index = (y - i64::from(band_rect.y)) as usize * stride
+                                    + (x - i64::from(band_rect.x)) as usize;
+                                target.blend_pixel_a4(index, raw, eff_alpha);
+                            }
                         }
                     }
                 }
@@ -762,8 +808,7 @@ fn render_range<R: SceneResources + ?Sized, T: BandTextSource>(
                         continue;
                     }
                 }
-                let local = eff.translate(-band_rect.x, -band_rect.y);
-                let _ = target.fill_solid(&local.to_eg(), color);
+                accel.fill_rect(target, eff, color);
             }
             PaintCmd::StrokeRect {
                 rect,
@@ -996,6 +1041,18 @@ fn render_range<R: SceneResources + ?Sized, T: BandTextSource>(
                 crate::vector::draw_arc(
                     target, band_rect, center, radius, start_deg, sweep_deg, width, cap_round,
                     clip, color,
+                );
+            }
+            PaintCmd::GradientRect {
+                rect,
+                clip,
+                start,
+                end,
+                direction,
+                radius,
+            } => {
+                crate::vector::draw_gradient_rect(
+                    target, band_rect, rect, clip, start, end, direction, radius,
                 );
             }
         }

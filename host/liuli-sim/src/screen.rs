@@ -751,16 +751,20 @@ fn reference_range_with_source<S: SimTextSource>(
                     for px in 0..area.w {
                         let x = area.x as i64 + i64::from(px);
                         let y = area.y as i64 + i64::from(py);
-                        if let Some(raw) = source.sample(
+                        if let Some((raw, px_alpha)) = source.sample_rgba(
                             (x - i64::from(rect.x)) as u32,
                             (y - i64::from(rect.y)) as u32,
                             rect.w,
                             rect.h,
                             angle,
                         ) {
-                            let index = (y - i64::from(full.y)) as usize * stride
-                                + (x - i64::from(full.x)) as usize;
-                            screen.blend_pixel_a4(index, raw, alpha);
+                            let eff_alpha =
+                                ((u16::from(px_alpha) * u16::from(alpha) + 7) / 15) as u8;
+                            if eff_alpha > 0 {
+                                let index = (y - i64::from(full.y)) as usize * stride
+                                    + (x - i64::from(full.x)) as usize;
+                                screen.blend_pixel_a4(index, raw, eff_alpha);
+                            }
                         }
                     }
                 }
@@ -1159,6 +1163,25 @@ fn reference_range_with_source<S: SimTextSource>(
                     cap_round,
                     clip,
                     color,
+                );
+            }
+            PaintCmd::GradientRect {
+                rect,
+                clip,
+                start,
+                end,
+                direction,
+                radius,
+            } => {
+                liuli::render::vector::draw_gradient_rect(
+                    &mut screen,
+                    full,
+                    rect,
+                    clip,
+                    start,
+                    end,
+                    direction,
+                    radius,
                 );
             }
         }

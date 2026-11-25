@@ -140,7 +140,19 @@ pub enum PaintCmd {
         len: u8,
         bytes: [u8; 12],
     } = 16,
+    GradientRect {
+        rect: Rect,
+        clip: Rect,
+        start: Rgb565,
+        end: Rgb565,
+        direction: u8,
+        radius: u8,
+    } = 17,
 }
+
+pub const GRADIENT_HORIZONTAL: u8 = 0;
+pub const GRADIENT_VERTICAL: u8 = 1;
+pub const GRADIENT_DIAGONAL: u8 = 2;
 
 const _: () = assert!(core::mem::size_of::<PaintCmd>() <= 48);
 
@@ -259,7 +271,8 @@ impl PaintCmd {
             | Self::FillRoundedRect { rect, clip, .. }
             | Self::Overlay { rect, clip, .. }
             | Self::Icon { rect, clip, .. }
-            | Self::Sparkline { rect, clip, .. } => rect.intersect(clip),
+            | Self::Sparkline { rect, clip, .. }
+            | Self::GradientRect { rect, clip, .. } => rect.intersect(clip),
             Self::Text { clip, .. } | Self::InlineText { clip, .. } => clip,
             Self::Line {
                 p0,
@@ -689,6 +702,29 @@ impl WidgetCanvas<'_> {
                 radius,
                 border_color,
                 border_width,
+            })?;
+        }
+        Ok(())
+    }
+
+    pub fn gradient_rect(
+        &mut self,
+        rect: Rect,
+        start: Rgb565,
+        end: Rgb565,
+        direction: u8,
+        radius: u8,
+    ) -> Result<(), BuildError> {
+        let clip = self.current_clip();
+        let g = self.to_global(rect);
+        if !g.intersect(clip).is_empty() {
+            self.commands.push(PaintCmd::GradientRect {
+                rect: g,
+                clip,
+                start,
+                end,
+                direction,
+                radius,
             })?;
         }
         Ok(())

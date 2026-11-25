@@ -1,5 +1,6 @@
 use embedded_graphics::pixelcolor::Rgb565;
 use liuli_core::geometry::{Point, Rect, rgb565_to_u16};
+use liuli_core::paint::{GRADIENT_DIAGONAL, GRADIENT_VERTICAL};
 use liuli_text::blend_rgb565_a4_u16;
 
 /// Target pixel + optional alpha buffer sink for band and full-screen rasterizers.
@@ -390,6 +391,104 @@ pub fn draw_arc<S: PixelSink>(
                 let idx = row_off + (gx - buf_rect.x) as usize;
                 emit_px(sink, idx, fg, cov);
             }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn draw_gradient_rect<S: PixelSink + ?Sized>(
+    sink: &mut S,
+    buf_rect: Rect,
+    rect: Rect,
+    clip: Rect,
+    start: Rgb565,
+    end: Rgb565,
+    direction: u8,
+    radius: u8,
+) {
+    let eff = rect.intersect(clip).intersect(buf_rect);
+    if eff.is_empty() {
+        return;
+    }
+    let s_raw = u32::from(rgb565_to_u16(start));
+    let e_raw = u32::from(rgb565_to_u16(end));
+    let sr = (s_raw >> 11) & 0x1F;
+    let sg = (s_raw >> 5) & 0x3F;
+    let sb = s_raw & 0x1F;
+    let er = (e_raw >> 11) & 0x1F;
+    let eg = (e_raw >> 5) & 0x3F;
+    let eb = e_raw & 0x1F;
+
+    let r = i32::from(radius)
+        .min((rect.w / 2) as i32)
+        .min((rect.h / 2) as i32);
+    let r_sq = r * r;
+    let dw = (rect.w as i32 - 1).max(1);
+    let dh = (rect.h as i32 - 1).max(1);
+    let stride = buf_rect.w as usize;
+
+    let lerp_rgb = |t: u32| -> u16 {
+        let inv = 256 - t;
+        let rr = (sr * inv + er * t + 128) >> 8;
+        let gg = (sg * inv + eg * t + 128) >> 8;
+        let bb = (sb * inv + eb * t + 128) >> 8;
+        ((rr << 11) | (gg << 5) | bb) as u16
+    };
+
+    for py in 0..eff.h {
+        let y = eff.y + py as i32;
+        let ly = y - rect.y;
+        let dst_row = (y - buf_rect.y) as usize * stride;
+        let ty = if direction == GRADIENT_VERTICAL || direction == GRADIENT_DIAGONAL {
+            ((ly * 256) / dh).clamp(0, 256) as u32
+        } else {
+            0
+        };
+        let row_solid = (direction == GRADIENT_VERTICAL).then(|| lerp_rgb(ty));
+
+        let dy_corner = if r > 0 {
+            if ly < r {
+                Some(r - ly)
+            } else if ly >= rect.h as i32 - r {
+                Some(ly - (rect.h as i32 - r - 1))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        for px in 0..eff.w {
+            let x = eff.x + px as i32;
+            let lx = x - rect.x;
+            if let Some(dyc) = dy_corner {
+                let dxc = if lx < r {
+                    Some(r - lx)
+                } else if lx >= rect.w as i32 - r {
+                    Some(lx - (rect.w as i32 - r - 1))
+                } else {
+                    None
+                };
+                if let Some(dx) = dxc
+                    && dx * dx + dyc * dyc > r_sq
+                {
+                    continue;
+                }
+            }
+            let raw = match row_solid {
+                Some(c) => c,
+                None => {
+                    let tx = ((lx * 256) / dw).clamp(0, 256) as u32;
+                    let t = if direction == GRADIENT_DIAGONAL {
+                        (tx + ty) / 2
+                    } else {
+                        tx
+                    };
+                    lerp_rgb(t)
+                }
+            };
+            let idx = dst_row + (x - buf_rect.x) as usize;
+            sink.put_opaque(idx, raw);
         }
     }
 }

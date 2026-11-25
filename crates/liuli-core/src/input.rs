@@ -234,6 +234,44 @@ impl<const MAX_CONTACTS: usize> TouchTracker<MAX_CONTACTS> {
         });
     }
 
+    /// Maps physical `contacts` into logical coordinates for `rotation` and `physical_size` before diffing.
+    pub fn try_update_rotated<E>(
+        &mut self,
+        contacts: &[TouchPoint],
+        rotation: crate::geometry::Rotation,
+        physical_size: crate::geometry::Size,
+        emit: impl FnMut(RawInput) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let mut mapped = [TouchPoint::new(0, Point::new(0, 0)); MAX_CONTACTS];
+        let count = contacts.len().min(MAX_CONTACTS);
+        for (dst, &src) in mapped[..count].iter_mut().zip(contacts.iter()) {
+            *dst = TouchPoint::new(
+                src.id.0,
+                rotation.map_point_to_logical(src.pos, physical_size),
+            );
+        }
+        self.try_update(&mapped[..count], emit)
+    }
+
+    /// Infallible convenience wrapper around [`Self::try_update_rotated`].
+    pub fn update_rotated(
+        &mut self,
+        contacts: &[TouchPoint],
+        rotation: crate::geometry::Rotation,
+        physical_size: crate::geometry::Size,
+        mut emit: impl FnMut(RawInput),
+    ) {
+        let _ = self.try_update_rotated::<core::convert::Infallible>(
+            contacts,
+            rotation,
+            physical_size,
+            |ev| {
+                emit(ev);
+                Ok(())
+            },
+        );
+    }
+
     /// Cancels every currently active contact (for example, on touch bus read failure).
     pub fn try_cancel_all<E>(
         &mut self,
@@ -381,6 +419,27 @@ mod tests {
         assert_eq!(
             remaining,
             vec![RawInput::PointerCancel { id: PointerId(1) }]
+        );
+    }
+
+    #[test]
+    fn tracker_maps_rotated_touch_coordinates() {
+        let mut tracker = TouchTracker::<2>::new();
+        let mut events = Vec::new();
+        let phys = crate::geometry::Size::new(240, 320);
+        // Physical (219, 10) at Deg90 => logical (10, 20)
+        tracker.update_rotated(
+            &[TouchPoint::new(0, Point::new(219, 10))],
+            crate::geometry::Rotation::Deg90,
+            phys,
+            |ev| events.push(ev),
+        );
+        assert_eq!(
+            events,
+            vec![RawInput::PointerDown {
+                id: PointerId(0),
+                pos: Point::new(10, 20),
+            }]
         );
     }
 }

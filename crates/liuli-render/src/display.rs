@@ -3,7 +3,7 @@ use embedded_graphics::draw_target::DrawTarget;
 use embedded_graphics::geometry::Dimensions;
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::primitives::Rectangle;
-use liuli_core::geometry::{Rect, rgb565_to_u16, u16_to_rgb565};
+use liuli_core::geometry::{Point, Rect, Rotation, Size, rgb565_to_u16, u16_to_rgb565};
 
 use crate::wire::{BufferTooSmall, ByteOrder, encode_rgb565};
 
@@ -340,5 +340,120 @@ impl<T: DrawTarget<Color = Rgb565>> DisplaySink for EgDisplaySink<T> {
         });
 
         self.0.fill_contiguous(&vis_phys.to_eg(), color_iter)
+    }
+}
+
+/// Rotating [`DisplaySink`] wrapper transforming logical bands into physical panel coordinates.
+///
+/// Uses an inline `[u16; MAX_PIXELS]` scratch buffer (`#[no_std]`, zero heap allocation) and
+/// automatically falls back to multi-row tiling when `MAX_PIXELS < rect.w * rect.h`.
+pub struct RotatedDisplaySink<S, const MAX_PIXELS: usize> {
+    inner: S,
+    physical_size: Size,
+    rotation: Rotation,
+    scratch: [u16; MAX_PIXELS],
+}
+
+impl<S, const MAX_PIXELS: usize> RotatedDisplaySink<S, MAX_PIXELS> {
+    #[inline]
+    pub const fn new(inner: S, physical_size: Size, rotation: Rotation) -> Self {
+        Self {
+            inner,
+            physical_size,
+            rotation,
+            scratch: [0; MAX_PIXELS],
+        }
+    }
+
+    #[inline]
+    pub const fn rotation(&self) -> Rotation {
+        self.rotation
+    }
+
+    #[inline]
+    pub fn set_rotation(&mut self, rotation: Rotation) {
+        self.rotation = rotation;
+    }
+
+    #[inline]
+    pub const fn physical_size(&self) -> Size {
+        self.physical_size
+    }
+
+    #[inline]
+    pub const fn logical_size(&self) -> Size {
+        self.rotation.logical_size(self.physical_size)
+    }
+
+    #[inline]
+    pub fn inner(&self) -> &S {
+        &self.inner
+    }
+
+    #[inline]
+    pub fn inner_mut(&mut self) -> &mut S {
+        &mut self.inner
+    }
+
+    #[inline]
+    pub fn into_inner(self) -> S {
+        self.inner
+    }
+}
+
+impl<S: DisplaySink, const MAX_PIXELS: usize> DisplaySink for RotatedDisplaySink<S, MAX_PIXELS> {
+    type Error = S::Error;
+
+    fn flush_rect(&mut self, rect: Rect, pixels: &[u16]) -> Result<(), Self::Error> {
+        if self.rotation == Rotation::Deg0 {
+            return self.inner.flush_rect(rect, pixels);
+        }
+        let logical = self.logical_size();
+        let vis = rect.intersect(Rect::new(0, 0, logical.width, logical.height));
+        if vis.is_empty() {
+            return Ok(());
+        }
+        let stride = rect.w as usize;
+        let skip_x = (vis.x - rect.x) as usize;
+        let skip_y = (vis.y - rect.y) as usize;
+        let phys_rect = self.rotation.map_rect_to_physical(vis, self.physical_size);
+        let phys_w = phys_rect.w as usize;
+        let phys_h = phys_rect.h as usize;
+        let total = phys_w.saturating_mul(phys_h);
+        if total == 0 || MAX_PIXELS == 0 {
+            return Ok(());
+        }
+
+        let max_tile_h = (MAX_PIXELS / phys_w).max(1).min(phys_h);
+        let mut py_base = 0usize;
+        while py_base < phys_h {
+            let tile_h = (phys_h - py_base).min(max_tile_h);
+            let tile_len = phys_w * tile_h;
+            for ty in 0..tile_h {
+                let py = phys_rect.y + (py_base + ty) as i32;
+                for px_off in 0..phys_w {
+                    let px = phys_rect.x + px_off as i32;
+                    let lpt = self
+                        .rotation
+                        .map_point_to_logical(Point::new(px, py), self.physical_size);
+                    let src_idx = (skip_y + (lpt.y - vis.y) as usize) * stride
+                        + (skip_x + (lpt.x - vis.x) as usize);
+                    self.scratch[ty * phys_w + px_off] = pixels.get(src_idx).copied().unwrap_or(0);
+                }
+            }
+            let sub_rect = Rect::new(
+                phys_rect.x,
+                phys_rect.y + py_base as i32,
+                phys_w as u32,
+                tile_h as u32,
+            );
+            self.inner.flush_rect(sub_rect, &self.scratch[..tile_len])?;
+            py_base += tile_h;
+        }
+        Ok(())
+    }
+
+    fn finish_frame(&mut self) -> Result<(), Self::Error> {
+        self.inner.finish_frame()
     }
 }

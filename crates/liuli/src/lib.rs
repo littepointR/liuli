@@ -18,7 +18,9 @@ pub mod prelude {
     pub use embedded_graphics_core::pixelcolor::{PixelColor, Rgb565};
     pub use embedded_graphics_core::primitives::Rectangle;
 
-    pub use liuli_core::bitmap::Bitmap;
+    pub use liuli_core::bitmap::{
+        Bitmap, BitmapView, L565_FLAG_ALPHA4, L565_FLAG_CHROMA_KEY, L565_FLAG_RLE,
+    };
     pub use liuli_core::capacity::{
         BuildError, DEFAULT_BAND_HEIGHT, DEFAULT_BAND_PIXELS, DEFAULT_BAND_WIDTH,
         DEFAULT_SCREEN_HEIGHT, DEFAULT_SCREEN_WIDTH, DispatchError, FrameMetrics, LayoutError,
@@ -28,14 +30,15 @@ pub mod prelude {
     };
     pub use liuli_core::damage::DamageSet;
     pub use liuli_core::effects::{Layer, PressDepth, Projection, Shadow, SurfaceStyle};
-    pub use liuli_core::geometry::{Rect, rgb565_to_u16, u16_to_rgb565};
+    pub use liuli_core::geometry::{Rect, Rotation, rgb565_to_u16, u16_to_rgb565};
     pub use liuli_core::input::TextInput;
     pub use liuli_core::input::{
         ActionKind, GesturePhase, HoldKey, NavDir, PointerCaptureMode, PointerEvent, PointerId,
         PointerPhase, RawInput, TouchPoint, TouchTracker, TransformGesture, UiAction,
     };
     pub use liuli_core::paint::{
-        PaintOverride, PaintState, SceneResources, SliceSceneResources, TextId, WidgetCanvas,
+        GRADIENT_DIAGONAL, GRADIENT_HORIZONTAL, GRADIENT_VERTICAL, PaintOverride, PaintState,
+        SceneResources, SliceSceneResources, TextId, WidgetCanvas,
     };
     pub use liuli_core::part_style::{
         IconPosition, LayoutExtra, VisualState, WidgetPart, WidgetPartStyle,
@@ -52,11 +55,12 @@ pub mod prelude {
     };
     pub use liuli_render::{
         AlignedBand, BandMeta, BandSlot, BufferTooSmall, ByteOrder, ByteWindowBus, ByteWindowSink,
-        CACHE_LINE_BYTES, DisplaySink, DmaCacheOps, DmaCoordinator, DmaSink, EgDisplaySink,
-        FrameError, FreeBand, InFlightBand, NoCacheOps, PollOutcome, RECOMMENDED_SPI_CHUNK_BYTES,
-        RECOMMENDED_WIRE_CHUNK_BYTES, ReadyBand, SealError, SpiWindowBus, SpiWindowTarget,
-        StartOutcome, TeError, TeGate, TeMode, TeWait, encode_rgb565, encode_rgb565_in_place,
-        encode_rgb565_words,
+        CACHE_LINE_BYTES, DisplaySink, DmaCacheOps, DmaCoordinator, DmaSink, DrawAccel,
+        EgDisplaySink, FrameError, FreeBand, InFlightBand, NoCacheOps, PollOutcome,
+        RECOMMENDED_SPI_CHUNK_BYTES, RECOMMENDED_WIRE_CHUNK_BYTES, ReadyBand, RotatedDisplaySink,
+        SealError, SoftAccel, SpiWindowBus, SpiWindowTarget, StartOutcome, StoredBitmap,
+        StoredBitmapError, TeError, TeGate, TeMode, TeWait, encode_rgb565, encode_rgb565_in_place,
+        encode_rgb565_words, render_band_with_accel,
     };
     pub use liuli_text::storage::{GlyphPixels, InlinePixels, IoMetrics};
     pub use liuli_text::{

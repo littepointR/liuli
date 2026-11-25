@@ -216,3 +216,103 @@ pub fn rgb565_to_u16(color: Rgb565) -> u16 {
 pub fn u16_to_rgb565(word: u16) -> Rgb565 {
     Rgb565::from(RawU16::new(word))
 }
+
+/// Logical clockwise screen rotation relative to the physical panel coordinates.
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Default)]
+#[repr(u8)]
+pub enum Rotation {
+    #[default]
+    Deg0 = 0,
+    Deg90 = 1,
+    Deg180 = 2,
+    Deg270 = 3,
+}
+
+impl Rotation {
+    /// Returns the logical UI screen dimensions given the `physical` panel dimensions.
+    #[inline]
+    pub const fn logical_size(self, physical: Size) -> Size {
+        match self {
+            Self::Deg0 | Self::Deg180 => physical,
+            Self::Deg90 | Self::Deg270 => Size::new(physical.height, physical.width),
+        }
+    }
+
+    /// Transforms a physical panel touch coordinate into logical UI coordinates.
+    #[inline]
+    pub const fn map_point_to_logical(self, pt: Point, physical: Size) -> Point {
+        let max_x = physical.width.saturating_sub(1) as i32;
+        let max_y = physical.height.saturating_sub(1) as i32;
+        match self {
+            Self::Deg0 => pt,
+            Self::Deg90 => Point::new(pt.y, max_x.saturating_sub(pt.x)),
+            Self::Deg180 => Point::new(max_x.saturating_sub(pt.x), max_y.saturating_sub(pt.y)),
+            Self::Deg270 => Point::new(max_y.saturating_sub(pt.y), pt.x),
+        }
+    }
+
+    /// Transforms a logical `(x, y)` coordinate into physical framebuffer `(px, py)` coordinates.
+    #[inline]
+    pub const fn map_point_to_physical(self, pt: Point, physical: Size) -> Point {
+        let max_x = physical.width.saturating_sub(1) as i32;
+        let max_y = physical.height.saturating_sub(1) as i32;
+        match self {
+            Self::Deg0 => pt,
+            Self::Deg90 => Point::new(max_x.saturating_sub(pt.y), pt.x),
+            Self::Deg180 => Point::new(max_x.saturating_sub(pt.x), max_y.saturating_sub(pt.y)),
+            Self::Deg270 => Point::new(pt.y, max_y.saturating_sub(pt.x)),
+        }
+    }
+
+    /// Maps a logical rectangle into physical panel coordinates.
+    pub fn map_rect_to_physical(self, rect: Rect, physical: Size) -> Rect {
+        let logical = self.logical_size(physical);
+        let clipped = rect.intersect(Rect::new(0, 0, logical.width, logical.height));
+        if clipped.is_empty() {
+            return Rect::ZERO;
+        }
+        let x2 = clipped.x + clipped.w as i32 - 1;
+        let y2 = clipped.y + clipped.h as i32 - 1;
+        let p0 = self.map_point_to_physical(Point::new(clipped.x, clipped.y), physical);
+        let p1 = self.map_point_to_physical(Point::new(x2, y2), physical);
+        let min_x = p0.x.min(p1.x);
+        let min_y = p0.y.min(p1.y);
+        let max_x = p0.x.max(p1.x);
+        let max_y = p0.y.max(p1.y);
+        Rect::new(
+            min_x,
+            min_y,
+            (max_x - min_x + 1).max(0) as u32,
+            (max_y - min_y + 1).max(0) as u32,
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rotation_roundtrips_points_and_rects() {
+        let phys = Size::new(240, 320);
+        for rot in [
+            Rotation::Deg0,
+            Rotation::Deg90,
+            Rotation::Deg180,
+            Rotation::Deg270,
+        ] {
+            let lsize = rot.logical_size(phys);
+            for pt in [
+                Point::new(0, 0),
+                Point::new(15, 25),
+                Point::new(lsize.width as i32 - 1, lsize.height as i32 - 1),
+            ] {
+                let phys_pt = rot.map_point_to_physical(pt, phys);
+                assert_eq!(rot.map_point_to_logical(phys_pt, phys), pt);
+            }
+            let r = Rect::new(10, 20, 40, 30);
+            let pr = rot.map_rect_to_physical(r, phys);
+            assert_eq!(pr.w * pr.h, r.w * r.h);
+        }
+    }
+}
