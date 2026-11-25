@@ -84,6 +84,12 @@ impl<'s> SimSession<'s> {
             Self::Terminal(s) => s.png_for_frame(id),
         }
     }
+    pub fn profile_json(&self) -> String {
+        match self {
+            Self::Settings(s) => s.profile_json(),
+            Self::Terminal(s) => s.profile_json(),
+        }
+    }
     pub fn step(
         &mut self,
         now: InstantMs,

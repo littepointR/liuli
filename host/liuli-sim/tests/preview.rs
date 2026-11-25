@@ -280,3 +280,89 @@ fn preview_server_supports_legacy_settings_scenario() {
     stop.store(true, Ordering::Relaxed);
     handle.join().expect("legacy preview server exits cleanly");
 }
+
+#[test]
+fn file_watcher_detects_modifications() {
+    use liuli_sim::preview::FileWatcher;
+    let unique = format!(
+        "liuli_watch_test_{}_{}.txt",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(unique);
+    std::fs::write(&path, b"v1").expect("create watched file");
+
+    let mut watcher = FileWatcher::new(vec![path.clone()]);
+    assert_eq!(watcher.watched_count(), 1);
+    assert_eq!(watcher.revision(), 0);
+    assert!(!watcher.poll());
+
+    std::fs::write(&path, b"version-2").expect("modify watched file");
+    assert!(watcher.poll());
+    assert_eq!(watcher.revision(), 1);
+    assert_eq!(watcher.status_json(), "{\"revision\":1,\"watched\":1}");
+    assert!(!watcher.poll());
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn preview_server_exposes_profile_and_watch_apis() {
+    let unique = format!(
+        "liuli_srv_watch_{}_{}.txt",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(unique);
+    std::fs::write(&path, b"init").expect("create watched file");
+
+    let server = PreviewServer::bind_scenario(0, SimScenario::Terminal)
+        .expect("bind terminal preview server")
+        .watch_path(path.clone());
+    let addr = server.addr();
+    let stop = server.stop_handle();
+
+    let handle = thread::spawn(move || {
+        server.serve().expect("preview server loop failed");
+    });
+    thread::sleep(Duration::from_millis(25));
+
+    let (hdr_prof, prof_body) = http_request(
+        addr,
+        &format!("GET /api/profile HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"),
+    );
+    assert!(hdr_prof.starts_with("HTTP/1.1 200 OK"), "{hdr_prof}");
+    let prof_str = String::from_utf8(prof_body).unwrap();
+    assert!(prof_str.contains("\"latest\":{"), "{prof_str}");
+    assert!(prof_str.contains("\"raster_us\":"), "{prof_str}");
+    assert!(prof_str.contains("\"dirty_pct_x10\":"), "{prof_str}");
+    assert!(prof_str.contains("\"fps_x10\":"), "{prof_str}");
+    assert!(prof_str.contains("\"history\":["), "{prof_str}");
+
+    let (hdr_w0, w0_body) = http_request(
+        addr,
+        &format!("GET /api/watch HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"),
+    );
+    assert!(hdr_w0.starts_with("HTTP/1.1 200 OK"), "{hdr_w0}");
+    let w0_str = String::from_utf8(w0_body).unwrap();
+    assert_eq!(w0_str, "{\"revision\":0,\"watched\":1}");
+
+    std::fs::write(&path, b"updated-content").expect("update watched file");
+    let (hdr_w1, w1_body) = http_request(
+        addr,
+        &format!("GET /api/watch HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"),
+    );
+    assert!(hdr_w1.starts_with("HTTP/1.1 200 OK"), "{hdr_w1}");
+    let w1_str = String::from_utf8(w1_body).unwrap();
+    assert_eq!(w1_str, "{\"revision\":1,\"watched\":1}");
+
+    stop.store(true, Ordering::Relaxed);
+    handle.join().expect("preview server exits cleanly");
+    let _ = std::fs::remove_file(&path);
+}

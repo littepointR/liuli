@@ -34,6 +34,44 @@ impl liuli::text::storage::GlyphPixels for FontTraffic {
     }
 }
 pub const MAX_PNG_HISTORY: usize = 16;
+pub const MAX_PROFILE_HISTORY: usize = 64;
+
+/// Per-frame simulator timing and workload profile snapshot.
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
+pub struct FrameProfile {
+    pub frame_id: u64,
+    pub now_ms: u64,
+    pub step_us: u32,
+    pub raster_us: u32,
+    pub total_us: u32,
+    pub dirty_rect_count: u16,
+    pub dirty_pixels: u32,
+    pub dirty_pct_x10: u16,
+    pub command_count: u16,
+    pub node_count: u16,
+    pub measured_nodes: u32,
+    pub fps_x10: u32,
+}
+
+impl FrameProfile {
+    pub fn to_json(&self) -> String {
+        format!(
+            "{{\"frame_id\":{},\"now_ms\":{},\"step_us\":{},\"raster_us\":{},\"total_us\":{},\"dirty_rect_count\":{},\"dirty_pixels\":{},\"dirty_pct_x10\":{},\"command_count\":{},\"node_count\":{},\"measured_nodes\":{},\"fps_x10\":{}}}",
+            self.frame_id,
+            self.now_ms,
+            self.step_us,
+            self.raster_us,
+            self.total_us,
+            self.dirty_rect_count,
+            self.dirty_pixels,
+            self.dirty_pct_x10,
+            self.command_count,
+            self.node_count,
+            self.measured_nodes,
+            self.fps_x10,
+        )
+    }
+}
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum FrameLookupError {
     Expired,
@@ -65,6 +103,9 @@ pub struct AppSession<'s, 'f, A: App> {
     oldest_retained_frame: u64,
     last_completed_metrics: FrameMetrics,
     png_history: VecDeque<(u64, Vec<u8>, String)>,
+    profile_history: VecDeque<FrameProfile>,
+    last_profile: FrameProfile,
+    pending_step_us: u32,
     trigger: String,
     peaks: [usize; 3],
     snapshot: FrameSnapshot,
@@ -128,6 +169,9 @@ impl<'s, 'f, A: App> AppSession<'s, 'f, A> {
             oldest_retained_frame: 1,
             last_completed_metrics: FrameMetrics::default(),
             png_history: VecDeque::with_capacity(MAX_PNG_HISTORY),
+            profile_history: VecDeque::with_capacity(MAX_PROFILE_HISTORY),
+            last_profile: FrameProfile::default(),
+            pending_step_us: 0,
             trigger: "initial".into(),
             peaks: [0; 3],
             snapshot: placeholder_snap,
@@ -135,6 +179,26 @@ impl<'s, 'f, A: App> AppSession<'s, 'f, A> {
         };
         session.present_and_record(start_now, verify_ref)?;
         Ok(session)
+    }
+    pub fn last_profile(&self) -> FrameProfile {
+        self.last_profile
+    }
+    pub fn profile_history(&self) -> &VecDeque<FrameProfile> {
+        &self.profile_history
+    }
+    pub fn profile_json(&self) -> String {
+        let mut hist = String::from("[");
+        for (i, p) in self.profile_history.iter().enumerate() {
+            if i > 0 {
+                hist.push(',');
+            }
+            hist.push_str(&p.to_json());
+        }
+        hist.push(']');
+        format!(
+            "{{\"latest\":{},\"history\":{hist}}}",
+            self.last_profile.to_json()
+        )
     }
     pub fn engine(&self) -> &Engine<'s, 'f, A> {
         &self.engine
@@ -182,6 +246,7 @@ impl<'s, 'f, A: App> AppSession<'s, 'f, A> {
                 )
             }
         };
+        let step_t0 = std::time::Instant::now();
         self.engine
             .try_advance(now, false)
             .map_err(|e| format!("advance: {e:?}, view={:?}", self.engine.build_failure()))?;
@@ -190,6 +255,7 @@ impl<'s, 'f, A: App> AppSession<'s, 'f, A> {
                 .try_dispatch(input, now, false)
                 .map_err(|e| format!("dispatch: {e:?}, view={:?}", self.engine.build_failure()))?;
         }
+        self.pending_step_us = step_t0.elapsed().as_micros().min(u128::from(u32::MAX)) as u32;
         self.present_and_record(now, verify_ref)?;
         Ok(&self.snapshot)
     }
@@ -200,6 +266,7 @@ impl<'s, 'f, A: App> AppSession<'s, 'f, A> {
         verify: bool,
     ) -> Result<&FrameSnapshot, String> {
         self.trigger = format!("text {:?} focus={:?}", input, self.engine.text_target());
+        let step_t0 = std::time::Instant::now();
         self.engine
             .try_advance(now, false)
             .map_err(|e| format!("advance: {e:?}"))?;
@@ -210,6 +277,7 @@ impl<'s, 'f, A: App> AppSession<'s, 'f, A> {
         {
             return Err("no focused text field".into());
         }
+        self.pending_step_us = step_t0.elapsed().as_micros().min(u128::from(u32::MAX)) as u32;
         self.present_and_record(now, verify)?;
         Ok(&self.snapshot)
     }
@@ -223,12 +291,14 @@ impl<'s, 'f, A: App> AppSession<'s, 'f, A> {
         A::Msg: std::fmt::Debug,
     {
         self.trigger = format!("message {msg:?}");
+        let step_t0 = std::time::Instant::now();
         self.engine
             .try_advance(now, false)
             .map_err(|e| format!("advance: {e:?}, view={:?}", self.engine.build_failure()))?;
         self.engine
             .try_message(msg, now, false)
             .map_err(|e| format!("message: {e:?}, view={:?}", self.engine.build_failure()))?;
+        self.pending_step_us = step_t0.elapsed().as_micros().min(u128::from(u32::MAX)) as u32;
         self.present_and_record(now, verify_ref)?;
         Ok(&self.snapshot)
     }
@@ -264,10 +334,12 @@ impl<'s, 'f, A: App> AppSession<'s, 'f, A> {
 
         let before = (!pre_damage.is_empty()).then(|| self.screen.words().to_owned());
         let mut fonts = FontTraffic::default();
+        let raster_t0 = std::time::Instant::now();
         let status = self
             .engine
             .present_sync_with_pixels(&mut self.screen, &mut self.scratch, |_| Ok(()), &mut fonts)
             .map_err(|err| format!("present failed: {err:?}"))?;
+        let raster_us = raster_t0.elapsed().as_micros().min(u128::from(u32::MAX)) as u32;
         let metrics = self.engine.last_metrics();
         if status == PresentStatus::Presented {
             if verify_ref {
@@ -346,6 +418,40 @@ impl<'s, 'f, A: App> AppSession<'s, 'f, A> {
         }
 
         let wakeup = self.engine.next_wakeup(now, false);
+        let screen_area = (u64::from(self.screen.width()) * u64::from(self.screen.height())).max(1);
+        let dirty_pixels = metrics.pixels_sent;
+        let dirty_pct_x10 = ((u64::from(dirty_pixels) * 1000) / screen_area).min(1000) as u16;
+        let step_us = self.pending_step_us;
+        self.pending_step_us = 0;
+        let total_us = step_us.saturating_add(raster_us).max(1);
+        let fps_x10 = (10_000_000u64 / u64::from(total_us)).min(u64::from(u32::MAX)) as u32;
+        let tree = self.engine.active_tree();
+        let prof = FrameProfile {
+            frame_id: self.completed_frame_id,
+            now_ms: now.0,
+            step_us,
+            raster_us,
+            total_us,
+            dirty_rect_count: pre_damage.len().min(usize::from(u16::MAX)) as u16,
+            dirty_pixels,
+            dirty_pct_x10,
+            command_count: self
+                .engine
+                .active_commands()
+                .count
+                .min(usize::from(u16::MAX)) as u16,
+            node_count: tree.active_count,
+            measured_nodes: metrics.measured_nodes,
+            fps_x10,
+        };
+        if status == PresentStatus::Presented || self.profile_history.is_empty() {
+            if self.profile_history.len() == MAX_PROFILE_HISTORY {
+                self.profile_history.pop_front();
+            }
+            self.profile_history.push_back(prof);
+        }
+        self.last_profile = prof;
+
         self.snapshot = FrameSnapshot {
             frame_id: self.completed_frame_id,
             now_ms: now.0,

@@ -1,8 +1,9 @@
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use liuli::prelude::*;
 
@@ -17,10 +18,77 @@ const MAX_HTTP_HEADER_BYTES: usize = 8192;
 const MAX_HTTP_BODY_BYTES: usize = 4096;
 const MAX_CLOCK_STEP_MS: u64 = 600_000;
 
+#[derive(PartialEq, Eq)]
+struct FileStamp {
+    modified: Option<SystemTime>,
+    len: u64,
+}
+
+pub struct FileWatcher {
+    paths: Vec<(PathBuf, Option<FileStamp>)>,
+    revision: u64,
+}
+
+impl FileWatcher {
+    pub fn new(paths: Vec<PathBuf>) -> Self {
+        let entries = paths
+            .into_iter()
+            .map(|p| {
+                let sig = file_signature(&p);
+                (p, sig)
+            })
+            .collect();
+        Self {
+            paths: entries,
+            revision: 0,
+        }
+    }
+
+    pub fn poll(&mut self) -> bool {
+        let mut changed = false;
+        for (path, last) in &mut self.paths {
+            let cur = file_signature(path);
+            if cur != *last {
+                *last = cur;
+                changed = true;
+            }
+        }
+        if changed {
+            self.revision = self.revision.saturating_add(1);
+        }
+        changed
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub fn watched_count(&self) -> usize {
+        self.paths.len()
+    }
+
+    pub fn status_json(&self) -> String {
+        format!(
+            "{{\"revision\":{},\"watched\":{}}}",
+            self.revision,
+            self.paths.len()
+        )
+    }
+}
+
+fn file_signature(path: &std::path::Path) -> Option<FileStamp> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some(FileStamp {
+        modified: meta.modified().ok(),
+        len: meta.len(),
+    })
+}
+
 pub struct PreviewServer {
     listener: TcpListener,
     addr: SocketAddr,
     stop: Arc<AtomicBool>,
+    watch_paths: Vec<PathBuf>,
     #[cfg(feature = "demos")]
     scenario: SimScenario,
 }
@@ -37,6 +105,12 @@ impl PreviewServer {
         Ok(server)
     }
 
+    #[must_use]
+    pub fn watch_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.watch_paths.push(path.into());
+        self
+    }
+
     fn bind_socket(port: u16) -> Result<Self, String> {
         let addr = SocketAddr::from(([127, 0, 0, 1], port));
         let listener =
@@ -51,6 +125,7 @@ impl PreviewServer {
             listener,
             addr: local_addr,
             stop: Arc::new(AtomicBool::new(false)),
+            watch_paths: Vec::new(),
             #[cfg(feature = "demos")]
             scenario: SimScenario::Terminal,
         })
@@ -82,14 +157,27 @@ impl PreviewServer {
 
     fn serve_session(&self, session: &mut impl PreviewSession) -> Result<(), String> {
         let mut clock = ClockController::new(InstantMs(session.snapshot().now_ms), Instant::now());
-
         let mut trace = Trace::new();
+        let mut watcher = FileWatcher::new(self.watch_paths.clone());
+        let mut last_poll = Instant::now();
         while !self.stop.load(Ordering::Relaxed) {
             match self.listener.accept() {
                 Ok((mut stream, _)) => {
-                    let _ = handle_connection(&mut stream, session, &mut clock, &mut trace);
+                    let _ = handle_connection(
+                        &mut stream,
+                        session,
+                        &mut clock,
+                        &mut trace,
+                        &mut watcher,
+                    );
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if !self.watch_paths.is_empty()
+                        && last_poll.elapsed() >= Duration::from_millis(200)
+                    {
+                        watcher.poll();
+                        last_poll = Instant::now();
+                    }
                     std::thread::sleep(Duration::from_millis(10));
                 }
                 Err(e) => return Err(format!("accept failed: {e}")),
@@ -114,6 +202,7 @@ trait PreviewSession {
     fn next_wakeup(&self, now: InstantMs) -> NextWakeup;
     fn png_for_frame(&self, id: Option<u64>) -> Result<(u64, &[u8]), FrameLookupError>;
     fn state_json(&self, paused: bool, rate: u32) -> String;
+    fn profile_json(&self) -> String;
     fn tree(&self) -> &RetainedTree;
     fn snapshot(&self) -> &FrameSnapshot;
     fn size(&self) -> (u32, u32);
@@ -157,6 +246,9 @@ impl PreviewSession for SimSession<'_> {
     }
     fn state_json(&self, paused: bool, rate: u32) -> String {
         self.state_json(paused, rate)
+    }
+    fn profile_json(&self) -> String {
+        self.profile_json()
     }
 }
 impl<A: App> PreviewSession for AppSession<'_, '_, A> {
@@ -222,6 +314,9 @@ impl<A: App> PreviewSession for AppSession<'_, '_, A> {
             engine.active_commands().count,
             tree.text_len
         )
+    }
+    fn profile_json(&self) -> String {
+        self.profile_json()
     }
 }
 
@@ -384,6 +479,7 @@ fn handle_connection(
     session: &mut impl PreviewSession,
     clock: &mut ClockController,
     trace: &mut Trace,
+    watcher: &mut FileWatcher,
 ) -> std::io::Result<()> {
     let _ = stream.set_nonblocking(false);
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
@@ -523,6 +619,27 @@ fn handle_connection(
         }
         ("GET", "/state") => {
             let json = session.state_json(clock.is_paused(), clock.rate());
+            write_http(
+                stream,
+                "200 OK",
+                "application/json; charset=utf-8",
+                &[],
+                json.as_bytes(),
+            )
+        }
+        ("GET", "/api/profile") => {
+            let json = session.profile_json();
+            write_http(
+                stream,
+                "200 OK",
+                "application/json; charset=utf-8",
+                &[],
+                json.as_bytes(),
+            )
+        }
+        ("GET", "/api/watch") => {
+            watcher.poll();
+            let json = watcher.status_json();
             write_http(
                 stream,
                 "200 OK",

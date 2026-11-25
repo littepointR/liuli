@@ -141,14 +141,16 @@
         <button id="rate-16" onclick="sendClock('rate', 16)">16×</button>
       </div>
       <div class="sec-title">叠层调试 (不修改设备像素)</div>
-      <div class="toggles">
+      <div class="toggles" style="flex-wrap:wrap;">
         <label><input type="checkbox" id="chk-damage" checked onchange="drawOverlay()" /> 脏矩形 Damage</label>
         <label><input type="checkbox" id="chk-bands" checked onchange="drawOverlay()" /> 传输条带 Bands</label>
+        <label><input type="checkbox" id="chk-hud" onchange="toggleHud()" /> 性能 HUD</label>
       </div>
       <div style="font-size:11px;color:#9cb0c9;">
         鼠标可在画面点击或拖动列表；键盘方向键/Enter/Esc/+/- 同步可用。
       </div>
       <a href="/trace" download="liuli.trace">导出操作回放</a>
+      <pre id="perf-hud" hidden></pre>
       <div>Shift + 点击查看命中节点与祖先</div><pre id="inspected"></pre>
       <pre id="frame-details"></pre><pre id="state">loading...</pre>
     </div>
@@ -161,10 +163,34 @@
     const btnPause = document.getElementById('btn-pause');
     const chkDamage = document.getElementById('chk-damage');
     const chkBands = document.getElementById('chk-bands');
+    const chkHud = document.getElementById('chk-hud');
+    const perfHud = document.getElementById('perf-hud');
     const contacts = new Map();
     let shownFrameId = 0;
     let lastState = null;
+    let lastWatchRev = null;
+    let watchTick = 0;
     let queue = Promise.resolve();
+
+    function refreshProfile() {
+      fetch('/api/profile').then(r => r.ok ? r.json() : null).then(prof => {
+        if (!prof || !prof.latest) return;
+        const p = prof.latest;
+        const fps = (p.fps_x10 / 10).toFixed(1);
+        const dirtyPct = (p.dirty_pct_x10 / 10).toFixed(1);
+        const histLen = Array.isArray(prof.history) ? prof.history.length : 0;
+        perfHud.textContent =
+          'FPS(est): ' + fps +
+          ' | total: ' + p.total_us + ' us (step ' + p.step_us + ' + raster ' + p.raster_us + ')\n' +
+          'dirty: ' + dirtyPct + '% (' + p.dirty_pixels + ' px, ' + p.dirty_rect_count + ' rects)\n' +
+          'tree: ' + p.node_count + ' nodes (' + p.measured_nodes + ' measured) | cmds: ' + p.command_count + ' | hist: ' + histLen;
+      }).catch(() => {});
+    }
+
+    function toggleHud() {
+      perfHud.hidden = !chkHud.checked;
+      if (chkHud.checked) refreshProfile();
+    }
 
     function enqueue(fn) {
       queue = queue.then(fn, fn);
@@ -212,6 +238,7 @@
           if (frame===shownFrameId) document.getElementById('frame-details').textContent=text;
         });
         img.src = '/frame.png?frame=' + encodeURIComponent(String(data.frame_id));
+        if (chkHud.checked) refreshProfile();
       }
       drawOverlay();
       stateEl.textContent = JSON.stringify(data, null, 2);
@@ -339,6 +366,17 @@
         if (res.ok) applyState(await res.json());
         else document.getElementById('input-error').textContent = await res.text();
       });
+      watchTick = (watchTick + 1) % 5;
+      if (watchTick === 0) {
+        fetch('/api/watch').then(r => r.ok ? r.json() : null).then(w => {
+          if (!w || w.watched === 0) return;
+          if (lastWatchRev !== null && w.revision !== lastWatchRev) {
+            refreshState();
+            if (chkHud.checked) refreshProfile();
+          }
+          lastWatchRev = w.revision;
+        }).catch(() => {});
+      }
     }, 100);
 
     refreshState();
