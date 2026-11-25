@@ -769,6 +769,40 @@ fn reference_range_with_source<S: SimTextSource>(
                     }
                 }
             }
+            PaintCmd::AlphaMask {
+                rect,
+                clip,
+                source,
+                color,
+                alpha,
+            } => {
+                if alpha == 0 || rect.w == 0 || rect.h == 0 {
+                    continue;
+                }
+                let area = rect.intersect(clip).intersect(full);
+                let raw_color = color.into_storage();
+                for py in 0..area.h {
+                    for px in 0..area.w {
+                        let x = area.x as i64 + i64::from(px);
+                        let y = area.y as i64 + i64::from(py);
+                        if let Some((_, px_alpha)) = source.sample_rgba(
+                            (x - i64::from(rect.x)) as u32,
+                            (y - i64::from(rect.y)) as u32,
+                            rect.w,
+                            rect.h,
+                            0,
+                        ) {
+                            let eff_alpha =
+                                ((u16::from(px_alpha) * u16::from(alpha) + 7) / 15) as u8;
+                            if eff_alpha > 0 {
+                                let index = (y - i64::from(full.y)) as usize * stride
+                                    + (x - i64::from(full.x)) as usize;
+                                screen.blend_pixel_a4(index, raw_color, eff_alpha);
+                            }
+                        }
+                    }
+                }
+            }
 
             PaintCmd::FillRect { rect, clip, color } => {
                 let eff = rect.intersect(clip).intersect(full);

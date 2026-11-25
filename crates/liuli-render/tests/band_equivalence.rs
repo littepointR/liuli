@@ -919,3 +919,94 @@ fn dithered_gradients_match_reference_across_band_heights() {
         assert_eq!(got, ref_full, "dithered gradient mismatch at band_h={bh}");
     }
 }
+
+#[test]
+fn alpha_mask_and_indexed_bitmaps_match_reference_across_band_heights() {
+    use liuli_core::bitmap::{Bitmap, BitmapView};
+
+    // 4x2 MaskA4: L565 v2, flags=0x08 (MASK_A4), w=4, h=2, ck=0, 4 packed nibble bytes
+    const MASK_ASSET: [u8; 16] = [
+        b'L', b'5', b'6', b'5', 2, 0x08, 4, 0, 2, 0, 0, 0, 0xF4, 0x80, 0x5A, 0xF3,
+    ];
+    static MASK_BMP: Bitmap = match BitmapView::from_asset(&MASK_ASSET) {
+        Some(b) => b,
+        None => panic!("invalid mask"),
+    };
+
+    // 2x2 Indexed4: flags=0x11 (INDEXED4 | CHROMA_KEY=0x001F), w=2, h=2, 16-entry palette (32B) + 2B indices
+    const fn build_i4() -> [u8; 46] {
+        let mut out = [0u8; 46];
+        out[0] = b'L';
+        out[1] = b'5';
+        out[2] = b'6';
+        out[3] = b'5';
+        out[4] = 2;
+        out[5] = 0x11;
+        out[6] = 2;
+        out[8] = 2;
+        out[10] = 0x1F; // chroma key 0x001F LE
+        // pal[0]=0xF800, pal[1]=0x001F (ck), pal[2]=0x07E0, pal[3]=0xFFE0
+        out[12] = 0x00;
+        out[13] = 0xF8;
+        out[14] = 0x1F;
+        out[15] = 0x00;
+        out[16] = 0xE0;
+        out[17] = 0x07;
+        out[18] = 0xE0;
+        out[19] = 0xFF;
+        out[44] = 0x10; // px0=0, px1=1(ck)
+        out[45] = 0x32; // px2=2, px3=3
+        out
+    }
+    const I4_ASSET: [u8; 46] = build_i4();
+    static I4_BMP: Bitmap = match BitmapView::from_asset(&I4_ASSET) {
+        Some(b) => b,
+        None => panic!("invalid i4"),
+    };
+
+    let fonts = FontSet::single(Lf4Font::from_bytes(SETTINGS_LF4).unwrap());
+    let resources = SliceSceneResources::EMPTY;
+    let screen = Rect::new(0, 0, 32, 32);
+    let mut cmds = CommandList::new();
+    cmds.screen = screen;
+    cmds.root_bg = Rgb565::new(2, 6, 4);
+
+    // Full alpha mask + clipped partial alpha mask
+    cmds.push(PaintCmd::AlphaMask {
+        color: Rgb565::new(31, 0, 0),
+        alpha: 15,
+        rect: Rect::new(2, 2, 4, 2),
+        clip: screen,
+        source: &MASK_BMP,
+    })
+    .unwrap();
+    cmds.push(PaintCmd::AlphaMask {
+        color: Rgb565::new(0, 63, 31),
+        alpha: 10,
+        rect: Rect::new(1, 10, 12, 8),
+        clip: Rect::new(3, 11, 8, 6),
+        source: &MASK_BMP,
+    })
+    .unwrap();
+    // Scaled + rotated Indexed4 bitmap
+    cmds.push(PaintCmd::Bitmap {
+        angle: 0,
+        alpha: 15,
+        rect: Rect::new(16, 4, 8, 8),
+        clip: screen,
+        source: &I4_BMP,
+    })
+    .unwrap();
+
+    let ref_full = render_with_band_height(&cmds, &resources, &fonts, 32);
+    // Pixel (2,2) in MASK_ASSET has alpha 4 -> blended over bg; pixel (3,2) has alpha 15 -> solid red 0xF800
+    assert_eq!(ref_full[2 * 32 + 3], 0xF800);
+    // Scaled I4 pixel (16,4) is pal[0] (0xF800), (20,4) is chroma key (unchanged root_bg)
+    assert_eq!(ref_full[4 * 32 + 16], 0xF800);
+    assert_eq!(ref_full[4 * 32 + 20], 0x10C4);
+
+    for bh in [1u32, 3, 8, 17] {
+        let got = render_with_band_height(&cmds, &resources, &fonts, bh);
+        assert_eq!(got, ref_full, "mask/indexed mismatch at band_h={bh}");
+    }
+}

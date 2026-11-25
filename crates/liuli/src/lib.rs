@@ -19,7 +19,8 @@ pub mod prelude {
     pub use embedded_graphics_core::primitives::Rectangle;
 
     pub use liuli_core::bitmap::{
-        Bitmap, BitmapView, L565_FLAG_ALPHA4, L565_FLAG_CHROMA_KEY, L565_FLAG_RLE,
+        Bitmap, BitmapView, L565_FLAG_ALPHA4, L565_FLAG_CHROMA_KEY, L565_FLAG_INDEXED4,
+        L565_FLAG_INDEXED8, L565_FLAG_MASK_A4, L565_FLAG_RLE,
     };
     pub use liuli_core::capacity::{
         BuildError, DEFAULT_BAND_HEIGHT, DEFAULT_BAND_PIXELS, DEFAULT_BAND_WIDTH,

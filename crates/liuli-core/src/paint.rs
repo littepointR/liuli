@@ -148,6 +148,13 @@ pub enum PaintCmd {
         direction: u8,
         radius: u8,
     } = 17,
+    AlphaMask {
+        color: Rgb565,
+        alpha: u8,
+        rect: Rect,
+        clip: Rect,
+        source: &'static crate::bitmap::Bitmap,
+    } = 18,
 }
 
 pub const GRADIENT_HORIZONTAL: u8 = 0;
@@ -272,7 +279,8 @@ impl PaintCmd {
             | Self::Overlay { rect, clip, .. }
             | Self::Icon { rect, clip, .. }
             | Self::Sparkline { rect, clip, .. }
-            | Self::GradientRect { rect, clip, .. } => rect.intersect(clip),
+            | Self::GradientRect { rect, clip, .. }
+            | Self::AlphaMask { rect, clip, .. } => rect.intersect(clip),
             Self::Text { clip, .. } | Self::InlineText { clip, .. } => clip,
             Self::Line {
                 p0,
@@ -668,6 +676,27 @@ impl WidgetCanvas<'_> {
                 clip,
                 source,
                 angle,
+                alpha: alpha.min(15),
+            })?;
+        }
+        Ok(())
+    }
+
+    pub fn alpha_mask(
+        &mut self,
+        rect: Rect,
+        source: &'static crate::bitmap::Bitmap,
+        color: Rgb565,
+        alpha: u8,
+    ) -> Result<(), BuildError> {
+        let clip = self.current_clip();
+        let rect = self.to_global(rect);
+        if alpha != 0 && !rect.intersect(clip).is_empty() {
+            self.commands.push(PaintCmd::AlphaMask {
+                rect,
+                clip,
+                source,
+                color,
                 alpha: alpha.min(15),
             })?;
         }

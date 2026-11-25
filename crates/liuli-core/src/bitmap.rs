@@ -1,8 +1,30 @@
-//! RGB565 + optional A4/chroma-key/RLE bitmap sampling. Rotation uses 256 steps per turn.
+//! RGB565 + optional A4/chroma-key/RLE, A4 mask, and I4/I8 indexed bitmap sampling. Rotation uses 256 steps per turn.
 
 pub const L565_FLAG_CHROMA_KEY: u8 = 0x01;
 pub const L565_FLAG_ALPHA4: u8 = 0x02;
 pub const L565_FLAG_RLE: u8 = 0x04;
+pub const L565_FLAG_MASK_A4: u8 = 0x08;
+pub const L565_FLAG_INDEXED4: u8 = 0x10;
+pub const L565_FLAG_INDEXED8: u8 = 0x20;
+
+#[inline]
+fn read_nibble(bytes: &[u8], idx: usize) -> Option<u8> {
+    let packed = *bytes.get(idx / 2)?;
+    Some(if (idx & 1) == 0 {
+        packed & 0x0F
+    } else {
+        (packed >> 4) & 0x0F
+    })
+}
+
+#[inline]
+fn read_palette_rgb565(palette: &[u8], index: u8) -> Option<u16> {
+    let off = usize::from(index) * 2;
+    Some(u16::from_le_bytes([
+        *palette.get(off)?,
+        *palette.get(off + 1)?,
+    ]))
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Pixels<'a> {
@@ -16,6 +38,17 @@ enum Pixels<'a> {
         offsets: &'a [u8],
         payload: &'a [u8],
         has_alpha4: bool,
+    },
+    MaskA4(&'a [u8]),
+    Indexed4 {
+        palette: &'a [u8],
+        indices: &'a [u8],
+        alpha4: Option<&'a [u8]>,
+    },
+    Indexed8 {
+        palette: &'a [u8],
+        indices: &'a [u8],
+        alpha4: Option<&'a [u8]>,
     },
 }
 
@@ -58,6 +91,15 @@ impl<'a> BitmapView<'a> {
             || matches!(
                 self.pixels,
                 Pixels::AlphaPlanar { .. }
+                    | Pixels::MaskA4(_)
+                    | Pixels::Indexed4 {
+                        alpha4: Some(_),
+                        ..
+                    }
+                    | Pixels::Indexed8 {
+                        alpha4: Some(_),
+                        ..
+                    }
                     | Pixels::Rle {
                         has_alpha4: true,
                         ..
@@ -68,6 +110,19 @@ impl<'a> BitmapView<'a> {
     #[inline]
     pub const fn is_rle(&self) -> bool {
         matches!(self.pixels, Pixels::Rle { .. })
+    }
+
+    #[inline]
+    pub const fn is_alpha_mask(&self) -> bool {
+        matches!(self.pixels, Pixels::MaskA4(_))
+    }
+
+    #[inline]
+    pub const fn mask_a4_bytes(&self) -> Option<&'a [u8]> {
+        match self.pixels {
+            Pixels::MaskA4(bytes) => Some(bytes),
+            _ => None,
+        }
     }
 
     #[inline]
@@ -114,14 +169,32 @@ impl<'a> BitmapView<'a> {
                 if width == 0 || height == 0 {
                     return None;
                 }
+                let Some(px_count) = (width as usize).checked_mul(height as usize) else {
+                    return None;
+                };
                 let f = *flags;
-                let chroma_key = if (f & L565_FLAG_CHROMA_KEY) != 0 {
+                let fmt_bits = f & (L565_FLAG_MASK_A4 | L565_FLAG_INDEXED4 | L565_FLAG_INDEXED8);
+                if fmt_bits.count_ones() > 1 {
+                    return None;
+                }
+                let is_mask_a4 = (f & L565_FLAG_MASK_A4) != 0;
+                let is_i4 = (f & L565_FLAG_INDEXED4) != 0;
+                let is_i8 = (f & L565_FLAG_INDEXED8) != 0;
+                let is_rle = (f & L565_FLAG_RLE) != 0;
+                let has_alpha4 = (f & L565_FLAG_ALPHA4) != 0;
+                if is_mask_a4 && (is_rle || has_alpha4) {
+                    return None;
+                }
+                if (is_i4 || is_i8) && is_rle {
+                    return None;
+                }
+                let chroma_key = if !is_mask_a4 && (f & L565_FLAG_CHROMA_KEY) != 0 {
                     Some(u16::from_le_bytes([*ck_lo, *ck_hi]))
                 } else {
                     None
                 };
-                let has_alpha4 = (f & L565_FLAG_ALPHA4) != 0;
-                if (f & L565_FLAG_RLE) != 0 {
+
+                if is_rle {
                     let row_tbl = height as usize * 4;
                     if rest.len() < row_tbl {
                         return None;
@@ -137,11 +210,68 @@ impl<'a> BitmapView<'a> {
                             has_alpha4,
                         },
                     })
+                } else if is_mask_a4 {
+                    if rest.len() != px_count.div_ceil(2) {
+                        return None;
+                    }
+                    Some(Self {
+                        width,
+                        height,
+                        chroma_key: None,
+                        pixels: Pixels::MaskA4(rest),
+                    })
+                } else if is_i4 || is_i8 {
+                    let pal_bytes = if is_i4 { 16usize * 2 } else { 256usize * 2 };
+                    let idx_bytes = if is_i4 {
+                        px_count.div_ceil(2)
+                    } else {
+                        px_count
+                    };
+                    let a_bytes = if has_alpha4 {
+                        px_count.div_ceil(2)
+                    } else {
+                        0
+                    };
+                    let Some(pal_plus_idx) = pal_bytes.checked_add(idx_bytes) else {
+                        return None;
+                    };
+                    let Some(needed) = pal_plus_idx.checked_add(a_bytes) else {
+                        return None;
+                    };
+                    if rest.len() != needed {
+                        return None;
+                    }
+                    let (palette, tail) = rest.split_at(pal_bytes);
+                    let (indices, a_tail) = tail.split_at(idx_bytes);
+                    let alpha4 = if has_alpha4 { Some(a_tail) } else { None };
+                    Some(Self {
+                        width,
+                        height,
+                        chroma_key,
+                        pixels: if is_i4 {
+                            Pixels::Indexed4 {
+                                palette,
+                                indices,
+                                alpha4,
+                            }
+                        } else {
+                            Pixels::Indexed8 {
+                                palette,
+                                indices,
+                                alpha4,
+                            }
+                        },
+                    })
                 } else {
-                    let px_bytes = width as usize * height as usize * 2;
+                    let Some(px_bytes) = px_count.checked_mul(2) else {
+                        return None;
+                    };
                     if has_alpha4 {
-                        let a_bytes = (width as usize * height as usize).div_ceil(2);
-                        if rest.len() != px_bytes + a_bytes {
+                        let a_bytes = px_count.div_ceil(2);
+                        let Some(needed) = px_bytes.checked_add(a_bytes) else {
+                            return None;
+                        };
+                        if rest.len() != needed {
                             return None;
                         }
                         let (pixels, alpha4) = rest.split_at(px_bytes);
@@ -183,11 +313,33 @@ impl<'a> BitmapView<'a> {
             Pixels::AlphaPlanar { pixels, alpha4 } => {
                 let p = idx * 2;
                 let rgb = u16::from_le_bytes([*pixels.get(p)?, *pixels.get(p + 1)?]);
-                let packed = *alpha4.get(idx / 2)?;
-                let a = if (idx & 1) == 0 {
-                    packed & 0x0F
-                } else {
-                    (packed >> 4) & 0x0F
+                let a = read_nibble(alpha4, idx)?;
+                (rgb, a)
+            }
+            Pixels::MaskA4(mask) => (0xFFFF, read_nibble(mask, idx)?),
+            Pixels::Indexed4 {
+                palette,
+                indices,
+                alpha4,
+            } => {
+                let pal_idx = read_nibble(indices, idx)?;
+                let rgb = read_palette_rgb565(palette, pal_idx)?;
+                let a = match alpha4 {
+                    Some(a4) => read_nibble(a4, idx)?,
+                    None => 15,
+                };
+                (rgb, a)
+            }
+            Pixels::Indexed8 {
+                palette,
+                indices,
+                alpha4,
+            } => {
+                let pal_idx = *indices.get(idx)?;
+                let rgb = read_palette_rgb565(palette, pal_idx)?;
+                let a = match alpha4 {
+                    Some(a4) => read_nibble(a4, idx)?,
+                    None => 15,
                 };
                 (rgb, a)
             }
@@ -252,10 +404,16 @@ impl<'a> BitmapView<'a> {
                 }
             }
         };
-        if self.chroma_key == Some(raw) {
+        if !matches!(self.pixels, Pixels::MaskA4(_)) && self.chroma_key == Some(raw) {
             alpha = 0;
         }
         Some((raw, alpha))
+    }
+
+    /// Reads the 4-bit alpha coverage (`0..=15`) at source texel `(sx, sy)`.
+    #[inline]
+    pub fn sample_alpha(&self, sx: usize, sy: usize) -> Option<u8> {
+        self.pixel_rgba(sx, sy).map(|(_, alpha)| alpha)
     }
 
     fn rotated_source_q8(&self, x: u32, y: u32, w: u32, h: u32, angle: u8) -> Option<(i64, i64)> {
@@ -422,6 +580,65 @@ mod tests {
         let mid = bw.sample_bilinear(2, 1, 4, 4, 0).unwrap();
         assert!(mid.0 != 0x0000 && mid.0 != 0xFFFF);
         assert_eq!(mid.1, 15);
+    }
+
+    #[test]
+    fn v2_mask_a4_and_indexed_formats_decode_correctly() {
+        // 3x1 MaskA4 -> 2 packed bytes: px0=0x2, px1=0xB (0xB2), px2=0xF (0x0F)
+        let mut mask = b"L565\x02\x08\x03\x00\x01\x00\x00\x00".to_vec();
+        mask.extend_from_slice(&[0xB2, 0x0F]);
+        let mb = BitmapView::from_asset(&mask).unwrap();
+        assert!(mb.is_alpha_mask());
+        assert!(mb.has_alpha());
+        assert!(!mb.is_rle());
+        assert_eq!(mb.sample_alpha(0, 0), Some(2));
+        assert_eq!(mb.sample_alpha(1, 0), Some(11));
+        assert_eq!(mb.sample_alpha(2, 0), Some(15));
+        assert_eq!(mb.pixel_rgba(1, 0), Some((0xFFFF, 11)));
+
+        // Reject invalid flag combinations (MASK_A4 + RLE or MASK_A4 + ALPHA4 or I4 + I8)
+        let mut bad = mask.clone();
+        bad[5] = L565_FLAG_MASK_A4 | L565_FLAG_RLE;
+        assert!(BitmapView::from_asset(&bad).is_none());
+        bad[5] = L565_FLAG_MASK_A4 | L565_FLAG_ALPHA4;
+        assert!(BitmapView::from_asset(&bad).is_none());
+        bad[5] = L565_FLAG_INDEXED4 | L565_FLAG_INDEXED8;
+        assert!(BitmapView::from_asset(&bad).is_none());
+
+        // 2x2 Indexed4 with 16-entry palette + chroma key 0x001F + 2 packed index bytes
+        let mut i4 = b"L565\x02\x11\x02\x00\x02\x00\x1f\x00".to_vec();
+        let mut pal16 = [0u16; 16];
+        pal16[0] = 0xF800;
+        pal16[1] = 0x07E0;
+        pal16[2] = 0x001F; // chroma key
+        pal16[15] = 0xFFE0;
+        for w in pal16 {
+            i4.extend_from_slice(&w.to_le_bytes());
+        }
+        // indices: px0=0, px1=1 -> 0x10; px2=2(ck), px3=15 -> 0xF2
+        i4.extend_from_slice(&[0x10, 0xF2]);
+        let b4 = BitmapView::from_asset(&i4).unwrap();
+        assert!(b4.has_alpha());
+        assert!(!b4.is_alpha_mask());
+        assert_eq!(b4.pixel_rgba(0, 0), Some((0xF800, 15)));
+        assert_eq!(b4.pixel_rgba(1, 0), Some((0x07E0, 15)));
+        assert_eq!(b4.pixel_rgba(0, 1), Some((0x001F, 0)));
+        assert_eq!(b4.pixel_rgba(1, 1), Some((0xFFE0, 15)));
+
+        // 2x1 Indexed8 with ALPHA4 (256-entry palette)
+        let mut i8 = b"L565\x02\x22\x02\x00\x01\x00\x00\x00".to_vec();
+        let mut pal256 = [0u16; 256];
+        pal256[42] = 0x1234;
+        pal256[200] = 0xABCD;
+        for w in pal256 {
+            i8.extend_from_slice(&w.to_le_bytes());
+        }
+        i8.extend_from_slice(&[42, 200]); // indices
+        i8.push(0x93); // a0=3, a1=9
+        let b8 = BitmapView::from_asset(&i8).unwrap();
+        assert!(b8.has_alpha());
+        assert_eq!(b8.pixel_rgba(0, 0), Some((0x1234, 3)));
+        assert_eq!(b8.pixel_rgba(1, 0), Some((0xABCD, 9)));
     }
 }
 

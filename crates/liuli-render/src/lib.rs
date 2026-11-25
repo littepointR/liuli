@@ -114,6 +114,94 @@ mod tests {
     }
 
     #[test]
+    fn stored_bitmap_streams_mask_a4_indexed4_and_indexed8() {
+        use liuli_core::bitmap::{L565_FLAG_INDEXED4, L565_FLAG_INDEXED8, L565_FLAG_MASK_A4};
+
+        // 2x2 MaskA4 rendered with red tint
+        let mut mask = b"L565\x02".to_vec();
+        mask.push(L565_FLAG_MASK_A4);
+        mask.extend_from_slice(&2u16.to_le_bytes());
+        mask.extend_from_slice(&2u16.to_le_bytes());
+        mask.extend_from_slice(&0u16.to_le_bytes());
+        mask.extend_from_slice(&[0xF0, 0x08]); // px0=0, px1=15, px2=8, px3=0
+        let mut mr: &[u8] = &mask;
+        let mbmp = StoredBitmap::open(&mut mr).unwrap();
+        assert!(mbmp.is_alpha_mask());
+        let mut mband = [0x0000u16; 4];
+        let mut mtarget = BandTarget::new::<()>(&mut mband, Rect::new(0, 0, 2, 2)).unwrap();
+        mbmp.blit_tinted_to_band(
+            &mut mr,
+            &mut mtarget,
+            Rect::new(0, 0, 2, 2),
+            Rect::new(0, 0, 2, 2),
+            Rgb565::new(31, 0, 0),
+            15,
+        )
+        .unwrap();
+        assert_eq!(mband[0], 0x0000);
+        assert_eq!(mband[1], 0xF800);
+        assert!(mband[2] != 0x0000 && mband[2] != 0xF800);
+        assert_eq!(mband[3], 0x0000);
+
+        // 2x1 Indexed4 with chroma key
+        let mut i4 = b"L565\x02".to_vec();
+        i4.push(L565_FLAG_INDEXED4 | L565_FLAG_CHROMA_KEY);
+        i4.extend_from_slice(&2u16.to_le_bytes());
+        i4.extend_from_slice(&1u16.to_le_bytes());
+        i4.extend_from_slice(&0xF81Fu16.to_le_bytes());
+        let mut pal16 = [0u16; 16];
+        pal16[1] = 0x07E0;
+        pal16[2] = 0xF81F;
+        for w in pal16 {
+            i4.extend_from_slice(&w.to_le_bytes());
+        }
+        i4.push(0x21); // px0=1, px1=2(ck)
+        let mut i4r: &[u8] = &i4;
+        let i4bmp = StoredBitmap::open(&mut i4r).unwrap();
+        let mut iband = [0x1111u16; 2];
+        let mut itarget = BandTarget::new::<()>(&mut iband, Rect::new(0, 0, 2, 1)).unwrap();
+        i4bmp
+            .blit_to_band(
+                &mut i4r,
+                &mut itarget,
+                Rect::new(0, 0, 2, 1),
+                Rect::new(0, 0, 2, 1),
+                15,
+            )
+            .unwrap();
+        assert_eq!(iband, [0x07E0, 0x1111]);
+
+        // 2x1 Indexed8 with ALPHA4 + 2x upscale (exercises scaled read_raw_pixel branch)
+        let mut i8 = b"L565\x02".to_vec();
+        i8.push(L565_FLAG_INDEXED8 | L565_FLAG_ALPHA4);
+        i8.extend_from_slice(&2u16.to_le_bytes());
+        i8.extend_from_slice(&1u16.to_le_bytes());
+        i8.extend_from_slice(&0u16.to_le_bytes());
+        let mut pal256 = [0u16; 256];
+        pal256[7] = 0xF800;
+        pal256[200] = 0x001F;
+        for w in pal256 {
+            i8.extend_from_slice(&w.to_le_bytes());
+        }
+        i8.extend_from_slice(&[7, 200]);
+        i8.push(0x0F); // a0=15, a1=0
+        let mut i8r: &[u8] = &i8;
+        let i8bmp = StoredBitmap::open(&mut i8r).unwrap();
+        let mut sband = [0x2222u16; 4];
+        let mut starget = BandTarget::new::<()>(&mut sband, Rect::new(0, 0, 4, 1)).unwrap();
+        i8bmp
+            .blit_to_band(
+                &mut i8r,
+                &mut starget,
+                Rect::new(0, 0, 4, 1),
+                Rect::new(0, 0, 4, 1),
+                15,
+            )
+            .unwrap();
+        assert_eq!(sband, [0xF800, 0xF800, 0x2222, 0x2222]);
+    }
+
+    #[test]
     fn gradient_rect_and_draw_accel_render_correctly() {
         let mut cmds = CommandList::new();
         cmds.screen = Rect::new(0, 0, 16, 16);
