@@ -1,4 +1,5 @@
 use embedded_graphics::pixelcolor::Rgb565;
+use liuli_core::dither::rgb565_lerp_dithered;
 use liuli_core::geometry::{Point, Rect, rgb565_to_u16};
 use liuli_core::paint::{GRADIENT_DIAGONAL, GRADIENT_VERTICAL};
 use liuli_text::blend_rgb565_a4_u16;
@@ -475,14 +476,8 @@ pub fn draw_gradient_rect<S: PixelSink + ?Sized>(
     if eff.is_empty() {
         return;
     }
-    let s_raw = u32::from(rgb565_to_u16(start));
-    let e_raw = u32::from(rgb565_to_u16(end));
-    let sr = (s_raw >> 11) & 0x1F;
-    let sg = (s_raw >> 5) & 0x3F;
-    let sb = s_raw & 0x1F;
-    let er = (e_raw >> 11) & 0x1F;
-    let eg = (e_raw >> 5) & 0x3F;
-    let eb = e_raw & 0x1F;
+    let s_raw = rgb565_to_u16(start);
+    let e_raw = rgb565_to_u16(end);
 
     let r = i32::from(radius)
         .min((rect.w / 2) as i32)
@@ -491,14 +486,6 @@ pub fn draw_gradient_rect<S: PixelSink + ?Sized>(
     let dw = (rect.w as i32 - 1).max(1);
     let dh = (rect.h as i32 - 1).max(1);
     let stride = buf_rect.w as usize;
-
-    let lerp_rgb = |t: u32| -> u16 {
-        let inv = 256 - t;
-        let rr = (sr * inv + er * t + 128) >> 8;
-        let gg = (sg * inv + eg * t + 128) >> 8;
-        let bb = (sb * inv + eb * t + 128) >> 8;
-        ((rr << 11) | (gg << 5) | bb) as u16
-    };
 
     for py in 0..eff.h {
         let y = eff.y + py as i32;
@@ -509,7 +496,14 @@ pub fn draw_gradient_rect<S: PixelSink + ?Sized>(
         } else {
             0
         };
-        let row_solid = (direction == GRADIENT_VERTICAL).then(|| lerp_rgb(ty));
+        let row_phases = (direction == GRADIENT_VERTICAL).then(|| {
+            [
+                rgb565_lerp_dithered(s_raw, e_raw, ty, 0, y),
+                rgb565_lerp_dithered(s_raw, e_raw, ty, 1, y),
+                rgb565_lerp_dithered(s_raw, e_raw, ty, 2, y),
+                rgb565_lerp_dithered(s_raw, e_raw, ty, 3, y),
+            ]
+        });
 
         let dy_corner = if r > 0 {
             if ly < r {
@@ -540,8 +534,8 @@ pub fn draw_gradient_rect<S: PixelSink + ?Sized>(
                     continue;
                 }
             }
-            let raw = match row_solid {
-                Some(c) => c,
+            let raw = match row_phases {
+                Some(phases) => phases[(x & 3) as usize],
                 None => {
                     let tx = ((lx * 256) / dw).clamp(0, 256) as u32;
                     let t = if direction == GRADIENT_DIAGONAL {
@@ -549,7 +543,7 @@ pub fn draw_gradient_rect<S: PixelSink + ?Sized>(
                     } else {
                         tx
                     };
-                    lerp_rgb(t)
+                    rgb565_lerp_dithered(s_raw, e_raw, t, x, y)
                 }
             };
             let idx = dst_row + (x - buf_rect.x) as usize;

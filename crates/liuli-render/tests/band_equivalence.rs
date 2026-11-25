@@ -1,7 +1,10 @@
 use embedded_graphics::pixelcolor::Rgb565;
 use liuli_core::damage::DamageSet;
 use liuli_core::geometry::{Point, Rect};
-use liuli_core::paint::{CommandList, PaintCmd, SliceSceneResources, TextId};
+use liuli_core::paint::{
+    CommandList, GRADIENT_DIAGONAL, GRADIENT_HORIZONTAL, GRADIENT_VERTICAL, PaintCmd,
+    SliceSceneResources, TextId,
+};
 use liuli_core::view::{FontId, IconKind, TextAlign};
 use liuli_render::{BandTarget, render_band};
 use liuli_text::{FontSet, Lf4Font};
@@ -882,5 +885,37 @@ fn inline_text_matches_reference_across_band_heights() {
     for bh in [1u32, 3, 8, 17] {
         let got = render_with_band_height(&cmds, &resources, &fonts, bh);
         assert_eq!(got, ref_full, "inline text mismatch at band_h={bh}");
+    }
+}
+
+#[test]
+fn dithered_gradients_match_reference_across_band_heights() {
+    let fonts = FontSet::single(Lf4Font::from_bytes(SETTINGS_LF4).unwrap());
+    let resources = SliceSceneResources::EMPTY;
+    let screen = Rect::new(0, 0, 128, 64);
+    let mut cmds = CommandList::new();
+    cmds.screen = screen;
+    cmds.root_bg = Rgb565::new(0, 0, 0);
+
+    for (x, dir, radius) in [
+        (0, GRADIENT_HORIZONTAL, 0),
+        (42, GRADIENT_VERTICAL, 6),
+        (84, GRADIENT_DIAGONAL, 8),
+    ] {
+        cmds.push(PaintCmd::GradientRect {
+            rect: Rect::new(x, 4, 38, 56),
+            clip: Rect::new(x + 2, 6, 34, 52),
+            start: Rgb565::new(3, 10, 20),
+            end: Rgb565::new(28, 54, 31),
+            direction: dir,
+            radius,
+        })
+        .unwrap();
+    }
+
+    let ref_full = render_with_band_height(&cmds, &resources, &fonts, 64);
+    for bh in [1u32, 3, 8, 17] {
+        let got = render_with_band_height(&cmds, &resources, &fonts, bh);
+        assert_eq!(got, ref_full, "dithered gradient mismatch at band_h={bh}");
     }
 }

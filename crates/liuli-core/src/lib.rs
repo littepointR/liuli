@@ -7,6 +7,7 @@ pub mod bitmap;
 pub mod capacity;
 pub mod color;
 pub mod damage;
+pub mod dither;
 pub mod effects;
 pub mod focus;
 pub mod geometry;

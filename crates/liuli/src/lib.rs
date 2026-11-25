@@ -38,6 +38,10 @@ pub mod prelude {
         rgb888_to_rgb565_trunc,
     };
     pub use liuli_core::damage::DamageSet;
+    pub use liuli_core::dither::{
+        DitherMode, bayer_4x4, gray8_to_gray4_dithered, gray8_to_mono1_dithered,
+        rgb565_lerp_dithered, rgb888_to_rgb565_dithered,
+    };
     pub use liuli_core::effects::{Layer, PressDepth, Projection, Shadow, SurfaceStyle};
     pub use liuli_core::geometry::{Rect, Rotation, rgb565_to_u16, u16_to_rgb565};
     pub use liuli_core::i18n::{
