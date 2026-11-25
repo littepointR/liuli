@@ -859,7 +859,11 @@ impl ScrollPhysics {
             if self.offset_q8 <= min_q8.saturating_sub(bounce_q8)
                 || self.offset_q8 >= max_q8.saturating_add(bounce_q8)
             {
-                self.velocity_q8 = -(self.velocity_q8 / 4);
+                self.velocity_q8 = if self.bounce_px == 0 {
+                    0
+                } else {
+                    -(self.velocity_q8 / 4)
+                };
             } else {
                 self.velocity_q8 = (i64::from(self.velocity_q8) * 235 / 256) as i32;
             }

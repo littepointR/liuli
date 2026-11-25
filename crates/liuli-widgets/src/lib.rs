@@ -1475,4 +1475,42 @@ mod tests {
         let bg_raw = rgb565_to_u16(Theme::DARK.background);
         assert!(band.iter().any(|&px| px != bg_raw));
     }
+
+    #[test]
+    fn spinner_sweep_is_continuous_and_fade_alpha_never_blanks() {
+        let mut prev = data::spinner_sweep_deg(InstantMs(0));
+        assert!((60..=240).contains(&prev));
+        for ms in (16..=4000u64).step_by(16) {
+            let cur = data::spinner_sweep_deg(InstantMs(ms));
+            assert!((60..=240).contains(&cur), "out of range at {ms}ms: {cur}");
+            assert!(
+                (cur - prev).abs() <= 4,
+                "discontinuous jump at {ms}ms: {prev} -> {cur}"
+            );
+            prev = cur;
+        }
+
+        let mut trans = PageTransition::new();
+        trans.start(TransitionKind::Fade, InstantMs(100), 260);
+        assert_eq!(trans.kind(), TransitionKind::Fade);
+        let a0 = trans.alpha_for(InstantMs(100));
+        assert!(a0 >= 3, "fade should stay visible on frame 0, got {a0}");
+        let mut last_a = a0;
+        for ms in (116..=360u64).step_by(16) {
+            let a = trans.alpha_for(InstantMs(ms));
+            assert!(a >= last_a, "alpha regressed at {ms}ms: {last_a} -> {a}");
+            last_a = a;
+        }
+        assert_eq!(trans.alpha_for(InstantMs(360)), 15);
+        assert_eq!(trans.alpha_for(InstantMs(500)), 15);
+
+        let mut ml = MultiLineState::<64>::from_text("abc\ndefg");
+        let r0 = ml.revision();
+        assert!(ml.move_horizontal(false));
+        let r1 = ml.revision();
+        assert_ne!(r1, r0);
+        assert!(ml.move_vertical(false));
+        let r2 = ml.revision();
+        assert_ne!(r2, r1);
+    }
 }

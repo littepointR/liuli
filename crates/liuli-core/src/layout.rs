@@ -1328,15 +1328,14 @@ fn stack_child_origin(
     is_modal: bool,
     parent_align: Align,
     child_align: StackAlign,
-    extra: crate::part_style::LayoutExtra,
 ) -> (i32, i32) {
     if is_modal {
         return (
-            content.x + ((content.w.saturating_sub(cw)) / 2) as i32 + i32::from(extra.offset_x),
-            content.y + ((content.h.saturating_sub(ch)) / 2) as i32 + i32::from(extra.offset_y),
+            content.x + ((content.w.saturating_sub(cw)) / 2) as i32,
+            content.y + ((content.h.saturating_sub(ch)) / 2) as i32,
         );
     }
-    let (x, y) = if child_align == StackAlign::TopStart {
+    if child_align == StackAlign::TopStart {
         let ax = match parent_align {
             Align::Center => content.x + ((content.w.saturating_sub(cw)) / 2) as i32,
             Align::End => content.x + content.w.saturating_sub(cw) as i32,
@@ -1363,11 +1362,7 @@ fn stack_child_origin(
             }
         };
         (x, y)
-    };
-    (
-        x.saturating_add(i32::from(extra.offset_x)),
-        y.saturating_add(i32::from(extra.offset_y)),
-    )
+    }
 }
 
 fn finalize_flex_measure(tree: &mut RetainedTree, slot: u16, frame: &MeasureFrame, c: Constraints) {
@@ -1977,8 +1972,7 @@ fn arrange_iterative(
                 NodeKind::CustomContainer => tree.nodes[ch as usize].ink_rect,
                 _ => {
                     let cn = &tree.nodes[ch as usize];
-                    let extra = tree.layout_extras.get(cn.key);
-                    let m = extra.margin;
+                    let m = tree.layout_extras.get(cn.key).margin;
                     let outer_w = if matches!(cn.props.width, Length::Fill(_)) {
                         content.w
                     } else {
@@ -1998,7 +1992,6 @@ fn arrange_iterative(
                         frame.is_modal,
                         align_cross,
                         cn.props.stack_align(),
-                        extra,
                     );
                     Rect::new(
                         cx.saturating_add(i32::from(m.left)),
@@ -2008,6 +2001,18 @@ fn arrange_iterative(
                     )
                 }
             };
+
+            let child_extra = tree.layout_extras.get(tree.nodes[ch as usize].key);
+            let child_rect =
+                if !child_rect.is_empty() && (child_extra.offset_x != 0 || child_extra.offset_y != 0)
+                {
+                    child_rect.translate(
+                        i32::from(child_extra.offset_x),
+                        i32::from(child_extra.offset_y),
+                    )
+                } else {
+                    child_rect
+                };
 
             if sp < stack.len() {
                 stack[sp] = ArrangeDepthFrame {

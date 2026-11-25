@@ -509,6 +509,7 @@ impl<const CAP: usize> MultiLineState<CAP> {
                 next += 1;
             }
             self.cursor = next;
+            self.rev = self.rev.wrapping_add(1).max(1);
             true
         } else {
             if self.cursor == 0 {
@@ -519,6 +520,7 @@ impl<const CAP: usize> MultiLineState<CAP> {
                 prev -= 1;
             }
             self.cursor = prev;
+            self.rev = self.rev.wrapping_add(1).max(1);
             true
         }
     }
@@ -543,6 +545,7 @@ impl<const CAP: usize> MultiLineState<CAP> {
                         next -= 1;
                     }
                     self.cursor = next;
+                    self.rev = self.rev.wrapping_add(1).max(1);
                     return true;
                 }
                 line_idx += 1;
@@ -556,6 +559,7 @@ impl<const CAP: usize> MultiLineState<CAP> {
                 next -= 1;
             }
             self.cursor = next;
+            self.rev = self.rev.wrapping_add(1).max(1);
             return true;
         }
         false

@@ -2208,4 +2208,116 @@ mod tests {
         assert!(phys.offset() > 10 && phys.offset() <= 200);
         assert_eq!(phys.offset() % 50, 0);
     }
+
+    #[test]
+    fn set_offset_applies_to_all_containers_and_overwrites_zero() {
+        let screen = Rect::new(0, 0, 240, 180);
+        let mut draft = ViewDraft::new();
+        {
+            let mut vb = ViewBuilder::new(&mut draft);
+            vb.root(Key(1), NodeProps::new(), |ui| {
+                let mut col_p = NodeProps::new();
+                col_p.width = Length::Fill(1);
+                col_p.height = Length::Fill(1);
+                ui.column(Key(2), col_p, |c| {
+                    let mut p = NodeProps::new();
+                    p.width = Length::Px(120);
+                    p.height = Length::Px(24);
+                    c.label(Key(10), p)?;
+                    c.set_offset(Key(10), 14, 6)?;
+
+                    let mut rp = NodeProps::new();
+                    rp.width = Length::Fill(1);
+                    rp.height = Length::Px(30);
+                    c.row(Key(20), rp, |r| {
+                        let mut lp = NodeProps::new();
+                        lp.width = Length::Px(40);
+                        lp.height = Length::Px(20);
+                        r.label(Key(21), lp)?;
+                        r.set_offset(Key(21), -8, 3)?;
+                        // Verify zero overwrite clears previous offset on the same key.
+                        r.label(Key(22), lp)?;
+                        r.set_offset(Key(22), 12, 9)?;
+                        r.set_offset(Key(22), 0, 0)
+                    })?;
+
+                    let mut sxp = NodeProps::new();
+                    sxp.width = Length::Px(100);
+                    sxp.height = Length::Px(24);
+                    c.scroll_x(Key(30), sxp, |sx| {
+                        let mut ip = NodeProps::new();
+                        ip.width = Length::Px(180);
+                        ip.height = Length::Px(20);
+                        sx.label(Key(31), ip)?;
+                        sx.set_offset(Key(31), -25, 0)
+                    })?;
+
+                    let mut gp = NodeProps::new();
+                    gp.width = Length::Fill(1);
+                    gp.height = Length::Content;
+                    c.grid(Key(40), 2, gp, |g| {
+                        let mut tp = NodeProps::new();
+                        tp.width = Length::Px(50);
+                        tp.height = Length::Px(20);
+                        g.label(Key(41), tp)?;
+                        g.set_offset(Key(41), 5, -2)
+                    })?;
+
+                    let mut wp = NodeProps::new();
+                    wp.width = Length::Fill(1);
+                    wp.height = Length::Content;
+                    c.wrap(Key(50), wp, |w| {
+                        let mut tp = NodeProps::new();
+                        tp.width = Length::Px(50);
+                        tp.height = Length::Px(20);
+                        w.label(Key(51), tp)?;
+                        w.set_offset(Key(51), 7, 4)
+                    })
+                })
+            })
+            .unwrap();
+            vb.finish().unwrap();
+        }
+        let tree = reconcile_fresh(&draft, screen);
+
+        let r10 = tree.nodes[tree.find_slot_by_key(Key(10)).unwrap() as usize].layout_rect;
+        assert_eq!(r10, Rect::new(14, 6, 120, 24));
+
+        let r21 = tree.nodes[tree.find_slot_by_key(Key(21)).unwrap() as usize].layout_rect;
+        let r22 = tree.nodes[tree.find_slot_by_key(Key(22)).unwrap() as usize].layout_rect;
+        assert_eq!((r21.x, r21.y), (-8, 27));
+        assert_eq!((r22.x, r22.y), (40, 24));
+
+        let n30 = &tree.nodes[tree.find_slot_by_key(Key(30)).unwrap() as usize];
+        let n31 = &tree.nodes[tree.find_slot_by_key(Key(31)).unwrap() as usize];
+        assert_eq!(n31.layout_rect.x, -25);
+        assert_eq!(n31.visible_rect, n31.ink_rect.intersect(n30.clip_rect));
+        assert!(n31.visible_rect.x >= n30.layout_rect.x);
+
+        let n40 = &tree.nodes[tree.find_slot_by_key(Key(40)).unwrap() as usize];
+        let n41 = &tree.nodes[tree.find_slot_by_key(Key(41)).unwrap() as usize];
+        assert_eq!((n41.layout_rect.x, n41.layout_rect.y), (5, n40.layout_rect.y - 2));
+
+        let n50 = &tree.nodes[tree.find_slot_by_key(Key(50)).unwrap() as usize];
+        let n51 = &tree.nodes[tree.find_slot_by_key(Key(51)).unwrap() as usize];
+        assert_eq!((n51.layout_rect.x, n51.layout_rect.y), (7, n50.layout_rect.y + 4));
+    }
+
+    #[test]
+    fn scroll_physics_non_bounce_clamps_without_rebound() {
+        use crate::time::ScrollPhysics;
+
+        let mut phys = ScrollPhysics::new(0, 100);
+        assert_eq!(phys.bounce_px, 0);
+        phys.set_offset(80);
+        phys.release_with_velocity(5000, InstantMs(0));
+        let prev = phys.step_ms(16);
+        assert_eq!(prev, 100);
+        for step in 2..=10u32 {
+            let cur = phys.step_ms(16);
+            assert_eq!(cur, 100, "unexpected rebound at step {step}");
+        }
+        assert_eq!(phys.velocity_q8, 0);
+        assert!(!phys.is_active());
+    }
 }

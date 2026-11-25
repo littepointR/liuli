@@ -67,6 +67,9 @@ pub mod i18n_keys {
     pub const BTN_DEL: TextKey = TextKey(18);
     pub const BTN_RESET: TextKey = TextKey(19);
     pub const STATUS_FMT: TextKey = TextKey(20);
+    pub const BTN_TRANS_SLIDE_L: TextKey = TextKey(21);
+    pub const BTN_TRANS_SLIDE_U: TextKey = TextKey(22);
+    pub const BTN_TRANS_FADE: TextKey = TextKey(23);
 }
 
 pub const EN_ENTRIES: &[&str] = &[
@@ -91,6 +94,9 @@ pub const EN_ENTRIES: &[&str] = &[
     "Del",
     "Reset",
     "Load: {0}% | Temp: {1}C | MaxNodes: {2}",
+    "Trans: SlideL",
+    "Trans: SlideU",
+    "Trans: Fade",
 ];
 
 pub const ZH_ENTRIES: &[&str] = &[
@@ -115,6 +121,9 @@ pub const ZH_ENTRIES: &[&str] = &[
     "删除",
     "恢复默认",
     "负载: {0}% | 温度: {1}°C | 节点上限: {2}",
+    "动效: 左滑",
+    "动效: 上滑",
+    "动效: 淡入",
 ];
 
 pub const LOCALES: [LocaleTable; 2] = [
@@ -305,7 +314,7 @@ impl ShowcaseModel {
         if self.tab != tab {
             self.tab = tab;
             self.dropdown.open = false;
-            self.transition.start(self.trans_kind, now, 200);
+            self.transition.start(self.trans_kind, now, 260);
         }
     }
 }
@@ -390,7 +399,7 @@ impl App for ShowcaseApp {
                     TransitionKind::SlideUp => TransitionKind::Fade,
                     _ => TransitionKind::SlideLeft,
                 };
-                model.transition.start(model.trans_kind, now, 200);
+                model.transition.start(model.trans_kind, now, 260);
                 Change::View
             }
             ShowcaseMsg::ToggleBright => {
@@ -626,16 +635,10 @@ impl App for ShowcaseApp {
             120 => paint_gauge(model.temp_gauge(), props, canvas),
             130 => paint_gradient_swatch(canvas),
             140 => paint_summary_rich_text(model, props, canvas),
-            201..=203 => paint_checkbox(props, custom_paint_state(props), canvas),
-            211..=213 => paint_radio(props, custom_paint_state(props), canvas),
-            230 => paint_roller(
-                CLK_OPTIONS,
-                model.roller,
-                props,
-                custom_paint_state(props),
-                canvas,
-            ),
-            240 => paint_multi_line_editor(&model.editor, props, custom_paint_state(props), canvas),
+            201..=203 => paint_checkbox(props, canvas.state, canvas),
+            211..=213 => paint_radio(props, canvas.state, canvas),
+            230 => paint_roller(CLK_OPTIONS, model.roller, props, canvas.state, canvas),
+            240 => paint_multi_line_editor(&model.editor, props, canvas.state, canvas),
             301 => {
                 let s0 = ChartSeries {
                     name: "Load",
@@ -664,17 +667,6 @@ impl App for ShowcaseApp {
             }
             _ => Ok(()),
         }
-    }
-}
-
-fn custom_paint_state(props: &StoredProps) -> PaintState {
-    PaintState {
-        pressed: false,
-        focused: false,
-        editing: false,
-        checked: props.checked(),
-        enabled: props.enabled(),
-        anim_progress: 0,
     }
 }
 
@@ -821,37 +813,47 @@ fn build_content(
     theme: Theme,
     ui: &mut Children<'_, '_>,
 ) -> Result<(), BuildError> {
-    ui.column(
-        Key(50),
+    ui.stack(
+        Key(49),
         NodeProps::new()
             .width(Length::Fill(1))
-            .height(Length::Fill(1))
-            .gap(8),
-        |body| match model.tab {
-            ShowcaseTab::Overview => build_tab_overview(model, theme, body),
-            ShowcaseTab::Forms => build_tab_forms(model, theme, body),
-            ShowcaseTab::Charts => build_tab_charts(model, theme, body),
-            ShowcaseTab::Layout => build_tab_layout(model, theme, body),
+            .height(Length::Fill(1)),
+        |vp| {
+            vp.column(
+                Key(50),
+                NodeProps::new()
+                    .width(Length::Fill(1))
+                    .height(Length::Fill(1))
+                    .gap(8),
+                |body| match model.tab {
+                    ShowcaseTab::Overview => build_tab_overview(model, theme, body),
+                    ShowcaseTab::Forms => build_tab_forms(model, theme, body),
+                    ShowcaseTab::Charts => build_tab_charts(model, theme, body),
+                    ShowcaseTab::Layout => build_tab_layout(model, theme, body),
+                },
+            )?;
+
+            model
+                .transition
+                .apply(vp, Key(50), Size::new(260, 140), model.now)?;
+
+            #[cfg(feature = "enhanced")]
+            if model.transition.kind() == TransitionKind::Fade
+                && model.transition.is_active(model.now)
+            {
+                let alpha = model.transition.alpha_for(model.now);
+                vp.decorate(
+                    Key(50),
+                    SurfaceStyle {
+                        layer: Some(Layer::OPAQUE.with_opacity(alpha)),
+                        ..SurfaceStyle::FLAT
+                    },
+                )?;
+            }
+
+            Ok(())
         },
-    )?;
-
-    model
-        .transition
-        .apply(ui, Key(50), Size::new(800, 480), model.now)?;
-
-    #[cfg(feature = "enhanced")]
-    if model.trans_kind == TransitionKind::Fade && model.transition.is_active(model.now) {
-        let alpha = model.transition.alpha_for(model.now);
-        ui.decorate(
-            Key(50),
-            SurfaceStyle {
-                layer: Some(Layer::OPAQUE.with_opacity(alpha)),
-                ..SurfaceStyle::FLAT
-            },
-        )?;
-    }
-
-    Ok(())
+    )
 }
 
 fn build_tab_overview(
@@ -970,10 +972,15 @@ fn build_tab_overview(
                             .height(Length::Px(74)),
                     )?;
                     spinner(c, Key(131), 54, model.now, theme)?;
+                    let trans_lbl = match model.trans_kind {
+                        TransitionKind::SlideUp => model.tr(i18n_keys::BTN_TRANS_SLIDE_U),
+                        TransitionKind::Fade => model.tr(i18n_keys::BTN_TRANS_FADE),
+                        _ => model.tr(i18n_keys::BTN_TRANS_SLIDE_L),
+                    };
                     small_btn(
                         c,
                         Key(132),
-                        model.tr(i18n_keys::BTN_TRANS_CYCLE),
+                        trans_lbl,
                         Length::Px(156),
                         theme.surface_alt,
                         theme.text,

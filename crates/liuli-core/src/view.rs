@@ -1715,7 +1715,7 @@ impl<'a, 'b> Children<'a, 'b> {
             .map_err(|err| self.builder.fail(err))
     }
 
-    /// Apply a signed layout pixel offset on an already declared child (typically inside `Stack`).
+    /// Apply a signed layout pixel offset on any declared child (clipped by its parent container).
     pub fn set_offset(&mut self, key: Key, dx: i16, dy: i16) -> Result<(), BuildError> {
         self.ensure_key(key)?;
         self.builder

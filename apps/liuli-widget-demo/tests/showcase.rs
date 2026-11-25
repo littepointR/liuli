@@ -6,6 +6,7 @@ use liuli_widget_demo::showcase::{
     SHOWCASE_BODY_LF4, ShowcaseApp, ShowcaseModel, ShowcaseTab, showcase_fonts,
     verify_locale_entries,
 };
+use liuli_widgets::TransitionKind;
 
 fn center(app: &AppSession<'_, '_, ShowcaseApp>, key: u32) -> Point {
     let node = app
@@ -77,6 +78,8 @@ fn showcase_800x480_tabs_interactions_and_incremental_rendering_pass() {
         true,
     )
     .unwrap();
+    #[cfg(feature = "enhanced")]
+    app.engine_mut().set_layer_budget(1024 * 1024).unwrap();
     let mut clock = 0u64;
 
     // Tab 0: Overview -> toggle lang, theme, gauge load, live pause, cycle transition
@@ -89,7 +92,56 @@ fn showcase_800x480_tabs_interactions_and_incremental_rendering_pass() {
     assert!(!app.engine().model().dark);
     tap(&mut app, &mut clock, 121); // Pause live
     assert!(!app.engine().model().live_sample);
-    tap(&mut app, &mut clock, 132); // Transition cycle
+
+    // Cycle transition 3 times: SlideLeft -> SlideUp -> Fade -> SlideLeft
+    tap(&mut app, &mut clock, 132); // 1st tap -> SlideUp
+    assert_eq!(app.engine().model().trans_kind, TransitionKind::SlideUp);
+    let vp_rect = app.engine().active_tree().node_by_key(Key(49)).unwrap().layout_rect;
+    let body_up = app.engine().active_tree().node_by_key(Key(50)).unwrap();
+    assert!(body_up.layout_rect.y > vp_rect.y);
+    assert_eq!(body_up.visible_rect, body_up.ink_rect.intersect(vp_rect));
+    assert!(body_up.visible_rect.y >= vp_rect.y);
+    assert!(body_up.visible_rect.bottom64() <= vp_rect.bottom64());
+    for _ in 0..18 {
+        clock += 16;
+        app.step(InstantMs(clock), None, true).unwrap();
+    }
+    assert_eq!(
+        app.engine().active_tree().node_by_key(Key(50)).unwrap().layout_rect,
+        vp_rect
+    );
+
+    tap(&mut app, &mut clock, 132); // 2nd tap -> Fade (must not blank screen at t=0)
+    assert_eq!(app.engine().model().trans_kind, TransitionKind::Fade);
+    let alpha0 = app.engine().model().transition.alpha_for(InstantMs(clock));
+    assert!(alpha0 >= 3, "fade opacity at frame 0 must stay visible, got {alpha0}");
+    let bg_u16 = rgb565_to_u16(liuli_widgets::Theme::LIGHT.background);
+    let fb = app.screen().words();
+    let has_content_px = (vp_rect.y..vp_rect.bottom64() as i32).any(|y| {
+        let row = &fb[(y as usize) * 800..(y as usize + 1) * 800];
+        row[vp_rect.x as usize..vp_rect.right64() as usize]
+            .iter()
+            .any(|&px| px != bg_u16)
+    });
+    assert!(has_content_px, "fade frame 0 must not blank the viewport");
+    for _ in 0..18 {
+        clock += 16;
+        app.step(InstantMs(clock), None, true).unwrap();
+    }
+
+    tap(&mut app, &mut clock, 132); // 3rd tap -> SlideLeft
+    assert_eq!(app.engine().model().trans_kind, TransitionKind::SlideLeft);
+    let body_left = app.engine().active_tree().node_by_key(Key(50)).unwrap();
+    assert!(body_left.layout_rect.x > vp_rect.x);
+    assert!(body_left.visible_rect.right64() <= vp_rect.right64());
+    for _ in 0..18 {
+        clock += 16;
+        app.step(InstantMs(clock), None, true).unwrap();
+    }
+    assert_eq!(
+        app.engine().active_tree().node_by_key(Key(50)).unwrap().layout_rect,
+        vp_rect
+    );
 
     // Tab 1: Forms -> checkboxes, radios, dropdown, roller, multi-line editor
     tap(&mut app, &mut clock, 12);
@@ -136,10 +188,28 @@ fn showcase_800x480_tabs_interactions_and_incremental_rendering_pass() {
     assert_eq!(app.engine().model().justify, Justify::SpaceAround);
     tap(&mut app, &mut clock, 424); // Grid tile #3
     assert_eq!(app.engine().model().grid_selected, 3);
+    let card0_x_before = app
+        .engine()
+        .active_tree()
+        .node_by_key(Key(452))
+        .unwrap()
+        .layout_rect
+        .x;
     tap(&mut app, &mut clock, 449); // Fling right
     for _ in 0..24 {
         clock += 16;
         app.step(InstantMs(clock), None, true).unwrap();
     }
     assert!(app.engine().model().scroll_physics.offset() > 0);
+    let card0_x_after = app
+        .engine()
+        .active_tree()
+        .node_by_key(Key(452))
+        .unwrap()
+        .layout_rect
+        .x;
+    assert!(
+        card0_x_after < card0_x_before,
+        "ScrollX set_offset must shift child card left ({card0_x_before} -> {card0_x_after})"
+    );
 }

@@ -35,6 +35,11 @@ impl PageTransition {
     }
 
     #[inline]
+    pub const fn kind(&self) -> TransitionKind {
+        self.kind
+    }
+
+    #[inline]
     pub fn start(&mut self, kind: TransitionKind, now: InstantMs, duration_ms: u32) {
         self.kind = kind;
         self.start_ms = now;
@@ -83,11 +88,12 @@ impl PageTransition {
         }
     }
 
-    /// Returns effective 4-bit opacity (`0..=15`) at `now`.
+    /// Returns effective 4-bit opacity (`3..=15`) while active (`15` once settled).
     pub fn alpha_for(&self, now: InstantMs) -> u8 {
         match self.kind {
-            TransitionKind::Fade => {
-                ((self.progress_per_mille(now) * 15 + 500) / 1000).clamp(0, 15) as u8
+            TransitionKind::Fade if self.is_active(now) => {
+                let p = self.progress_per_mille(now);
+                (3 + ((p * 12 + 500) / 1000)).clamp(3, 15) as u8
             }
             _ => 15,
         }

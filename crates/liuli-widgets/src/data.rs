@@ -343,7 +343,7 @@ pub fn spinner(
     now: InstantMs,
     theme: Theme,
 ) -> Result<(), BuildError> {
-    let phase = ((now.0 / 16) % 360) as u32;
+    let phase = ((now.0 / 16) % 360) as u32 + 1;
     ui.custom(
         key,
         NodeProps::new()
@@ -352,7 +352,15 @@ pub fn spinner(
             .bg(theme.surface_alt)
             .accent(theme.accent),
     )?;
-    ui.set_custom_rev(key, phase.max(1))
+    ui.set_custom_rev(key, phase)
+}
+
+/// Smooth triangle-wave sweep angle (`60..=240` deg) over a 2.88 s period.
+#[inline]
+pub fn spinner_sweep_deg(now: InstantMs) -> i16 {
+    let cycle = ((now.0 / 8) % 360) as i16;
+    let tri = if cycle <= 180 { cycle } else { 360 - cycle };
+    60 + tri
 }
 
 /// Paint an animated indeterminate circular comet arc driven purely by `now`.
@@ -372,7 +380,7 @@ pub fn paint_spinner(
     let rad = ((min_dim / 2).saturating_sub(u32::from(stroke_w) / 2 + 1)).max(2) as u16;
     let track = props.bg().unwrap_or(Rgb565::new(6, 12, 6));
     let start_deg = ((now.0 * 360) / 1000) % 360;
-    let sweep = 90 + (((now.0 / 8) % 180) as i16).min(180);
+    let sweep = spinner_sweep_deg(now);
 
     canvas.arc(Point::new(cx, cy), rad, 0, 360, stroke_w, false, track)?;
     canvas.arc(

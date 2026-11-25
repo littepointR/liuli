@@ -809,9 +809,6 @@ impl LayoutExtras {
     }
 
     pub fn set_offset(&mut self, key: Key, dx: i16, dy: i16) -> Result<(), BuildError> {
-        if dx == 0 && dy == 0 {
-            return Ok(());
-        }
         self.upsert(key, |e| {
             e.offset_x = dx;
             e.offset_y = dy;
@@ -819,9 +816,6 @@ impl LayoutExtras {
     }
 
     pub fn set_custom_rev(&mut self, key: Key, rev: u32) -> Result<(), BuildError> {
-        if rev == 0 {
-            return Ok(());
-        }
         self.upsert(key, |e| {
             e.custom_rev = rev;
         })
@@ -859,9 +853,6 @@ impl LayoutExtras {
         key: Key,
         margin: crate::view::EdgeInsets,
     ) -> Result<(), BuildError> {
-        if margin == crate::view::EdgeInsets::ZERO {
-            return Ok(());
-        }
         self.upsert(key, |e| {
             e.margin = margin;
         })
