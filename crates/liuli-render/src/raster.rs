@@ -879,51 +879,51 @@ fn render_range<R: SceneResources + ?Sized, T: BandTextSource>(
                 letter_spacing,
                 line_spacing,
             } => {
-                let eff_clip = clip.intersect(band_rect);
-                if eff_clip.is_empty() || wrap_width == 0 {
-                    continue;
-                }
-                let width_limit_clip = eff_clip.intersect(Rect::new(
-                    eff_clip.x,
-                    eff_clip.y,
-                    ((pos.x as i64 + wrap_width as i64) - eff_clip.x as i64)
-                        .clamp(0, u32::MAX as i64) as u32,
-                    eff_clip.h,
-                ));
-                if width_limit_clip.is_empty() {
-                    continue;
-                }
-                let s = resources.text(text);
-                let stride = target.width() as usize;
-                let fg_raw = rgb565_to_u16(color);
-                let decor_pad = if style.underline() || style.strikethrough() {
-                    4
-                } else {
-                    0
-                };
-                let vis_y = Some((
-                    width_limit_clip.y - pos.y - decor_pad.max(8),
-                    (width_limit_clip.y + width_limit_clip.h as i32) - pos.y + decor_pad.max(8),
-                ));
-                let mut row_buf = [0u8; 256];
-                text_source.draw_text(
+                draw_text_cmd(
                     target,
                     band_rect,
-                    stride,
-                    width_limit_clip,
+                    text_source,
                     pos,
-                    s,
-                    fg_raw,
+                    clip,
                     wrap_width,
-                    max_lines,
-                    ellipsis,
+                    resources.text(text),
+                    color,
                     font_id,
                     align,
+                    max_lines,
+                    ellipsis,
                     style,
                     letter_spacing,
                     line_spacing,
-                    vis_y,
-                    &mut row_buf,
+                )?;
+            }
+            PaintCmd::InlineText {
+                pos,
+                clip,
+                color,
+                wrap_width,
+                font: font_id,
+                align,
+                len,
+                bytes,
+            } => {
+                let s = core::str::from_utf8(&bytes[..usize::from(len).min(12)]).unwrap_or("");
+                draw_text_cmd(
+                    target,
+                    band_rect,
+                    text_source,
+                    pos,
+                    clip,
+                    u32::from(wrap_width),
+                    s,
+                    color,
+                    font_id,
+                    align,
+                    1,
+                    false,
+                    TextStyleFlags::DEFAULT,
+                    0,
+                    0,
                 )?;
             }
             PaintCmd::Icon {
@@ -1002,6 +1002,70 @@ fn render_range<R: SceneResources + ?Sized, T: BandTextSource>(
     }
 
     Ok(replayed)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_text_cmd<T: BandTextSource>(
+    target: &mut BandTarget<'_>,
+    band_rect: Rect,
+    text_source: &mut T,
+    pos: Point,
+    clip: Rect,
+    wrap_width: u32,
+    s: &str,
+    color: Rgb565,
+    font_id: FontId,
+    align: TextAlign,
+    max_lines: u8,
+    ellipsis: bool,
+    style: TextStyleFlags,
+    letter_spacing: i8,
+    line_spacing: i8,
+) -> Result<(), T::Error> {
+    let eff_clip = clip.intersect(band_rect);
+    if eff_clip.is_empty() || wrap_width == 0 || s.is_empty() {
+        return Ok(());
+    }
+    let width_limit_clip = eff_clip.intersect(Rect::new(
+        eff_clip.x,
+        eff_clip.y,
+        ((pos.x as i64 + wrap_width as i64) - eff_clip.x as i64).clamp(0, u32::MAX as i64) as u32,
+        eff_clip.h,
+    ));
+    if width_limit_clip.is_empty() {
+        return Ok(());
+    }
+    let stride = target.width() as usize;
+    let fg_raw = rgb565_to_u16(color);
+    let decor_pad = if style.underline() || style.strikethrough() {
+        4
+    } else {
+        0
+    };
+    let vis_y = Some((
+        width_limit_clip.y - pos.y - decor_pad.max(8),
+        (width_limit_clip.y + width_limit_clip.h as i32) - pos.y + decor_pad.max(8),
+    ));
+    let mut row_buf = [0u8; 256];
+    text_source.draw_text(
+        target,
+        band_rect,
+        stride,
+        width_limit_clip,
+        pos,
+        s,
+        fg_raw,
+        wrap_width,
+        max_lines,
+        ellipsis,
+        font_id,
+        align,
+        style,
+        letter_spacing,
+        line_spacing,
+        vis_y,
+        &mut row_buf,
+    )
 }
 
 #[inline]
@@ -1408,6 +1472,7 @@ fn blit_glyph_row(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_h_span(
     target: &mut BandTarget<'_>,
     band_rect: Rect,

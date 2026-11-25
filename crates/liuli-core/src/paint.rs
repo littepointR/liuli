@@ -130,6 +130,16 @@ pub enum PaintCmd {
         width: u8,
         cap_round: bool,
     } = 15,
+    InlineText {
+        pos: Point,
+        clip: Rect,
+        color: Rgb565,
+        wrap_width: u16,
+        font: FontId,
+        align: TextAlign,
+        len: u8,
+        bytes: [u8; 12],
+    } = 16,
 }
 
 const _: () = assert!(core::mem::size_of::<PaintCmd>() <= 48);
@@ -198,6 +208,42 @@ impl PaintCmd {
         }
     }
 
+    #[inline]
+    pub fn inline_text(
+        pos: Point,
+        clip: Rect,
+        text: &str,
+        color: Rgb565,
+        wrap_width: u16,
+        font: FontId,
+        align: TextAlign,
+    ) -> Option<Self> {
+        let mut take = 0usize;
+        for (idx, ch) in text.char_indices() {
+            let end = idx + ch.len_utf8();
+            if end <= 12 {
+                take = end;
+            } else {
+                break;
+            }
+        }
+        if take == 0 {
+            return None;
+        }
+        let mut bytes = [0u8; 12];
+        bytes[..take].copy_from_slice(&text.as_bytes()[..take]);
+        Some(Self::InlineText {
+            pos,
+            clip,
+            color,
+            wrap_width,
+            font,
+            align,
+            len: take as u8,
+            bytes,
+        })
+    }
+
     pub fn bounds(&self) -> Rect {
         match *self {
             Self::Empty => Rect::ZERO,
@@ -214,7 +260,7 @@ impl PaintCmd {
             | Self::Overlay { rect, clip, .. }
             | Self::Icon { rect, clip, .. }
             | Self::Sparkline { rect, clip, .. } => rect.intersect(clip),
-            Self::Text { clip, .. } => clip,
+            Self::Text { clip, .. } | Self::InlineText { clip, .. } => clip,
             Self::Line {
                 p0,
                 p1,
@@ -793,6 +839,7 @@ impl WidgetCanvas<'_> {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn arc(
         &mut self,
         center: Point,
@@ -853,6 +900,36 @@ impl WidgetCanvas<'_> {
             props.letter_spacing,
             props.line_spacing,
         ))
+    }
+
+    /// Draw short inline UTF-8 text (up to 12 bytes) inside widget-local `rect`.
+    pub fn text(
+        &mut self,
+        rect: Rect,
+        text: &str,
+        color: Rgb565,
+        font: FontId,
+        align: TextAlign,
+    ) -> Result<(), BuildError> {
+        let clip = self.current_clip();
+        let g = self.to_global(rect);
+        let eff_clip = g.intersect(clip);
+        if eff_clip.is_empty() || g.w == 0 {
+            return Ok(());
+        }
+        let wrap_w = g.w.min(u16::MAX as u32) as u16;
+        if let Some(cmd) = PaintCmd::inline_text(
+            Point::new(g.x, g.y),
+            eff_clip,
+            text,
+            color,
+            wrap_w,
+            font,
+            align,
+        ) {
+            self.commands.push(cmd)?;
+        }
+        Ok(())
     }
 
     /// Paint the full default appearance of the current built-in node (valid inside `paint_override`).
@@ -1664,7 +1741,7 @@ fn paint_slider_parts(
     let track_h = part
         .track_thickness()
         .map(|t| rect.h.min(u32::from(t.max(1))))
-        .unwrap_or_else(|| rect.h.min(6).max(1));
+        .unwrap_or_else(|| rect.h.clamp(1, 6));
     let (knob_w, knob_h) = part
         .knob_size()
         .map(|(w, h)| {

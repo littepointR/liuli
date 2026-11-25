@@ -9,7 +9,9 @@ use embedded_graphics::primitives::{
 };
 use embedded_graphics::{Drawable, Pixel};
 use liuli::core::paint::{CommandList, PaintCmd, SceneResources};
-use liuli::prelude::{IconKind, Point, Rect, SubpixelOrder, TextGamma, TextStyleFlags};
+use liuli::prelude::{
+    FontId, IconKind, Point, Rect, SubpixelOrder, TextAlign, TextGamma, TextStyleFlags,
+};
 use liuli::text::{
     FontProvider, FontSet, GlyphEncoding, GlyphFormat, LineDecor, ProviderLayoutStyle,
     TextLayoutOptions, TextLayoutStyle, a2_pixel, blend_over_rgb565_a4, blend_rgb565_a4,
@@ -831,49 +833,53 @@ fn reference_range_with_source<S: SimTextSource>(
                 letter_spacing,
                 line_spacing,
             } => {
-                let eff_clip = clip.intersect(full);
-                if eff_clip.is_empty() || wrap_width == 0 {
-                    continue;
-                }
-                let width_limit_clip = eff_clip.intersect(Rect::new(
-                    eff_clip.x,
-                    eff_clip.y,
-                    ((pos.x as i64 + wrap_width as i64) - eff_clip.x as i64)
-                        .clamp(0, u32::MAX as i64) as u32,
-                    eff_clip.h,
-                ));
-                if width_limit_clip.is_empty() {
-                    continue;
-                }
-                let s = resources.text(text);
-                let text_raw = color.into_storage();
-                let decor_pad = if style.underline() || style.strikethrough() {
-                    4
-                } else {
-                    0
-                };
-                let vis_y = Some((
-                    width_limit_clip.y - pos.y - decor_pad,
-                    (width_limit_clip.y + width_limit_clip.h as i32) - pos.y + decor_pad,
-                ));
-                let mut row_buf = [0u8; 256];
-                text_source.draw_text(
+                draw_sim_text_cmd(
                     &mut screen,
+                    full,
                     stride,
-                    width_limit_clip,
+                    text_source,
                     pos,
-                    s,
-                    text_raw,
+                    clip,
                     wrap_width,
-                    max_lines,
-                    ellipsis,
+                    resources.text(text),
+                    color,
                     font_id,
                     align,
+                    max_lines,
+                    ellipsis,
                     style,
                     letter_spacing,
                     line_spacing,
-                    vis_y,
-                    &mut row_buf,
+                )?;
+            }
+            PaintCmd::InlineText {
+                pos,
+                clip,
+                color,
+                wrap_width,
+                font: font_id,
+                align,
+                len,
+                bytes,
+            } => {
+                let s = core::str::from_utf8(&bytes[..usize::from(len).min(12)]).unwrap_or("");
+                draw_sim_text_cmd(
+                    &mut screen,
+                    full,
+                    stride,
+                    text_source,
+                    pos,
+                    clip,
+                    u32::from(wrap_width),
+                    s,
+                    color,
+                    font_id,
+                    align,
+                    1,
+                    false,
+                    TextStyleFlags::DEFAULT,
+                    0,
+                    0,
                 )?;
             }
             PaintCmd::Icon {
@@ -1122,6 +1128,69 @@ fn reference_range_with_source<S: SimTextSource>(
     }
 
     Ok(screen)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_sim_text_cmd<S: SimTextSource>(
+    screen: &mut MemoryScreen,
+    full: Rect,
+    stride: usize,
+    text_source: &S,
+    pos: Point,
+    clip: Rect,
+    wrap_width: u32,
+    s: &str,
+    color: Rgb565,
+    font_id: FontId,
+    align: TextAlign,
+    max_lines: u8,
+    ellipsis: bool,
+    style: TextStyleFlags,
+    letter_spacing: i8,
+    line_spacing: i8,
+) -> Result<(), S::Error> {
+    let eff_clip = clip.intersect(full);
+    if eff_clip.is_empty() || wrap_width == 0 || s.is_empty() {
+        return Ok(());
+    }
+    let width_limit_clip = eff_clip.intersect(Rect::new(
+        eff_clip.x,
+        eff_clip.y,
+        ((pos.x as i64 + wrap_width as i64) - eff_clip.x as i64).clamp(0, u32::MAX as i64) as u32,
+        eff_clip.h,
+    ));
+    if width_limit_clip.is_empty() {
+        return Ok(());
+    }
+    let text_raw = color.into_storage();
+    let decor_pad = if style.underline() || style.strikethrough() {
+        4
+    } else {
+        0
+    };
+    let vis_y = Some((
+        width_limit_clip.y - pos.y - decor_pad,
+        (width_limit_clip.y + width_limit_clip.h as i32) - pos.y + decor_pad,
+    ));
+    let mut row_buf = [0u8; 256];
+    text_source.draw_text(
+        screen,
+        stride,
+        width_limit_clip,
+        pos,
+        s,
+        text_raw,
+        wrap_width,
+        max_lines,
+        ellipsis,
+        font_id,
+        align,
+        style,
+        letter_spacing,
+        line_spacing,
+        vis_y,
+        &mut row_buf,
+    )
 }
 
 fn rounded_rect_threshold(r: u32) -> i32 {

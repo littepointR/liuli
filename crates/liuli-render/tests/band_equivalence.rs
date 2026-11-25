@@ -836,3 +836,51 @@ fn vector_line_circle_arc_match_reference_across_band_heights() {
         assert_eq!(got, ref_full, "vector mismatch at band_h={bh}");
     }
 }
+
+#[test]
+fn inline_text_matches_reference_across_band_heights() {
+    let fonts = FontSet::new(
+        Lf4Font::from_bytes(SETTINGS_LF4).unwrap(),
+        Lf4Font::from_bytes(SMALL12_LF4).unwrap(),
+    );
+    let resources = SliceSceneResources::EMPTY;
+    let screen = Rect::new(0, 0, 200, 120);
+    let mut cmds = CommandList::new();
+    cmds.screen = screen;
+    cmds.root_bg = Rgb565::new(2, 4, 2);
+
+    cmds.push(
+        PaintCmd::inline_text(
+            Point::new(8, 12),
+            Rect::new(0, 0, 200, 40),
+            "ABC 123",
+            Rgb565::new(31, 63, 31),
+            120,
+            FontId::Body16,
+            TextAlign::Center,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    cmds.push(
+        PaintCmd::inline_text(
+            Point::new(10, 52),
+            Rect::new(10, 52, 80, 32),
+            "设备温度",
+            Rgb565::new(0, 63, 31),
+            80,
+            FontId::Small12,
+            TextAlign::End,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+
+    let ref_full = render_with_band_height(&cmds, &resources, &fonts, 120);
+    let bg_raw = liuli_core::geometry::rgb565_to_u16(cmds.root_bg);
+    assert!(ref_full.iter().any(|&px| px != bg_raw));
+    for bh in [1u32, 3, 8, 17] {
+        let got = render_with_band_height(&cmds, &resources, &fonts, bh);
+        assert_eq!(got, ref_full, "inline text mismatch at band_h={bh}");
+    }
+}

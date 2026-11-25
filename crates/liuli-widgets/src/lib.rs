@@ -2,6 +2,8 @@
 #![forbid(unsafe_code)]
 
 pub mod controls;
+pub mod ime;
+mod pinyin_dict;
 pub mod style;
 pub mod theme;
 pub mod tokens;
@@ -11,6 +13,11 @@ use liuli::prelude::*;
 
 pub use controls::{
     arc_knob, arc_knob_from_pointer, badge_button, paint_arc_knob, paint_ticked_slider,
+};
+pub use ime::{
+    DEFAULT_PINYIN_DICT, FixedTextEditor, ImeDict, ImeEvent, ImeState, InputMode, StaticPinyinDict,
+    paint_soft_keyboard, paint_text_box, soft_keyboard, soft_keyboard_on_pointer, text_box,
+    text_box_on_pointer, text_box_with_focus,
 };
 pub use style::{ButtonVariant, Compositor, Elevation, Material, ResolvedSurface, SurfaceSpec};
 pub use theme::{Style, Theme, ThemePreset};
@@ -700,6 +707,420 @@ mod tests {
     }
 
     #[test]
+    fn ime_fixed_editor_pinyin_t9_and_soft_keyboard_e2e() {
+        // 1. UTF-8 CJK cursor, preedit, password masking, and backspace.
+        let mut ed: FixedTextEditor<64> = FixedTextEditor::new();
+        assert!(ed.apply(TextInput::Compose("she")));
+        assert_eq!(ed.preedit(), "she");
+        assert!(ed.apply(TextInput::Commit("设备")));
+        assert_eq!(ed.text(), "设备");
+        assert_eq!(ed.preedit(), "");
+        assert!(ed.apply(TextInput::Commit("25")));
+        assert!(ed.apply(TextInput::Left));
+        assert!(ed.apply(TextInput::Backspace));
+        assert_eq!(ed.text(), "设备5");
+
+        let masked: FixedTextEditor<16> = FixedTextEditor::from_text("abc").with_password(true);
+        let mut buf = [0u8; 32];
+        let (disp, _, _, caret) = masked.format_display(&mut buf);
+        assert_eq!(disp, "***");
+        assert_eq!(caret, 3);
+
+        // 2. Pluggable StaticPinyinDict (QWERTY & T9 exact + prefix + paging).
+        let mut out = [""; 4];
+        let (n, more) = DEFAULT_PINYIN_DICT.query("she", false, 0, &mut out);
+        assert_eq!(n, 4);
+        assert!(more);
+        assert_eq!(out[0], "设");
+        assert_eq!(out[1], "设备");
+        let (n2, _) = DEFAULT_PINYIN_DICT.query("she", false, 4, &mut out);
+        assert!(n2 >= 1);
+
+        let (t9n, _) = DEFAULT_PINYIN_DICT.query("936", true, 0, &mut out);
+        assert!(t9n >= 2);
+        assert_eq!(out[0], "温");
+        assert!(out[..t9n].contains(&"温度"));
+
+        // 3. SoftKeyboard touch flow inside Engine: Pin("she")->"设备", T9("936")->"温度", 123->"25", En->"C".
+        struct ImeTestModel {
+            editor: FixedTextEditor<128>,
+            ime: ImeState,
+            font: Lf4Font<'static>,
+            done: u16,
+        }
+        #[derive(Clone, Copy)]
+        enum ImeTestMsg {
+            Text(InputOwned),
+            Kb(PointerEvent),
+            Box(PointerEvent),
+        }
+        #[derive(Clone, Copy)]
+        enum InputOwned {
+            Compose(&'static str),
+            Commit(&'static str),
+            Cancel,
+            Backspace,
+            Left,
+            Right,
+        }
+        struct ImeTestApp;
+        impl App for ImeTestApp {
+            type Model = ImeTestModel;
+            type Msg = ImeTestMsg;
+
+            fn update(model: &mut Self::Model, msg: Self::Msg, _now: InstantMs) -> Change {
+                match msg {
+                    ImeTestMsg::Text(i) => {
+                        let ti = match i {
+                            InputOwned::Compose(s) => TextInput::Compose(s),
+                            InputOwned::Commit(s) => TextInput::Commit(s),
+                            InputOwned::Cancel => TextInput::Cancel,
+                            InputOwned::Backspace => TextInput::Backspace,
+                            InputOwned::Left => TextInput::Left,
+                            InputOwned::Right => TextInput::Right,
+                        };
+                        if model.editor.apply(ti) {
+                            Change::View
+                        } else {
+                            Change::Unchanged
+                        }
+                    }
+                    ImeTestMsg::Kb(ev) => {
+                        let r0 = model.ime.revision();
+                        let e0 = model.editor.revision();
+                        let ime_ev =
+                            soft_keyboard_on_pointer(&mut model.ime, &DEFAULT_PINYIN_DICT, ev);
+                        let done = matches!(ime_ev, ImeEvent::Done);
+                        model.editor.apply_ime(ime_ev);
+                        if done {
+                            model.done += 1;
+                        }
+                        if model.ime.revision() != r0 || model.editor.revision() != e0 {
+                            Change::View
+                        } else {
+                            Change::Unchanged
+                        }
+                    }
+                    ImeTestMsg::Box(ev) => {
+                        if text_box_on_pointer(&mut model.editor, ev, Some(&model.font)) {
+                            Change::View
+                        } else {
+                            Change::Unchanged
+                        }
+                    }
+                }
+            }
+
+            fn view(model: &Self::Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildError> {
+                let theme = Theme::DARK;
+                out.root(
+                    Key(1),
+                    NodeProps {
+                        bg: Some(theme.background),
+                        width: Length::Fill(1),
+                        height: Length::Fill(1),
+                        padding: EdgeInsets::all(6),
+                        ..NodeProps::new()
+                    },
+                    |ui| {
+                        ui.column(
+                            Key(2),
+                            NodeProps {
+                                width: Length::Fill(1),
+                                height: Length::Fill(1),
+                                gap: 6,
+                                ..NodeProps::new()
+                            },
+                            |col| {
+                                text_box(col, Key(10), &model.editor, "Input...", theme)?;
+                                soft_keyboard(col, Key(20), &model.ime, 136, theme)
+                            },
+                        )
+                    },
+                )
+            }
+
+            fn accepts_text(_model: &Self::Model, key: Key) -> bool {
+                key == Key(10)
+            }
+
+            fn on_text(_model: &Self::Model, _: Key, input: TextInput<'_>) -> Option<Self::Msg> {
+                Some(ImeTestMsg::Text(match input {
+                    TextInput::Compose(_) => InputOwned::Compose(""),
+                    TextInput::Commit(_) => InputOwned::Commit(""),
+                    TextInput::Cancel => InputOwned::Cancel,
+                    TextInput::Backspace => InputOwned::Backspace,
+                    TextInput::Left => InputOwned::Left,
+                    TextInput::Right => InputOwned::Right,
+                }))
+            }
+
+            fn on_pointer(_model: &Self::Model, key: Key, ev: PointerEvent) -> Option<Self::Msg> {
+                match key.0 {
+                    10 => Some(ImeTestMsg::Box(ev)),
+                    20 => Some(ImeTestMsg::Kb(ev)),
+                    _ => None,
+                }
+            }
+
+            fn paint_model(
+                model: &Self::Model,
+                key: Key,
+                props: &StoredProps,
+                canvas: &mut WidgetCanvas<'_>,
+            ) -> Result<(), BuildError> {
+                match key.0 {
+                    10 => paint_text_box(
+                        &model.editor,
+                        "Input...",
+                        props,
+                        canvas.state,
+                        Some(&model.font),
+                        canvas,
+                    ),
+                    20 => paint_soft_keyboard(
+                        &model.ime,
+                        &DEFAULT_PINYIN_DICT,
+                        props,
+                        Theme::DARK,
+                        canvas,
+                    ),
+                    _ => Ok(()),
+                }
+            }
+
+            fn on_action(_model: &Self::Model, _event: UiAction) -> Option<Self::Msg> {
+                None
+            }
+        }
+
+        let font = Lf4Font::from_bytes(TEST_LF4).unwrap();
+        let small = Lf4Font::from_bytes(include_bytes!(
+            "../../../apps/liuli-settings/assets/small12.lf4"
+        ))
+        .unwrap();
+        let screen_rect = Rect::new(0, 0, 320, 240);
+        let mut storage = Storage::new();
+        let mut engine = Engine::<ImeTestApp>::new_in_place_with_fonts(
+            &mut storage,
+            ImeTestModel {
+                editor: FixedTextEditor::new(),
+                ime: ImeState::new(InputMode::ZhPinyin),
+                font,
+                done: 0,
+            },
+            FontSet::new(font, small),
+            screen_rect,
+            InstantMs(0),
+        )
+        .unwrap();
+
+        let mut mem = MemoryScreen::new(320, 240);
+        let mut scratch = [0u16; 320 * 8];
+        engine.present_sync(&mut mem, &mut scratch).unwrap();
+
+        let mut ts = 10u64;
+        let mut tap_lbl = |eng: &mut Engine<'_, '_, ImeTestApp>, lbl: &str| {
+            let kb = eng.active_tree().node_by_key(Key(20)).unwrap().layout_rect;
+            let kr = eng
+                .model()
+                .ime
+                .key_rect(&DEFAULT_PINYIN_DICT, kb.size(), lbl)
+                .unwrap_or_else(|| {
+                    panic!("missing key '{lbl}' in mode {:?}", eng.model().ime.mode())
+                });
+            let pt = Point::new(kb.x + kr.x + kr.w as i32 / 2, kb.y + kr.y + kr.h as i32 / 2);
+            eng.dispatch(
+                RawInput::PointerDown {
+                    id: PointerId(1),
+                    pos: pt,
+                },
+                InstantMs(ts),
+                false,
+            )
+            .unwrap();
+            ts += 10;
+            eng.dispatch(
+                RawInput::PointerUp {
+                    id: PointerId(1),
+                    pos: pt,
+                },
+                InstantMs(ts),
+                false,
+            )
+            .unwrap();
+            ts += 10;
+        };
+
+        tap_lbl(&mut engine, "s");
+        tap_lbl(&mut engine, "h");
+        tap_lbl(&mut engine, "e");
+        assert_eq!(engine.model().editor.preedit(), "she");
+        tap_lbl(&mut engine, "设备");
+        assert_eq!(engine.model().editor.text(), "设备");
+
+        tap_lbl(&mut engine, "T9");
+        tap_lbl(&mut engine, "9 WXYZ");
+        tap_lbl(&mut engine, "3 DEF");
+        tap_lbl(&mut engine, "6 MNO");
+        tap_lbl(&mut engine, "温度");
+        assert_eq!(engine.model().editor.text(), "设备温度");
+
+        tap_lbl(&mut engine, "123");
+        tap_lbl(&mut engine, "2");
+        tap_lbl(&mut engine, "5");
+        assert_eq!(engine.model().editor.text(), "设备温度25");
+
+        tap_lbl(&mut engine, "Pin");
+        tap_lbl(&mut engine, "En");
+        tap_lbl(&mut engine, "Cap");
+        tap_lbl(&mut engine, "C");
+        tap_lbl(&mut engine, "OK");
+        assert_eq!(engine.model().editor.text(), "设备温度25C");
+        assert_eq!(engine.model().done, 1);
+
+        engine.present_sync(&mut mem, &mut scratch).unwrap();
+    }
+
+    #[test]
+    fn ime_dict_covers_all_mandarin_syllables_two_letter_prefixes_and_continuous_input() {
+        extern crate alloc;
+        use crate::pinyin_dict::{DEFAULT_PHRASES, DEFAULT_SYLLABLES};
+        use alloc::collections::BTreeSet;
+        use alloc::vec::Vec;
+
+        assert!(DEFAULT_SYLLABLES.len() >= 409);
+
+        // Every syllable must yield >= 1 exact match.
+        let mut syl_chars = BTreeSet::new();
+        for &(syl, chars) in DEFAULT_SYLLABLES {
+            let mut out = [""; 4];
+            let (n, _, consumed) = DEFAULT_PINYIN_DICT.query_with_prefix(syl, false, 0, &mut out);
+            assert!(n >= 1, "syllable '{syl}' returned 0 candidates");
+            assert_eq!(consumed, syl.len());
+            for ch in chars.chars() {
+                syl_chars.insert(ch);
+            }
+
+            // Every 2-letter prefix of every syllable must yield >= 1 candidate.
+            if syl.len() >= 2 {
+                let p2 = &syl[..2];
+                let (pn, _) = DEFAULT_PINYIN_DICT.query(p2, false, 0, &mut out);
+                assert!(
+                    pn >= 1,
+                    "2-letter prefix '{p2}' (from '{syl}') returned 0 candidates"
+                );
+            }
+        }
+
+        // Verify common 2-letter queries explicitly.
+        for q in [
+            "ni", "wo", "ha", "de", "bu", "ma", "ce", "be", "ge", "ke", "he", "le", "fa", "ba",
+            "bi", "pi", "po", "zi", "si", "zh", "ch", "sh", "lv", "nv",
+        ] {
+            let mut out = [""; 4];
+            let (n, _) = DEFAULT_PINYIN_DICT.query(q, false, 0, &mut out);
+            assert!(n >= 1, "query '{q}' returned 0 candidates");
+        }
+
+        let mut out = [""; 4];
+        let (n, _) = DEFAULT_PINYIN_DICT.query("ni", false, 0, &mut out);
+        assert!(out[..n].contains(&"你"));
+        assert!(out[..n].contains(&"你好"));
+
+        let (n, _) = DEFAULT_PINYIN_DICT.query("she", false, 0, &mut out);
+        assert!(out[..n].contains(&"设"));
+        assert!(out[..n].contains(&"设备"));
+
+        // Every phrase char must exist in DEFAULT_SYLLABLES and fit within InlineText (<= 12 bytes).
+        for &(py, phrase) in DEFAULT_PHRASES {
+            assert!(
+                phrase.len() <= 12,
+                "phrase '{phrase}' ({py}) exceeds 12 UTF-8 bytes"
+            );
+            for ch in phrase.chars() {
+                assert!(
+                    syl_chars.contains(&ch),
+                    "phrase '{phrase}' ({py}) char '{ch}' missing from DEFAULT_SYLLABLES"
+                );
+            }
+        }
+
+        // Phrase initials (简拼).
+        for (q, expected) in [
+            ("nh", "你好"),
+            ("sb", "设备"),
+            ("zg", "中国"),
+            ("wd", "温度"),
+        ] {
+            let mut out = [""; 4];
+            let (n, _) = DEFAULT_PINYIN_DICT.query(q, false, 0, &mut out);
+            assert!(
+                out[..n].contains(&expected),
+                "initials query '{q}' did not contain '{expected}', got {:?}",
+                &out[..n]
+            );
+        }
+
+        // Continuous multi-syllable splitting ("nishi" -> "你" + "shi" -> "你是").
+        let (cn, _, consumed) = DEFAULT_PINYIN_DICT.query_with_prefix("nishi", false, 0, &mut out);
+        assert_eq!(consumed, 2);
+        assert!(cn >= 1);
+        assert_eq!(out[0], "你");
+
+        let mut ime = ImeState::new(InputMode::ZhPinyin);
+        let mut editor = FixedTextEditor::<64>::new();
+        for letter in ["n", "i", "s", "h", "i"] {
+            let ev = ime.press_char(letter);
+            editor.apply_ime(ev);
+        }
+        assert_eq!(editor.preedit(), "nishi");
+        let ev1 = ime.select_candidate(0, &DEFAULT_PINYIN_DICT);
+        assert_eq!(
+            ev1,
+            ImeEvent::CommitCompose {
+                commit: "你",
+                compose: "shi",
+            }
+        );
+        editor.apply_ime(ev1);
+        assert_eq!(editor.text(), "你");
+        assert_eq!(editor.preedit(), "shi");
+
+        let ev2 = ime.select_candidate(0, &DEFAULT_PINYIN_DICT);
+        assert_eq!(ev2, ImeEvent::Text(TextInput::Commit("是")));
+        editor.apply_ime(ev2);
+        assert_eq!(editor.text(), "你是");
+        assert_eq!(editor.preedit(), "");
+
+        // Pagination past 16 candidates must produce zero duplicates.
+        for q in ["s", "y", "shi"] {
+            let mut seen = BTreeSet::new();
+            let mut all = Vec::new();
+            let mut offset = 0usize;
+            loop {
+                let mut page = [""; 4];
+                let (n, more) = DEFAULT_PINYIN_DICT.query(q, false, offset, &mut page);
+                for &cand in &page[..n] {
+                    assert!(
+                        seen.insert(cand),
+                        "duplicate candidate '{cand}' in pagination for query '{q}' at offset {offset}"
+                    );
+                    all.push(cand);
+                }
+                if !more {
+                    break;
+                }
+                offset += 4;
+            }
+            assert!(
+                all.len() > 16 || q == "shi",
+                "expected deep pagination for '{q}'"
+            );
+        }
+    }
+
+    #[test]
     fn all_preset_color_schemes_meet_readability_contrast() {
         for preset in ThemePreset::ALL {
             for dark in [false, true] {
@@ -835,7 +1256,7 @@ mod tests {
         })
         .unwrap();
         vb.finish().unwrap();
-        assert_eq!(draft.nodes[2].props.focus_ring().rounded, true);
+        assert!(draft.nodes[2].props.focus_ring().rounded);
         assert_eq!(draft.nodes[4].props.bg(), None);
         assert_eq!(draft.nodes[4].props.fg, theme.accent);
     }
