@@ -725,6 +725,16 @@ pub struct LayoutExtra {
     pub offset_x: i16,
     pub offset_y: i16,
     pub custom_rev: u32,
+    /// Minimum width constraint in px (`0` = unconstrained).
+    pub min_w: u16,
+    /// Maximum width constraint in px (`0` = unconstrained).
+    pub max_w: u16,
+    /// Minimum height constraint in px (`0` = unconstrained).
+    pub min_h: u16,
+    /// Maximum height constraint in px (`0` = unconstrained).
+    pub max_h: u16,
+    /// Outer margin around the node's layout box.
+    pub margin: crate::view::EdgeInsets,
 }
 
 impl LayoutExtra {
@@ -732,7 +742,29 @@ impl LayoutExtra {
         offset_x: 0,
         offset_y: 0,
         custom_rev: 0,
+        min_w: 0,
+        max_w: 0,
+        min_h: 0,
+        max_h: 0,
+        margin: crate::view::EdgeInsets::ZERO,
     };
+
+    #[inline]
+    pub const fn has_bounds(&self) -> bool {
+        self.min_w != 0 || self.max_w != 0 || self.min_h != 0 || self.max_h != 0
+    }
+
+    #[inline]
+    pub const fn is_zero(&self) -> bool {
+        self.offset_x == 0
+            && self.offset_y == 0
+            && self.custom_rev == 0
+            && !self.has_bounds()
+            && self.margin.top == 0
+            && self.margin.right == 0
+            && self.margin.bottom == 0
+            && self.margin.left == 0
+    }
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
@@ -757,52 +789,81 @@ impl LayoutExtras {
         LayoutExtra::ZERO
     }
 
+    fn upsert(&mut self, key: Key, f: impl FnOnce(&mut LayoutExtra)) -> Result<(), BuildError> {
+        let used = usize::from(self.len);
+        for item in &mut self.items[..used] {
+            if item.0 == key {
+                f(&mut item.1);
+                return Ok(());
+            }
+        }
+        let mut next = LayoutExtra::ZERO;
+        f(&mut next);
+        if next.is_zero() {
+            return Ok(());
+        }
+        let entry = self.items.get_mut(used).ok_or(BuildError::Effects)?;
+        *entry = (key, next);
+        self.len += 1;
+        Ok(())
+    }
+
     pub fn set_offset(&mut self, key: Key, dx: i16, dy: i16) -> Result<(), BuildError> {
         if dx == 0 && dy == 0 {
             return Ok(());
         }
-        let used = usize::from(self.len);
-        for item in &mut self.items[..used] {
-            if item.0 == key {
-                item.1.offset_x = dx;
-                item.1.offset_y = dy;
-                return Ok(());
-            }
-        }
-        let entry = self.items.get_mut(used).ok_or(BuildError::Effects)?;
-        *entry = (
-            key,
-            LayoutExtra {
-                offset_x: dx,
-                offset_y: dy,
-                custom_rev: 0,
-            },
-        );
-        self.len += 1;
-        Ok(())
+        self.upsert(key, |e| {
+            e.offset_x = dx;
+            e.offset_y = dy;
+        })
     }
 
     pub fn set_custom_rev(&mut self, key: Key, rev: u32) -> Result<(), BuildError> {
         if rev == 0 {
             return Ok(());
         }
-        let used = usize::from(self.len);
-        for item in &mut self.items[..used] {
-            if item.0 == key {
-                item.1.custom_rev = rev;
-                return Ok(());
-            }
+        self.upsert(key, |e| {
+            e.custom_rev = rev;
+        })
+    }
+
+    pub fn set_constraints(
+        &mut self,
+        key: Key,
+        min_w: Option<u16>,
+        max_w: Option<u16>,
+        min_h: Option<u16>,
+        max_h: Option<u16>,
+    ) -> Result<(), BuildError> {
+        if min_w.is_none() && max_w.is_none() && min_h.is_none() && max_h.is_none() {
+            return Ok(());
         }
-        let entry = self.items.get_mut(used).ok_or(BuildError::Effects)?;
-        *entry = (
-            key,
-            LayoutExtra {
-                offset_x: 0,
-                offset_y: 0,
-                custom_rev: rev,
-            },
-        );
-        self.len += 1;
-        Ok(())
+        self.upsert(key, |e| {
+            if let Some(v) = min_w {
+                e.min_w = v;
+            }
+            if let Some(v) = max_w {
+                e.max_w = v;
+            }
+            if let Some(v) = min_h {
+                e.min_h = v;
+            }
+            if let Some(v) = max_h {
+                e.max_h = v;
+            }
+        })
+    }
+
+    pub fn set_margin(
+        &mut self,
+        key: Key,
+        margin: crate::view::EdgeInsets,
+    ) -> Result<(), BuildError> {
+        if margin == crate::view::EdgeInsets::ZERO {
+            return Ok(());
+        }
+        self.upsert(key, |e| {
+            e.margin = margin;
+        })
     }
 }

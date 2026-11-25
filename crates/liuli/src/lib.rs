@@ -42,12 +42,12 @@ pub mod prelude {
     };
     pub use liuli_core::time::{
         AnimProp, ClockTracker, Easing, InstantMs, MAX_REPEAT_STEPS_PER_ADVANCE, MonotonicClock32,
-        NextWakeup, REPEAT_DELAY_MS, REPEAT_PERIOD_MS, Tween,
+        NextWakeup, REPEAT_DELAY_MS, REPEAT_PERIOD_MS, ScrollPhysics, Tween,
     };
     pub use liuli_core::view::StoredProps;
     pub use liuli_core::view::{
-        Align, App, Change, Children, EdgeInsets, FocusRingStyle, FontId, IconKind, Key, Length,
-        NodeKind, NodeProps, PageRestore, PaintMode, PressFeedback, SampleRing, StackAlign,
+        Align, App, Change, Children, EdgeInsets, FocusRingStyle, FontId, IconKind, Justify, Key,
+        Length, NodeKind, NodeProps, PageRestore, PaintMode, PressFeedback, SampleRing, StackAlign,
         SubpixelOrder, TextAlign, TextGamma, TextRef, TextStyleFlags, ViewBuilder, WrapMode,
     };
     pub use liuli_render::{

@@ -133,6 +133,27 @@ impl<'a, 'b, 'p> ThemedUi<'a, 'b, 'p> {
     }
 
     #[inline]
+    pub fn scroll_x<F>(&mut self, key: Key, props: NodeProps, f: F) -> Result<(), BuildError>
+    where
+        F: FnOnce(&mut ThemedUi<'a, '_, '_>) -> Result<(), BuildError>,
+    {
+        let t = self.theme;
+        self.ui
+            .scroll_x(key, props, |c| f(&mut ThemedUi::new(c, t)))?;
+        self.apply_part_if_needed(key, t.parts.scrollbar, None)
+    }
+
+    #[inline]
+    pub fn grid<F>(&mut self, key: Key, cols: u8, props: NodeProps, f: F) -> Result<(), BuildError>
+    where
+        F: FnOnce(&mut ThemedUi<'a, '_, '_>) -> Result<(), BuildError>,
+    {
+        let t = self.theme;
+        self.ui
+            .grid(key, cols, props, |c| f(&mut ThemedUi::new(c, t)))
+    }
+
+    #[inline]
     pub fn wrap<F>(&mut self, key: Key, props: NodeProps, f: F) -> Result<(), BuildError>
     where
         F: FnOnce(&mut ThemedUi<'a, '_, '_>) -> Result<(), BuildError>,

@@ -1218,47 +1218,58 @@ pub fn emit_commands_with_override(
                 continue;
             }
 
-            // Stage post-children: ScrollY scrollbar & focus ring, then pop frame
+            // Stage post-children: ScrollY/ScrollX scrollbar & focus ring, then pop frame
             let clip = node.clip_rect;
             let rect = node.layout_rect;
 
-            if node.kind == NodeKind::ScrollY
-                && node.content_height > rect.h
-                && rect.h > 8
-                && rect.w > 6
-            {
+            if matches!(node.kind, NodeKind::ScrollY | NodeKind::ScrollX) {
                 let sb_part = tree.part_styles.get(node.key);
                 if !sb_part.scrollbar_hidden() {
-                    let sb_w = sb_part
-                        .knob_size()
-                        .map(|(w, _)| u32::from(w.max(1)))
-                        .unwrap_or(3)
-                        .min(rect.w.saturating_sub(2));
-                    let track_h = rect.h.saturating_sub(4);
-                    let min_thumb = 12.min(track_h) as u64;
-                    let thumb_h = ((track_h as u64 * rect.h as u64) / node.content_height as u64)
-                        .clamp(min_thumb, track_h as u64) as u32;
-                    let max_scroll = node.content_height.saturating_sub(rect.h).max(1);
-                    let thumb_travel = track_h.saturating_sub(thumb_h);
-                    let thumb_y = rect.y
-                        + 2
-                        + ((thumb_travel as u64 * (node.scroll_y.max(0) as u64))
-                            / max_scroll as u64) as i32;
-                    let thumb_rect = Rect::new(
-                        rect.x + rect.w as i32 - (sb_w as i32 + 1),
-                        thumb_y,
-                        sb_w,
-                        thumb_h,
-                    );
-                    if !thumb_rect.intersect(clip).is_empty() {
-                        out.push(PaintCmd::FillRoundedRect {
-                            rect: thumb_rect,
-                            clip,
-                            color: sb_part.knob_color().unwrap_or(node.props.accent),
-                            radius: sb_part.knob_radius().unwrap_or(1),
-                            border_color: None,
-                            border_width: 0,
-                        })?;
+                    let is_x = node.kind == NodeKind::ScrollX;
+                    let vp_extent = if is_x { rect.w } else { rect.h };
+                    let cross_extent = if is_x { rect.h } else { rect.w };
+                    if node.content_height > vp_extent && vp_extent > 8 && cross_extent > 6 {
+                        let sb_thick = sb_part
+                            .knob_size()
+                            .map(|(w, _)| u32::from(w.max(1)))
+                            .unwrap_or(3)
+                            .min(cross_extent.saturating_sub(2));
+                        let track_len = vp_extent.saturating_sub(4);
+                        let min_thumb = 12.min(track_len) as u64;
+                        let thumb_len = ((track_len as u64 * vp_extent as u64)
+                            / node.content_height as u64)
+                            .clamp(min_thumb, track_len as u64)
+                            as u32;
+                        let max_scroll = node.content_height.saturating_sub(vp_extent).max(1);
+                        let thumb_travel = track_len.saturating_sub(thumb_len);
+                        let thumb_pos = 2
+                            + ((thumb_travel as u64 * (node.scroll_y.max(0) as u64))
+                                / max_scroll as u64) as i32;
+                        let thumb_rect = if is_x {
+                            Rect::new(
+                                rect.x + thumb_pos,
+                                rect.y + rect.h as i32 - (sb_thick as i32 + 1),
+                                thumb_len,
+                                sb_thick,
+                            )
+                        } else {
+                            Rect::new(
+                                rect.x + rect.w as i32 - (sb_thick as i32 + 1),
+                                rect.y + thumb_pos,
+                                sb_thick,
+                                thumb_len,
+                            )
+                        };
+                        if !thumb_rect.intersect(clip).is_empty() {
+                            out.push(PaintCmd::FillRoundedRect {
+                                rect: thumb_rect,
+                                clip,
+                                color: sb_part.knob_color().unwrap_or(node.props.accent),
+                                radius: sb_part.knob_radius().unwrap_or(1),
+                                border_color: None,
+                                border_width: 0,
+                            })?;
+                        }
                     }
                 }
             }
@@ -1378,6 +1389,8 @@ fn paint_builtin_node(ctx: BuiltinPaintCtx<'_>, out: &mut CommandList) -> Result
         | NodeKind::Column
         | NodeKind::Stack
         | NodeKind::ScrollY
+        | NodeKind::ScrollX
+        | NodeKind::Grid
         | NodeKind::Wrap
         | NodeKind::CustomContainer => {
             emit_box_bg_and_border(node, ctx.part, rect, clip, ctx.root_bg, out)

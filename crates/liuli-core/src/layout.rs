@@ -3,8 +3,8 @@ use crate::geometry::{Point, Rect, Size};
 use crate::node::{RetainedNode, RetainedTree, TextCache};
 use crate::part_style::IconPosition;
 use crate::view::{
-    Align, BUTTON_ICON_GAP, BUTTON_ICON_SIZE, FontId, IconKind, Length, NodeKind, SlotLink,
-    StackAlign, TextAlign,
+    Align, BUTTON_ICON_GAP, BUTTON_ICON_SIZE, FontId, IconKind, Justify, Length, NodeKind,
+    SlotLink, StackAlign, TextAlign,
 };
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
@@ -409,6 +409,15 @@ fn measure_iterative(
 
         if stack[top].phase == 0 {
             measured_count += 1;
+            let n_key = tree.nodes[slot as usize].key;
+            let extra = tree.layout_extras.get(n_key);
+            let c = if extra.is_zero() {
+                c
+            } else {
+                let adj = apply_extra_to_constraints(c, extra);
+                stack[top].constraints = adj;
+                adj
+            };
             if !n_kind.is_container() {
                 let sz = measure_leaf(tree, slot, c, measurer);
                 tree.nodes[slot as usize].measured_size = sz;
@@ -452,6 +461,8 @@ fn measure_iterative(
                 let h = resolve_axis_size(height_prop, pad_h, c.max_h);
                 if n_kind == NodeKind::ScrollY {
                     tree.nodes[slot as usize].content_height = pad_h;
+                } else if n_kind == NodeKind::ScrollX {
+                    tree.nodes[slot as usize].content_height = pad_w;
                 }
                 tree.nodes[slot as usize].measured_size = c.clamp_size(Size::new(w, h));
                 sp -= 1;
@@ -532,13 +543,37 @@ fn measure_iterative(
                         sp += 1;
                     }
                 }
-                NodeKind::ScrollY => {
+                NodeKind::ScrollY | NodeKind::ScrollX => {
                     if let Some(first) = first_visible_child(tree, first_child) {
                         stack[top].phase = 2;
                         stack[top].active_child =
                             SlotLink::from_slot_u16(first).unwrap_or(SlotLink::NONE);
-                        let ch_c =
-                            child_constraints_scroll(inner_max_w, &tree.nodes[first as usize]);
+                        let ch_c = child_constraints_scroll_axis(
+                            n_kind == NodeKind::ScrollX,
+                            inner_max_w,
+                            inner_max_h,
+                            &tree.nodes[first as usize],
+                        );
+                        stack[sp] = MeasureFrame {
+                            slot: first,
+                            constraints: ch_c,
+                            ..MeasureFrame::EMPTY
+                        };
+                        sp += 1;
+                    }
+                }
+                NodeKind::Grid => {
+                    if let Some(first) = first_visible_child(tree, first_child) {
+                        let cols = u32::from(tree.nodes[slot as usize].props.grid_cols().max(1));
+                        let cell_w = grid_cell_width(inner_max_w, u32::from(gap), cols);
+                        stack[top].phase = 2;
+                        stack[top].active_child =
+                            SlotLink::from_slot_u16(first).unwrap_or(SlotLink::NONE);
+                        let ch_c = child_constraints_grid(
+                            cell_w,
+                            inner_max_h,
+                            &tree.nodes[first as usize],
+                        );
                         stack[sp] = MeasureFrame {
                             slot: first,
                             constraints: ch_c,
@@ -576,7 +611,7 @@ fn measure_iterative(
                 sp -= 1;
                 continue;
             };
-            let prev_sz = tree.nodes[prev as usize].measured_size;
+            let prev_sz = child_outer_size(tree, prev);
             if n_kind == NodeKind::Row {
                 stack[top].non_fill_used = stack[top].non_fill_used.saturating_add(prev_sz.width);
                 stack[top].cross_max = stack[top].cross_max.max(prev_sz.height);
@@ -675,7 +710,7 @@ fn measure_iterative(
                 sp -= 1;
                 continue;
             };
-            let prev_sz = tree.nodes[prev as usize].measured_size;
+            let prev_sz = child_outer_size(tree, prev);
 
             match n_kind {
                 NodeKind::Row | NodeKind::Column => {
@@ -729,16 +764,25 @@ fn measure_iterative(
                         sp -= 1;
                     }
                 }
-                NodeKind::ScrollY => {
-                    stack[top].non_fill_used =
-                        stack[top].non_fill_used.saturating_add(prev_sz.height);
-                    stack[top].cross_max = stack[top].cross_max.max(prev_sz.width);
+                NodeKind::ScrollY | NodeKind::ScrollX => {
+                    let is_x = n_kind == NodeKind::ScrollX;
+                    if is_x {
+                        stack[top].non_fill_used =
+                            stack[top].non_fill_used.saturating_add(prev_sz.width);
+                        stack[top].cross_max = stack[top].cross_max.max(prev_sz.height);
+                    } else {
+                        stack[top].non_fill_used =
+                            stack[top].non_fill_used.saturating_add(prev_sz.height);
+                        stack[top].cross_max = stack[top].cross_max.max(prev_sz.width);
+                    }
                     let next = next_visible_sibling(tree, prev);
                     if let Some(nx) = next {
                         stack[top].active_child =
                             SlotLink::from_slot_u16(nx).unwrap_or(SlotLink::NONE);
-                        let ch_c = child_constraints_scroll(
+                        let ch_c = child_constraints_scroll_axis(
+                            is_x,
                             stack[top].inner_max_w,
+                            stack[top].inner_max_h,
                             &tree.nodes[nx as usize],
                         );
                         stack[sp] = MeasureFrame {
@@ -755,22 +799,60 @@ fn measure_iterative(
                         let height_prop = tree.nodes[slot as usize].props.height;
                         let gap_total =
                             (stack[top].vis_count.saturating_sub(1) as u32) * (gap as u32);
-                        let content_h = stack[top]
+                        let content_main = stack[top]
                             .non_fill_used
                             .saturating_add(gap_total)
-                            .saturating_add(pad_h);
-                        let w = resolve_axis_size(
-                            width_prop,
-                            stack[top].cross_max.saturating_add(pad_w),
-                            c.max_w,
-                        );
-                        let h = resolve_axis_size(height_prop, content_h, c.max_h);
+                            .saturating_add(if is_x { pad_w } else { pad_h });
+                        let (w, h) = if is_x {
+                            (
+                                resolve_axis_size(width_prop, content_main, c.max_w),
+                                resolve_axis_size(
+                                    height_prop,
+                                    stack[top].cross_max.saturating_add(pad_h),
+                                    c.max_h,
+                                ),
+                            )
+                        } else {
+                            (
+                                resolve_axis_size(
+                                    width_prop,
+                                    stack[top].cross_max.saturating_add(pad_w),
+                                    c.max_w,
+                                ),
+                                resolve_axis_size(height_prop, content_main, c.max_h),
+                            )
+                        };
                         let clamped = c.clamp_size(Size::new(w, h));
-                        tree.nodes[slot as usize].content_height = content_h;
+                        tree.nodes[slot as usize].content_height = content_main;
                         tree.nodes[slot as usize].measured_size = clamped;
-                        let max_scroll = content_h.saturating_sub(clamped.height) as i32;
+                        let vp = if is_x { clamped.width } else { clamped.height };
+                        let max_scroll = content_main.saturating_sub(vp) as i32;
                         tree.nodes[slot as usize].scroll_y =
                             tree.nodes[slot as usize].scroll_y.clamp(0, max_scroll);
+                        sp -= 1;
+                    }
+                }
+                NodeKind::Grid => {
+                    let next = next_visible_sibling(tree, prev);
+                    if let Some(nx) = next {
+                        let gap = u32::from(tree.nodes[slot as usize].props.gap);
+                        let cols = u32::from(tree.nodes[slot as usize].props.grid_cols().max(1));
+                        let cell_w = grid_cell_width(stack[top].inner_max_w, gap, cols);
+                        stack[top].active_child =
+                            SlotLink::from_slot_u16(nx).unwrap_or(SlotLink::NONE);
+                        let ch_c = child_constraints_grid(
+                            cell_w,
+                            stack[top].inner_max_h,
+                            &tree.nodes[nx as usize],
+                        );
+                        stack[sp] = MeasureFrame {
+                            slot: nx,
+                            constraints: ch_c,
+                            ..MeasureFrame::EMPTY
+                        };
+                        sp += 1;
+                    } else {
+                        finalize_grid_measure(tree, slot, c, stack[top].inner_max_w);
                         sp -= 1;
                     }
                 }
@@ -927,17 +1009,101 @@ fn child_constraints_flex(
     }
 }
 
-fn child_constraints_scroll(inner_max_w: u32, child: &crate::node::RetainedNode) -> Constraints {
+fn apply_extra_to_constraints(
+    c: Constraints,
+    extra: crate::part_style::LayoutExtra,
+) -> Constraints {
+    let mh = extra.margin.horizontal();
+    let mv = extra.margin.vertical();
+    let mut min_w = c.min_w.saturating_sub(mh);
+    let mut max_w = c.max_w.saturating_sub(mh);
+    let mut min_h = c.min_h.saturating_sub(mv);
+    let mut max_h = c.max_h.saturating_sub(mv);
+    if extra.max_w > 0 {
+        max_w = max_w.min(u32::from(extra.max_w));
+    }
+    if extra.max_h > 0 {
+        max_h = max_h.min(u32::from(extra.max_h));
+    }
+    if extra.min_w > 0 {
+        min_w = min_w.max(u32::from(extra.min_w)).min(max_w);
+    } else {
+        min_w = min_w.min(max_w);
+    }
+    if extra.min_h > 0 {
+        min_h = min_h.max(u32::from(extra.min_h)).min(max_h);
+    } else {
+        min_h = min_h.min(max_h);
+    }
+    Constraints {
+        min_w,
+        max_w,
+        min_h,
+        max_h,
+    }
+}
+
+#[inline]
+fn child_outer_size(tree: &RetainedTree, slot: u16) -> Size {
+    let n = &tree.nodes[slot as usize];
+    let m = tree.layout_extras.get(n.key).margin;
+    Size::new(
+        n.measured_size.width.saturating_add(m.horizontal()),
+        n.measured_size.height.saturating_add(m.vertical()),
+    )
+}
+
+#[inline]
+fn grid_cell_width(inner_max_w: u32, gap: u32, cols: u32) -> u32 {
+    let c = cols.max(1);
+    let gap_total = gap.saturating_mul(c.saturating_sub(1));
+    inner_max_w.saturating_sub(gap_total) / c
+}
+
+fn child_constraints_scroll_axis(
+    horizontal: bool,
+    inner_max_w: u32,
+    inner_max_h: u32,
+    child: &crate::node::RetainedNode,
+) -> Constraints {
+    if horizontal {
+        let stretch = matches!(child.props.height, Length::Fill(_));
+        Constraints {
+            min_w: 0,
+            max_w: u32::MAX / 4,
+            min_h: if stretch { inner_max_h } else { 0 },
+            max_h: inner_max_h,
+        }
+    } else {
+        let min_w = if matches!(child.props.width, Length::Fill(_)) {
+            inner_max_w
+        } else {
+            0
+        };
+        Constraints {
+            min_w,
+            max_w: inner_max_w,
+            min_h: 0,
+            max_h: u32::MAX / 4,
+        }
+    }
+}
+
+fn child_constraints_grid(
+    cell_w: u32,
+    inner_max_h: u32,
+    child: &crate::node::RetainedNode,
+) -> Constraints {
     let min_w = if matches!(child.props.width, Length::Fill(_)) {
-        inner_max_w
+        cell_w
     } else {
         0
     };
     Constraints {
         min_w,
-        max_w: inner_max_w,
+        max_w: cell_w,
         min_h: 0,
-        max_h: u32::MAX / 4,
+        max_h: inner_max_h,
     }
 }
 
@@ -983,7 +1149,7 @@ fn finalize_wrap_measure(tree: &mut RetainedTree, slot: u16, c: Constraints, inn
     let mut total_h = 0u32;
     let mut ch = first_visible_child(tree, n.first_child);
     while let Some(idx) = ch {
-        let cs = tree.nodes[idx as usize].measured_size;
+        let cs = child_outer_size(tree, idx);
         if row_w > 0 && row_w.saturating_add(gap_h).saturating_add(cs.width) > inner_max_w {
             max_row_w = max_row_w.max(row_w);
             total_h = total_h.saturating_add(row_h).saturating_add(row_gap);
@@ -1002,6 +1168,63 @@ fn finalize_wrap_measure(tree: &mut RetainedTree, slot: u16, c: Constraints, inn
     max_row_w = max_row_w.max(row_w);
     total_h = total_h.saturating_add(row_h);
     let w = resolve_axis_size(width_prop, max_row_w.saturating_add(pad_w), c.max_w);
+    let h = resolve_axis_size(height_prop, total_h.saturating_add(pad_h), c.max_h);
+    tree.nodes[slot as usize].measured_size = c.clamp_size(Size::new(w, h));
+}
+
+#[inline(never)]
+fn finalize_grid_measure(tree: &mut RetainedTree, slot: u16, c: Constraints, inner_max_w: u32) {
+    let n = &tree.nodes[slot as usize];
+    let cols = usize::from(n.props.grid_cols().max(1));
+    let col_gap = u32::from(n.props.gap);
+    let row_gap = if n.props.line_spacing > 0 {
+        n.props.line_spacing as u32
+    } else {
+        col_gap
+    };
+    let pad_w = n.props.padding.horizontal();
+    let pad_h = n.props.padding.vertical();
+    let width_prop = n.props.width;
+    let height_prop = n.props.height;
+    let cell_w = grid_cell_width(inner_max_w, col_gap, cols as u32);
+
+    let mut col = 0usize;
+    let mut vis_count = 0usize;
+    let mut row_h = 0u32;
+    let mut total_h = 0u32;
+    let mut rows = 0u32;
+    let mut ch = first_visible_child(tree, n.first_child);
+    while let Some(idx) = ch {
+        let cs = child_outer_size(tree, idx);
+        if col == 0 {
+            if rows > 0 {
+                total_h = total_h.saturating_add(row_gap);
+            }
+            rows += 1;
+            row_h = 0;
+        }
+        row_h = row_h.max(cs.height);
+        col += 1;
+        vis_count += 1;
+        if col == cols {
+            total_h = total_h.saturating_add(row_h);
+            row_h = 0;
+            col = 0;
+        }
+        ch = next_visible_sibling(tree, idx);
+    }
+    if col > 0 {
+        total_h = total_h.saturating_add(row_h);
+    }
+    let used_cols = vis_count.min(cols) as u32;
+    let content_w = if used_cols == 0 {
+        0
+    } else {
+        used_cols
+            .saturating_mul(cell_w)
+            .saturating_add(col_gap.saturating_mul(used_cols.saturating_sub(1)))
+    };
+    let w = resolve_axis_size(width_prop, content_w.saturating_add(pad_w), c.max_w);
     let h = resolve_axis_size(height_prop, total_h.saturating_add(pad_h), c.max_h);
     tree.nodes[slot as usize].measured_size = c.clamp_size(Size::new(w, h));
 }
@@ -1191,6 +1414,11 @@ struct ArrangeDepthFrame {
     remaining: u32,
     w_total: u32,
     rem_left: u32,
+    extra_gap: u16,
+    extra_gap_rem: u16,
+    grid_cols: u8,
+    grid_col: u8,
+    grid_row_h: u16,
 }
 
 impl ArrangeDepthFrame {
@@ -1205,6 +1433,11 @@ impl ArrangeDepthFrame {
         remaining: 0,
         w_total: 1,
         rem_left: 0,
+        extra_gap: 0,
+        extra_gap_rem: 0,
+        grid_cols: 1,
+        grid_col: 0,
+        grid_row_h: 0,
     };
 }
 
@@ -1252,7 +1485,7 @@ fn arrange_iterative(
             let rect = frame.rect_or_content;
             let own_clip = match kind {
                 NodeKind::Root | NodeKind::Modal => screen,
-                NodeKind::ScrollY => frame.clip.intersect(rect),
+                NodeKind::ScrollY | NodeKind::ScrollX => frame.clip.intersect(rect),
                 _ => frame.clip,
             };
 
@@ -1299,7 +1532,7 @@ fn arrange_iterative(
 
             let child_clip = match kind {
                 NodeKind::Root | NodeKind::Modal => screen,
-                NodeKind::ScrollY => own_clip,
+                NodeKind::ScrollY | NodeKind::ScrollX => own_clip,
                 _ => own_clip.intersect(rect.inset(
                     border_width,
                     border_width,
@@ -1328,10 +1561,11 @@ fn arrange_iterative(
                         if let Some(w) = is_main_fill(kind, cn.props.width, cn.props.height) {
                             total_weight += w as u32;
                         } else {
+                            let outer = child_outer_size(tree, ch_idx);
                             non_fill_sum = non_fill_sum.saturating_add(if is_row {
-                                cn.measured_size.width
+                                outer.width
                             } else {
-                                cn.measured_size.height
+                                outer.height
                             });
                         }
                         ch = next_visible_sibling(tree, ch_idx);
@@ -1347,7 +1581,100 @@ fn arrange_iterative(
                     } else {
                         0
                     };
+                    let (justify_cursor, extra_gap, extra_gap_rem) =
+                        if total_weight == 0 && vis_count > 0 && remaining > 0 {
+                            let cnt = vis_count as u32;
+                            match tree.nodes[slot as usize].props.justify() {
+                                Justify::Start => (0i64, 0u16, 0u16),
+                                Justify::Center => ((remaining / 2) as i64, 0, 0),
+                                Justify::End => (remaining as i64, 0, 0),
+                                Justify::SpaceBetween => {
+                                    if cnt > 1 {
+                                        let gaps = cnt - 1;
+                                        (
+                                            0,
+                                            (remaining / gaps).min(u16::MAX as u32) as u16,
+                                            (remaining % gaps).min(u16::MAX as u32) as u16,
+                                        )
+                                    } else {
+                                        (0, 0, 0)
+                                    }
+                                }
+                                Justify::SpaceAround => {
+                                    let unit = remaining / cnt;
+                                    let rem = remaining % cnt;
+                                    (
+                                        (unit / 2) as i64,
+                                        unit.min(u16::MAX as u32) as u16,
+                                        rem.min(u16::MAX as u32) as u16,
+                                    )
+                                }
+                                Justify::SpaceEvenly => {
+                                    let gaps = cnt + 1;
+                                    let unit = remaining / gaps;
+                                    let rem = remaining % gaps;
+                                    let lead = u32::from(rem > 0);
+                                    (
+                                        (unit + lead) as i64,
+                                        unit.min(u16::MAX as u32) as u16,
+                                        rem.saturating_sub(lead).min(u16::MAX as u32) as u16,
+                                    )
+                                }
+                            }
+                        } else {
+                            (0i64, 0u16, 0u16)
+                        };
 
+                    stack[top].phase = 1;
+                    stack[top].next_child = first_visible_child(tree, first_child)
+                        .and_then(SlotLink::from_slot_u16)
+                        .unwrap_or(SlotLink::NONE);
+                    stack[top].rect_or_content = content;
+                    stack[top].clip = child_clip;
+                    stack[top].cursor = justify_cursor;
+                    stack[top].remaining = remaining;
+                    stack[top].w_total = w_total;
+                    stack[top].rem_left = rem_left;
+                    stack[top].extra_gap = extra_gap;
+                    stack[top].extra_gap_rem = extra_gap_rem;
+                }
+                NodeKind::ScrollY | NodeKind::ScrollX => {
+                    let is_x = kind == NodeKind::ScrollX;
+                    let mut total_main = if is_x {
+                        padding.horizontal()
+                    } else {
+                        padding.vertical()
+                    };
+                    let mut vis_count = 0u16;
+                    let mut ch = first_visible_child(tree, first_child);
+                    while let Some(ch_idx) = ch {
+                        vis_count += 1;
+                        let outer = child_outer_size(tree, ch_idx);
+                        total_main = total_main.saturating_add(if is_x {
+                            outer.width
+                        } else {
+                            outer.height
+                        });
+                        ch = next_visible_sibling(tree, ch_idx);
+                    }
+                    total_main = total_main
+                        .saturating_add((vis_count.saturating_sub(1) as u32) * (gap as u32));
+                    tree.nodes[slot as usize].content_height = total_main;
+                    let vp_extent = if is_x { rect.w } else { rect.h };
+                    let max_scroll = total_main.saturating_sub(vp_extent) as i32;
+                    let scroll_off = tree.nodes[slot as usize].scroll_y.clamp(0, max_scroll);
+                    tree.nodes[slot as usize].scroll_y = scroll_off;
+
+                    stack[top].phase = 1;
+                    stack[top].next_child = first_visible_child(tree, first_child)
+                        .and_then(SlotLink::from_slot_u16)
+                        .unwrap_or(SlotLink::NONE);
+                    stack[top].rect_or_content = content;
+                    stack[top].clip = child_clip;
+                    let base_origin = if is_x { content.x } else { content.y };
+                    stack[top].cursor = (base_origin as i64) - (scroll_off as i64);
+                }
+                NodeKind::Grid => {
                     stack[top].phase = 1;
                     stack[top].next_child = first_visible_child(tree, first_child)
                         .and_then(SlotLink::from_slot_u16)
@@ -1355,34 +1682,9 @@ fn arrange_iterative(
                     stack[top].rect_or_content = content;
                     stack[top].clip = child_clip;
                     stack[top].cursor = 0;
-                    stack[top].remaining = remaining;
-                    stack[top].w_total = w_total;
-                    stack[top].rem_left = rem_left;
-                }
-                NodeKind::ScrollY => {
-                    let mut total_h = padding.vertical();
-                    let mut vis_count = 0u16;
-                    let mut ch = first_visible_child(tree, first_child);
-                    while let Some(ch_idx) = ch {
-                        vis_count += 1;
-                        total_h = total_h
-                            .saturating_add(tree.nodes[ch_idx as usize].measured_size.height);
-                        ch = next_visible_sibling(tree, ch_idx);
-                    }
-                    total_h =
-                        total_h.saturating_add((vis_count.saturating_sub(1) as u32) * (gap as u32));
-                    tree.nodes[slot as usize].content_height = total_h;
-                    let max_scroll = total_h.saturating_sub(rect.h) as i32;
-                    let scroll_y = tree.nodes[slot as usize].scroll_y.clamp(0, max_scroll);
-                    tree.nodes[slot as usize].scroll_y = scroll_y;
-
-                    stack[top].phase = 1;
-                    stack[top].next_child = first_visible_child(tree, first_child)
-                        .and_then(SlotLink::from_slot_u16)
-                        .unwrap_or(SlotLink::NONE);
-                    stack[top].rect_or_content = content;
-                    stack[top].clip = child_clip;
-                    stack[top].cursor = (content.y as i64) - (scroll_y as i64);
+                    stack[top].grid_cols = tree.nodes[slot as usize].props.grid_cols().max(1);
+                    stack[top].grid_col = 0;
+                    stack[top].grid_row_h = 0;
                 }
                 NodeKind::Root | NodeKind::Stack | NodeKind::Modal => {
                     stack[top].phase = 1;
@@ -1436,21 +1738,32 @@ fn arrange_iterative(
                 NodeKind::Row | NodeKind::Column => {
                     let is_row = kind == NodeKind::Row;
                     let cn = &tree.nodes[ch as usize];
-                    let main_sz = if let Some(w) =
-                        is_main_fill(kind, cn.props.width, cn.props.height)
-                    {
-                        let extra = if stack[top].rem_left > 0 {
-                            stack[top].rem_left -= 1;
-                            1
-                        } else {
-                            0
-                        };
-                        ((frame.remaining as u64 * w as u64) / frame.w_total as u64) as u32 + extra
-                    } else if is_row {
-                        cn.measured_size.width
+                    let m = tree.layout_extras.get(cn.key).margin;
+                    let (m_main, m_cross) = if is_row {
+                        (m.horizontal(), m.vertical())
                     } else {
-                        cn.measured_size.height
+                        (m.vertical(), m.horizontal())
                     };
+                    let (box_main, outer_main) =
+                        if let Some(w) = is_main_fill(kind, cn.props.width, cn.props.height) {
+                            let extra = if stack[top].rem_left > 0 {
+                                stack[top].rem_left -= 1;
+                                1
+                            } else {
+                                0
+                            };
+                            let total_main =
+                                ((frame.remaining as u64 * w as u64) / frame.w_total as u64) as u32
+                                    + extra;
+                            (total_main.saturating_sub(m_main), total_main)
+                        } else {
+                            let bm = if is_row {
+                                cn.measured_size.width
+                            } else {
+                                cn.measured_size.height
+                            };
+                            (bm, bm.saturating_add(m_main))
+                        };
 
                     let avail_cross = if is_row { content.h } else { content.w };
                     let child_cross_len = if is_row {
@@ -1458,71 +1771,179 @@ fn arrange_iterative(
                     } else {
                         cn.props.width
                     };
-                    let mut cross_sz = if is_row {
-                        cn.measured_size.height
+                    let (box_cross, outer_cross) = if align_cross == Align::Stretch
+                        || matches!(child_cross_len, Length::Fill(_))
+                    {
+                        (avail_cross.saturating_sub(m_cross), avail_cross)
                     } else {
-                        cn.measured_size.width
+                        let bc = if is_row {
+                            cn.measured_size.height
+                        } else {
+                            cn.measured_size.width
+                        };
+                        (bc, bc.saturating_add(m_cross))
                     };
-                    if align_cross == Align::Stretch || matches!(child_cross_len, Length::Fill(_)) {
-                        cross_sz = avail_cross;
-                    }
                     let cross_off: i64 = match align_cross {
                         Align::Start | Align::Stretch => 0,
-                        Align::Center => ((avail_cross as i64) - (cross_sz as i64)) / 2,
-                        Align::End => (avail_cross as i64) - (cross_sz as i64),
+                        Align::Center => ((avail_cross as i64) - (outer_cross as i64)) / 2,
+                        Align::End => (avail_cross as i64) - (outer_cross as i64),
                     }
                     .max(0);
 
                     let rect = if is_row {
                         Rect::new(
-                            (content.x as i64 + frame.cursor)
+                            (content.x as i64 + frame.cursor + i64::from(m.left))
                                 .clamp(i32::MIN as i64, i32::MAX as i64)
                                 as i32,
-                            (content.y as i64 + cross_off).clamp(i32::MIN as i64, i32::MAX as i64)
+                            (content.y as i64 + cross_off + i64::from(m.top))
+                                .clamp(i32::MIN as i64, i32::MAX as i64)
                                 as i32,
-                            main_sz,
-                            cross_sz,
+                            box_main,
+                            box_cross,
                         )
                     } else {
                         Rect::new(
-                            (content.x as i64 + cross_off).clamp(i32::MIN as i64, i32::MAX as i64)
-                                as i32,
-                            (content.y as i64 + frame.cursor)
+                            (content.x as i64 + cross_off + i64::from(m.left))
                                 .clamp(i32::MIN as i64, i32::MAX as i64)
                                 as i32,
-                            cross_sz,
-                            main_sz,
+                            (content.y as i64 + frame.cursor + i64::from(m.top))
+                                .clamp(i32::MIN as i64, i32::MAX as i64)
+                                as i32,
+                            box_cross,
+                            box_main,
                         )
                     };
-                    stack[top].cursor += main_sz as i64 + gap;
+                    let mut step_extra = u32::from(frame.extra_gap);
+                    if stack[top].extra_gap_rem > 0 {
+                        stack[top].extra_gap_rem -= 1;
+                        step_extra += 1;
+                    }
+                    stack[top].cursor += outer_main as i64 + gap + step_extra as i64;
                     rect
                 }
                 NodeKind::ScrollY => {
                     let cn = &tree.nodes[ch as usize];
-                    let cw = if matches!(cn.props.width, Length::Fill(_)) {
+                    let m = tree.layout_extras.get(cn.key).margin;
+                    let outer_w = if matches!(cn.props.width, Length::Fill(_)) {
                         content.w
                     } else {
-                        cn.measured_size.width.min(content.w)
+                        cn.measured_size
+                            .width
+                            .saturating_add(m.horizontal())
+                            .min(content.w)
                     };
+                    let cw = outer_w.saturating_sub(m.horizontal());
                     let ch_h = cn.measured_size.height;
                     let cx = match align_cross {
-                        Align::Center => content.x + ((content.w.saturating_sub(cw)) / 2) as i32,
-                        Align::End => content.x + content.w.saturating_sub(cw) as i32,
+                        Align::Center => {
+                            content.x + ((content.w.saturating_sub(outer_w)) / 2) as i32
+                        }
+                        Align::End => content.x + content.w.saturating_sub(outer_w) as i32,
                         _ => content.x,
                     };
                     let rect = Rect::new(
-                        cx,
-                        frame.cursor.clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+                        cx.saturating_add(i32::from(m.left)),
+                        (frame.cursor + i64::from(m.top)).clamp(i32::MIN as i64, i32::MAX as i64)
+                            as i32,
                         cw,
                         ch_h,
                     );
-                    stack[top].cursor += ch_h as i64 + gap;
+                    stack[top].cursor += ch_h as i64 + m.vertical() as i64 + gap;
+                    rect
+                }
+                NodeKind::ScrollX => {
+                    let cn = &tree.nodes[ch as usize];
+                    let m = tree.layout_extras.get(cn.key).margin;
+                    let outer_h = if align_cross == Align::Stretch
+                        || matches!(cn.props.height, Length::Fill(_))
+                    {
+                        content.h
+                    } else {
+                        cn.measured_size
+                            .height
+                            .saturating_add(m.vertical())
+                            .min(content.h)
+                    };
+                    let ch_h = outer_h.saturating_sub(m.vertical());
+                    let cw = cn.measured_size.width;
+                    let cy = match align_cross {
+                        Align::Center => {
+                            content.y + ((content.h.saturating_sub(outer_h)) / 2) as i32
+                        }
+                        Align::End => content.y + content.h.saturating_sub(outer_h) as i32,
+                        _ => content.y,
+                    };
+                    let rect = Rect::new(
+                        (frame.cursor + i64::from(m.left)).clamp(i32::MIN as i64, i32::MAX as i64)
+                            as i32,
+                        cy.saturating_add(i32::from(m.top)),
+                        cw,
+                        ch_h,
+                    );
+                    stack[top].cursor += cw as i64 + m.horizontal() as i64 + gap;
+                    rect
+                }
+                NodeKind::Grid => {
+                    let cn = &tree.nodes[ch as usize];
+                    let m = tree.layout_extras.get(cn.key).margin;
+                    let cols = u32::from(frame.grid_cols.max(1));
+                    let col = u32::from(frame.grid_col);
+                    let col_gap = gap.max(0) as u32;
+                    let row_gap = if tree.nodes[slot as usize].props.line_spacing > 0 {
+                        tree.nodes[slot as usize].props.line_spacing as i64
+                    } else {
+                        col_gap as i64
+                    };
+                    let avail = content.w.saturating_sub(col_gap.saturating_mul(cols - 1));
+                    let base_w = avail / cols;
+                    let rem = avail % cols;
+                    let track_w = base_w + u32::from(col < rem);
+                    let col_x = content
+                        .x
+                        .saturating_add((col * (base_w + col_gap) + col.min(rem)) as i32);
+
+                    let avail_box_w = track_w.saturating_sub(m.horizontal());
+                    let cw = if align_cross == Align::Stretch
+                        || matches!(cn.props.width, Length::Fill(_))
+                    {
+                        avail_box_w
+                    } else {
+                        cn.measured_size.width.min(avail_box_w)
+                    };
+                    let align_x = match align_cross {
+                        Align::Center => (avail_box_w.saturating_sub(cw) / 2) as i32,
+                        Align::End => avail_box_w.saturating_sub(cw) as i32,
+                        _ => 0,
+                    };
+                    let ch_h = cn.measured_size.height;
+                    let rect = Rect::new(
+                        col_x
+                            .saturating_add(i32::from(m.left))
+                            .saturating_add(align_x),
+                        (content.y as i64 + frame.cursor + i64::from(m.top))
+                            .clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+                        cw,
+                        ch_h,
+                    );
+                    let outer_h = ch_h.saturating_add(m.vertical());
+                    let next_row_h = u32::from(frame.grid_row_h).max(outer_h);
+                    if col + 1 >= cols {
+                        stack[top].cursor += next_row_h as i64 + row_gap;
+                        stack[top].grid_col = 0;
+                        stack[top].grid_row_h = 0;
+                    } else {
+                        stack[top].grid_col += 1;
+                        stack[top].grid_row_h = next_row_h.min(u32::from(u16::MAX)) as u16;
+                    }
                     rect
                 }
                 NodeKind::Wrap => {
                     let cn = &tree.nodes[ch as usize];
+                    let m = tree.layout_extras.get(cn.key).margin;
                     let cw = cn.measured_size.width;
                     let ch_h = cn.measured_size.height;
+                    let outer_w = cw.saturating_add(m.horizontal());
+                    let outer_h = ch_h.saturating_add(m.vertical());
                     let gap_h = gap.max(0) as u32;
                     let row_gap = if tree.nodes[slot as usize].props.line_spacing > 0 {
                         tree.nodes[slot as usize].props.line_spacing as i64
@@ -1532,47 +1953,59 @@ fn arrange_iterative(
                     let mut rx = frame.remaining;
                     let mut ry = frame.cursor;
                     let mut rh = frame.w_total;
-                    if rx > 0 && rx.saturating_add(gap_h).saturating_add(cw) > content.w {
+                    if rx > 0 && rx.saturating_add(gap_h).saturating_add(outer_w) > content.w {
                         ry += rh as i64 + row_gap;
                         rx = 0;
                         rh = 0;
                     }
                     let x_off = if rx > 0 { rx.saturating_add(gap_h) } else { 0 };
                     let rect = Rect::new(
-                        content.x.saturating_add(x_off as i32),
-                        (content.y as i64 + ry).clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+                        content
+                            .x
+                            .saturating_add(x_off as i32)
+                            .saturating_add(i32::from(m.left)),
+                        (content.y as i64 + ry + i64::from(m.top))
+                            .clamp(i32::MIN as i64, i32::MAX as i64) as i32,
                         cw,
                         ch_h,
                     );
-                    stack[top].remaining = x_off.saturating_add(cw);
+                    stack[top].remaining = x_off.saturating_add(outer_w);
                     stack[top].cursor = ry;
-                    stack[top].w_total = rh.max(ch_h);
+                    stack[top].w_total = rh.max(outer_h);
                     rect
                 }
                 NodeKind::CustomContainer => tree.nodes[ch as usize].ink_rect,
                 _ => {
                     let cn = &tree.nodes[ch as usize];
-                    let cw = if matches!(cn.props.width, Length::Fill(_)) {
+                    let extra = tree.layout_extras.get(cn.key);
+                    let m = extra.margin;
+                    let outer_w = if matches!(cn.props.width, Length::Fill(_)) {
                         content.w
                     } else {
-                        cn.measured_size.width
+                        cn.measured_size.width.saturating_add(m.horizontal())
                     };
-                    let ch_h = if matches!(cn.props.height, Length::Fill(_)) {
+                    let outer_h = if matches!(cn.props.height, Length::Fill(_)) {
                         content.h
                     } else {
-                        cn.measured_size.height
+                        cn.measured_size.height.saturating_add(m.vertical())
                     };
-                    let extra = tree.layout_extras.get(cn.key);
+                    let cw = outer_w.saturating_sub(m.horizontal());
+                    let ch_h = outer_h.saturating_sub(m.vertical());
                     let (cx, cy) = stack_child_origin(
                         content,
-                        cw,
-                        ch_h,
+                        outer_w,
+                        outer_h,
                         frame.is_modal,
                         align_cross,
                         cn.props.stack_align(),
                         extra,
                     );
-                    Rect::new(cx, cy, cw, ch_h)
+                    Rect::new(
+                        cx.saturating_add(i32::from(m.left)),
+                        cy.saturating_add(i32::from(m.top)),
+                        cw,
+                        ch_h,
+                    )
                 }
             };
 
@@ -1598,7 +2031,10 @@ pub fn ensure_visible(tree: &mut RetainedTree, target_slot: u16, screen: Rect) -
     let mut anc = tree.nodes[target_slot as usize].parent;
     let mut scroll_slot: Option<u16> = None;
     while let Some(anc_idx) = anc.get_u16() {
-        if tree.nodes[anc_idx as usize].kind == NodeKind::ScrollY {
+        if matches!(
+            tree.nodes[anc_idx as usize].kind,
+            NodeKind::ScrollY | NodeKind::ScrollX
+        ) {
             scroll_slot = Some(anc_idx);
             break;
         }
@@ -1607,6 +2043,7 @@ pub fn ensure_visible(tree: &mut RetainedTree, target_slot: u16, screen: Rect) -
     let scroll_idx = scroll_slot?;
 
     let sv = &tree.nodes[scroll_idx as usize];
+    let is_x = sv.kind == NodeKind::ScrollX;
     let vp = sv.layout_rect.inset(
         sv.props.padding.left as u32,
         sv.props.padding.top as u32,
@@ -1616,7 +2053,13 @@ pub fn ensure_visible(tree: &mut RetainedTree, target_slot: u16, screen: Rect) -
     let target_rect = tree.nodes[target_slot as usize].ink_rect;
     let mut delta = 0i32;
 
-    if target_rect.h >= vp.h {
+    if is_x {
+        if target_rect.w >= vp.w || i64::from(target_rect.x) < i64::from(vp.x) {
+            delta = target_rect.x - vp.x;
+        } else if target_rect.right64() > vp.right64() {
+            delta = (target_rect.right64() - vp.right64()) as i32;
+        }
+    } else if target_rect.h >= vp.h {
         delta = target_rect.y - vp.y;
     } else if target_rect.top64() < vp.top64() {
         delta = (target_rect.top64() - vp.top64()) as i32;
@@ -1628,7 +2071,12 @@ pub fn ensure_visible(tree: &mut RetainedTree, target_slot: u16, screen: Rect) -
         return None;
     }
 
-    let max_scroll = sv.content_height.saturating_sub(sv.layout_rect.h) as i32;
+    let vp_extent = if is_x {
+        sv.layout_rect.w
+    } else {
+        sv.layout_rect.h
+    };
+    let max_scroll = sv.content_height.saturating_sub(vp_extent) as i32;
     let old_scroll = sv.scroll_y;
     let new_scroll = old_scroll.saturating_add(delta).clamp(0, max_scroll);
     if new_scroll == old_scroll {

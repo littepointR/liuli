@@ -242,8 +242,15 @@ pub fn reconcile_into(
             || op.line_spacing != np.line_spacing
             || op.stack_align() != np.stack_align()
             || op.paint_mode() != np.paint_mode()
+            || op.justify() != np.justify()
+            || (node.kind == NodeKind::Grid && op.grid_cols() != np.grid_cols())
             || old_extra.offset_x != new_extra.offset_x
             || old_extra.offset_y != new_extra.offset_y
+            || old_extra.min_w != new_extra.min_w
+            || old_extra.max_w != new_extra.max_w
+            || old_extra.min_h != new_extra.min_h
+            || old_extra.max_h != new_extra.max_h
+            || old_extra.margin != new_extra.margin
             || button_part_measure;
 
         let mut text_changed_measure = false;

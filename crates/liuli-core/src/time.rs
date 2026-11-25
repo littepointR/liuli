@@ -627,3 +627,261 @@ impl Default for AnimPool {
         Self::new()
     }
 }
+
+/// Fixed-point (Q8) scroll inertia, exponential friction, overscroll bounce, and snap helper.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub struct ScrollPhysics {
+    /// Current scroll offset in 1/256 px units.
+    pub offset_q8: i32,
+    /// Current velocity in 1/256 px per 16 ms step.
+    pub velocity_q8: i32,
+    /// Minimum scrollable offset in pixels.
+    pub min_offset: i32,
+    /// Maximum scrollable offset in pixels.
+    pub max_offset: i32,
+    /// Optional snap increment in pixels (`0` disables snapping).
+    pub snap_step: u16,
+    /// Maximum rubber-band overscroll distance in pixels (`0` disables bounce).
+    pub bounce_px: u16,
+    last_step_ms: Option<InstantMs>,
+    dragging: bool,
+}
+
+impl ScrollPhysics {
+    const Q_SHIFT: i32 = 8;
+    const Q_ONE: i32 = 1 << Self::Q_SHIFT;
+    const STEP_MS: u64 = 16;
+
+    pub const ZERO: Self = Self {
+        offset_q8: 0,
+        velocity_q8: 0,
+        min_offset: 0,
+        max_offset: 0,
+        snap_step: 0,
+        bounce_px: 0,
+        last_step_ms: None,
+        dragging: false,
+    };
+
+    #[inline]
+    pub const fn new(min_offset: i32, max_offset: i32) -> Self {
+        let max_clamped = if max_offset < min_offset {
+            min_offset
+        } else {
+            max_offset
+        };
+        Self {
+            min_offset,
+            max_offset: max_clamped,
+            ..Self::ZERO
+        }
+    }
+
+    #[inline]
+    pub const fn with_bounce(mut self, bounce_px: u16) -> Self {
+        self.bounce_px = bounce_px;
+        self
+    }
+
+    #[inline]
+    pub const fn with_snap(mut self, snap_step: u16) -> Self {
+        self.snap_step = snap_step;
+        self
+    }
+
+    #[inline]
+    pub fn offset(&self) -> i32 {
+        (self.offset_q8 + (Self::Q_ONE / 2)).div_euclid(Self::Q_ONE)
+    }
+
+    #[inline]
+    pub fn set_offset(&mut self, offset_px: i32) {
+        self.offset_q8 = offset_px
+            .clamp(
+                self.min_offset.saturating_sub(i32::from(self.bounce_px)),
+                self.max_offset.saturating_add(i32::from(self.bounce_px)),
+            )
+            .saturating_mul(Self::Q_ONE);
+        self.velocity_q8 = 0;
+    }
+
+    pub fn set_bounds(&mut self, min_offset: i32, max_offset: i32) {
+        self.min_offset = min_offset;
+        self.max_offset = max_offset.max(min_offset);
+        if !self.dragging && self.velocity_q8 == 0 && !self.is_overscrolled() {
+            let clamped = self.offset().clamp(self.min_offset, self.max_offset);
+            self.offset_q8 = clamped.saturating_mul(Self::Q_ONE);
+        }
+    }
+
+    #[inline]
+    pub fn is_overscrolled(&self) -> bool {
+        let min_q8 = self.min_offset.saturating_mul(Self::Q_ONE);
+        let max_q8 = self.max_offset.saturating_mul(Self::Q_ONE);
+        self.offset_q8 < min_q8 || self.offset_q8 > max_q8
+    }
+
+    #[inline]
+    pub fn is_active(&self) -> bool {
+        !self.dragging && (self.velocity_q8 != 0 || self.is_overscrolled())
+    }
+
+    #[inline]
+    pub fn next_wakeup(&self, now: InstantMs) -> NextWakeup {
+        if !self.is_active() {
+            return NextWakeup::OnEvent;
+        }
+        match self.last_step_ms {
+            Some(prev) => {
+                let target = prev.saturating_add(Self::STEP_MS);
+                if target <= now {
+                    NextWakeup::Now
+                } else {
+                    NextWakeup::At(target)
+                }
+            }
+            None => NextWakeup::Now,
+        }
+    }
+
+    pub fn begin_drag(&mut self, now: InstantMs) {
+        self.dragging = true;
+        self.velocity_q8 = 0;
+        self.last_step_ms = Some(now);
+    }
+
+    pub fn drag_by(&mut self, delta_px: i32, now: InstantMs) -> i32 {
+        self.dragging = true;
+        let min_q8 = self.min_offset.saturating_mul(Self::Q_ONE);
+        let max_q8 = self.max_offset.saturating_mul(Self::Q_ONE);
+        let bounce_q8 = i32::from(self.bounce_px).saturating_mul(Self::Q_ONE);
+        let raw_delta_q8 = delta_px.saturating_mul(Self::Q_ONE);
+        let effective_q8 = if (self.offset_q8 <= min_q8 && raw_delta_q8 < 0)
+            || (self.offset_q8 >= max_q8 && raw_delta_q8 > 0)
+        {
+            raw_delta_q8 / 3
+        } else {
+            raw_delta_q8
+        };
+        self.offset_q8 = self.offset_q8.saturating_add(effective_q8).clamp(
+            min_q8.saturating_sub(bounce_q8),
+            max_q8.saturating_add(bounce_q8),
+        );
+        let dt_ms = self
+            .last_step_ms
+            .map(|prev| now.0.saturating_sub(prev.0))
+            .unwrap_or(Self::STEP_MS)
+            .clamp(4, 64) as i32;
+        let inst_v = (effective_q8.saturating_mul(Self::STEP_MS as i32)) / dt_ms;
+        self.velocity_q8 = (self.velocity_q8 / 2).saturating_add(inst_v / 2);
+        self.last_step_ms = Some(now);
+        self.offset()
+    }
+
+    pub fn release(&mut self, now: InstantMs) {
+        self.dragging = false;
+        self.last_step_ms = Some(now);
+    }
+
+    pub fn release_with_velocity(&mut self, velocity_px_per_sec: i32, now: InstantMs) {
+        self.dragging = false;
+        self.velocity_q8 =
+            ((i64::from(velocity_px_per_sec) * i64::from(Self::Q_ONE) * Self::STEP_MS as i64)
+                / 1000)
+                .clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+        self.last_step_ms = Some(now);
+    }
+
+    /// Advance inertia/bounce physics using wall-clock timestamp; returns `true` when offset changed.
+    pub fn advance(&mut self, now: InstantMs) -> bool {
+        if !self.is_active() {
+            return false;
+        }
+        let elapsed = self
+            .last_step_ms
+            .map(|prev| now.0.saturating_sub(prev.0))
+            .unwrap_or(Self::STEP_MS);
+        let steps = (elapsed / Self::STEP_MS).min(16);
+        if steps == 0 {
+            return false;
+        }
+        self.last_step_ms = Some(InstantMs(
+            self.last_step_ms
+                .map(|p| p.0.saturating_add(steps * Self::STEP_MS))
+                .unwrap_or(now.0),
+        ));
+        let before = self.offset();
+        for _ in 0..steps {
+            self.tick_one();
+            if !self.is_active() {
+                break;
+            }
+        }
+        self.offset() != before || !self.is_active()
+    }
+
+    /// Advance a fixed duration in milliseconds (convenience for fixed-timestep loops/tests).
+    pub fn step_ms(&mut self, dt_ms: u32) -> i32 {
+        let steps = (u64::from(dt_ms) / Self::STEP_MS).clamp(1, 32);
+        for _ in 0..steps {
+            self.tick_one();
+            if !self.is_active() {
+                break;
+            }
+        }
+        self.offset()
+    }
+
+    fn tick_one(&mut self) {
+        let min_q8 = self.min_offset.saturating_mul(Self::Q_ONE);
+        let max_q8 = self.max_offset.saturating_mul(Self::Q_ONE);
+        let bounce_q8 = i32::from(self.bounce_px).saturating_mul(Self::Q_ONE);
+
+        if self.offset_q8 < min_q8 || self.offset_q8 > max_q8 {
+            let target_q8 = self.offset_q8.clamp(min_q8, max_q8);
+            let dist = target_q8 - self.offset_q8;
+            let pull = if dist.abs() <= 64 {
+                dist
+            } else {
+                let step = dist / 4;
+                if step == 0 { dist.signum() * 64 } else { step }
+            };
+            self.offset_q8 = self.offset_q8.saturating_add(pull);
+            self.velocity_q8 = 0;
+            return;
+        }
+
+        if self.velocity_q8 != 0 {
+            self.offset_q8 = self.offset_q8.saturating_add(self.velocity_q8).clamp(
+                min_q8.saturating_sub(bounce_q8),
+                max_q8.saturating_add(bounce_q8),
+            );
+            if self.offset_q8 <= min_q8.saturating_sub(bounce_q8)
+                || self.offset_q8 >= max_q8.saturating_add(bounce_q8)
+            {
+                self.velocity_q8 = -(self.velocity_q8 / 4);
+            } else {
+                self.velocity_q8 = (i64::from(self.velocity_q8) * 235 / 256) as i32;
+            }
+
+            if self.velocity_q8.abs() < 32 && !self.is_overscrolled() {
+                self.velocity_q8 = 0;
+                if self.snap_step > 1 {
+                    let step = i32::from(self.snap_step);
+                    let cur = self.offset();
+                    let rel = cur - self.min_offset;
+                    let snapped = self.min_offset + ((rel + step / 2) / step) * step;
+                    self.offset_q8 = snapped
+                        .clamp(self.min_offset, self.max_offset)
+                        .saturating_mul(Self::Q_ONE);
+                }
+            }
+        }
+    }
+}
+
+impl Default for ScrollPhysics {
+    fn default() -> Self {
+        Self::ZERO
+    }
+}

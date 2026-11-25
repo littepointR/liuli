@@ -1838,4 +1838,373 @@ mod tests {
             Some(ANIM_SCALE)
         );
     }
+
+    fn reconcile_fresh(draft: &ViewDraft, screen: Rect) -> RetainedTree {
+        let prev = RetainedTree::new();
+        let mut next = RetainedTree::new();
+        let mut anims = AnimPool::new();
+        let mut dmg = DamageSet::new();
+        reconcile_into(
+            draft,
+            &prev,
+            &mut next,
+            screen,
+            &FixedMeasurer,
+            &mut anims,
+            None,
+            None,
+            InstantMs(0),
+            &mut dmg,
+        )
+        .unwrap();
+        next
+    }
+
+    #[test]
+    fn justify_variants_distribute_children_along_row() {
+        use crate::view::Justify;
+
+        let screen = Rect::new(0, 0, 200, 60);
+        let run = |justify: Justify| -> [i32; 3] {
+            let mut draft = ViewDraft::new();
+            {
+                let mut vb = ViewBuilder::new(&mut draft);
+                let mut row_props = NodeProps::new();
+                row_props.width = Length::Fill(1);
+                row_props.height = Length::Fill(1);
+                row_props.justify = justify;
+                vb.root(Key(1), NodeProps::new(), |ui| {
+                    ui.row(Key(2), row_props, |r| {
+                        for id in 0..3u32 {
+                            let mut p = NodeProps::new();
+                            p.width = Length::Px(30);
+                            p.height = Length::Px(20);
+                            r.label(Key(10 + id), p)?;
+                        }
+                        Ok(())
+                    })
+                })
+                .unwrap();
+                vb.finish().unwrap();
+            }
+            let tree = reconcile_fresh(&draft, screen);
+            [
+                tree.nodes[tree.find_slot_by_key(Key(10)).unwrap() as usize]
+                    .layout_rect
+                    .x,
+                tree.nodes[tree.find_slot_by_key(Key(11)).unwrap() as usize]
+                    .layout_rect
+                    .x,
+                tree.nodes[tree.find_slot_by_key(Key(12)).unwrap() as usize]
+                    .layout_rect
+                    .x,
+            ]
+        };
+
+        // Total children = 90px in 200px row => 110px free space.
+        assert_eq!(run(Justify::Start), [0, 30, 60]);
+        assert_eq!(run(Justify::Center), [55, 85, 115]);
+        assert_eq!(run(Justify::End), [110, 140, 170]);
+        assert_eq!(run(Justify::SpaceBetween), [0, 85, 170]);
+        // SpaceAround: unit = 36, rem = 2 => lead 18, gap1 36+1, gap2 36+1 => 18, 85, 152 (trailing 18)
+        assert_eq!(run(Justify::SpaceAround), [18, 85, 152]);
+        // SpaceEvenly: gaps = 4, unit = 27, rem = 2 => lead 28, gap1 28, gap2 27 => 28, 86, 143 (trailing 27)
+        assert_eq!(run(Justify::SpaceEvenly), [28, 86, 143]);
+    }
+
+    #[test]
+    fn grid_arranges_columns_and_row_heights_with_remainder_distribution() {
+        let screen = Rect::new(0, 0, 100, 120);
+        let mut draft = ViewDraft::new();
+        {
+            let mut vb = ViewBuilder::new(&mut draft);
+            let mut gprops = NodeProps::new();
+            gprops.width = Length::Fill(1);
+            gprops.height = Length::Content;
+            gprops.gap = 5;
+            gprops.line_spacing = 4;
+
+            vb.root(Key(1), NodeProps::new(), |ui| {
+                // 3 columns across 100px width, gap 5 => 2*5=10px gaps => 90px avail => 30px per col
+                ui.grid(Key(2), 3, gprops, |g| {
+                    for i in 0..5u32 {
+                        let mut p = NodeProps::new();
+                        p.width = Length::Fill(1);
+                        p.height = Length::Px(if i == 1 { 24 } else { 16 });
+                        g.label(Key(20 + i), p)?;
+                    }
+                    Ok(())
+                })
+            })
+            .unwrap();
+            vb.finish().unwrap();
+        }
+        let tree = reconcile_fresh(&draft, screen);
+
+        let r = |k: u32| tree.nodes[tree.find_slot_by_key(Key(k)).unwrap() as usize].layout_rect;
+        assert_eq!(r(20), Rect::new(0, 0, 30, 16));
+        assert_eq!(r(21), Rect::new(35, 0, 30, 24));
+        assert_eq!(r(22), Rect::new(70, 0, 30, 16));
+        // Second row advances by max row1 height (24) + row_gap (4) = 28
+        assert_eq!(r(23), Rect::new(0, 28, 30, 16));
+        assert_eq!(r(24), Rect::new(35, 28, 30, 16));
+        // Grid measured height = 24 + 4 + 16 = 44
+        assert_eq!(r(2).h, 44);
+    }
+
+    #[test]
+    fn scroll_x_validates_fill_scrolls_horizontally_and_renders_scrollbar() {
+        let screen = Rect::new(0, 0, 120, 60);
+
+        // Reject horizontal Fill width directly inside ScrollX
+        let mut bad_draft = ViewDraft::new();
+        let mut vb = ViewBuilder::new(&mut bad_draft);
+        let mut sp = NodeProps::new();
+        sp.width = Length::Fill(1);
+        let err = vb.root(Key(1), NodeProps::new(), |ui| {
+            ui.scroll_x(Key(2), sp, |sx| {
+                let mut lp = NodeProps::new();
+                lp.width = Length::Fill(1);
+                sx.label(Key(3), lp)
+            })
+        });
+        assert_eq!(err, Err(BuildError::InvalidScrollFill));
+
+        // Valid ScrollX with 3 60px buttons + gap 10 = 200px total in 120px viewport
+        let mut draft = ViewDraft::new();
+        {
+            let mut vb = ViewBuilder::new(&mut draft);
+            vb.root(Key(1), NodeProps::new(), |ui| {
+                let mut sxp = NodeProps::new();
+                sxp.width = Length::Fill(1);
+                sxp.height = Length::Fill(1);
+                sxp.gap = 10;
+                ui.scroll_x(Key(2), sxp, |sx| {
+                    for i in 0..3u32 {
+                        let mut bp = NodeProps::new();
+                        bp.width = Length::Px(60);
+                        bp.height = Length::Px(30);
+                        bp.focusable = true;
+                        bp.clickable = true;
+                        sx.button(Key(10 + i), bp)?;
+                    }
+                    Ok(())
+                })
+            })
+            .unwrap();
+            vb.finish().unwrap();
+        }
+        let mut tree = reconcile_fresh(&draft, screen);
+
+        let sx_slot = tree.find_slot_by_key(Key(2)).unwrap();
+        assert_eq!(tree.nodes[sx_slot as usize].content_height, 200);
+
+        let mut focus = FocusState::new();
+        let mut ptr = PointerState::new();
+        let mut dmg = DamageSet::new();
+        // Horizontal drag left by 50px should scroll_x forward by 50px (max scroll = 80)
+        dispatch_input(
+            &mut tree,
+            &mut focus,
+            &mut ptr,
+            RawInput::PointerDown {
+                id: PointerId(0),
+                pos: Point::new(80, 15),
+            },
+            screen,
+            &mut dmg,
+        );
+        dispatch_input(
+            &mut tree,
+            &mut focus,
+            &mut ptr,
+            RawInput::PointerMove {
+                id: PointerId(0),
+                pos: Point::new(30, 15),
+            },
+            screen,
+            &mut dmg,
+        );
+        assert_eq!(tree.nodes[sx_slot as usize].scroll_y, 50);
+
+        // Emit commands and ensure horizontal scrollbar FillRoundedRect is emitted at bottom
+        let mut cmds = crate::paint::CommandList::new();
+        let anims = AnimPool::new();
+        crate::paint::emit_commands(
+            &tree,
+            &anims,
+            crate::paint::PaintFocusInfo {
+                focused_slot: None,
+                ring_visible: false,
+                editing: false,
+            },
+            screen,
+            &mut cmds,
+        )
+        .unwrap();
+        let has_h_scrollbar = cmds.as_slice().iter().any(|c| match c {
+            crate::paint::PaintCmd::FillRoundedRect { rect, .. } => rect.y >= 54 && rect.w > rect.h,
+            _ => false,
+        });
+        assert!(has_h_scrollbar);
+
+        // Focusing first button brings scroll_x back to 0 via ensure_visible
+        let b0 = tree.find_slot_by_key(Key(10)).unwrap();
+        let _ = crate::layout::ensure_visible(&mut tree, b0, screen);
+        assert_eq!(tree.nodes[sx_slot as usize].scroll_y, 0);
+    }
+
+    #[test]
+    fn layout_extra_constraints_and_margins_affect_box_and_neighbors() {
+        let screen = Rect::new(0, 0, 200, 100);
+        let mut draft = ViewDraft::new();
+        {
+            let mut vb = ViewBuilder::new(&mut draft);
+            vb.root(Key(1), NodeProps::new(), |ui| {
+                let mut rp = NodeProps::new();
+                rp.width = Length::Fill(1);
+                rp.height = Length::Fill(1);
+                ui.row(Key(2), rp, |r| {
+                    let mut lp = NodeProps::new();
+                    lp.text = crate::view::TextRef::Static("A");
+                    r.label(Key(10), lp)?;
+                    r.set_layout_constraints(Key(10), Some(50), Some(80), Some(30), None)?;
+                    r.set_margin(
+                        Key(10),
+                        EdgeInsets {
+                            top: 4,
+                            right: 10,
+                            bottom: 4,
+                            left: 6,
+                        },
+                    )?;
+                    let mut np = NodeProps::new();
+                    np.width = Length::Px(20);
+                    np.height = Length::Px(20);
+                    r.label(Key(11), np)
+                })
+            })
+            .unwrap();
+            vb.finish().unwrap();
+        }
+        let tree = reconcile_fresh(&draft, screen);
+
+        let r10 = tree.nodes[tree.find_slot_by_key(Key(10)).unwrap() as usize].layout_rect;
+        let r11 = tree.nodes[tree.find_slot_by_key(Key(11)).unwrap() as usize].layout_rect;
+        // Key(10) clamped to min_w=50, min_h=30, offset by left margin 6 and top margin 4
+        assert_eq!(r10, Rect::new(6, 4, 50, 30));
+        // Key(11) follows after Key(10) left margin (6) + width (50) + right margin (10) = 66
+        assert_eq!(r11.x, 66);
+    }
+
+    #[test]
+    fn spatial_nav_2d_moves_and_wraps_along_axes() {
+        let screen = Rect::new(0, 0, 200, 120);
+        let mut draft = ViewDraft::new();
+        {
+            let mut vb = ViewBuilder::new(&mut draft);
+            vb.root(Key(1), NodeProps::new(), |ui| {
+                let mut gp = NodeProps::new();
+                gp.width = Length::Fill(1);
+                gp.height = Length::Fill(1);
+                ui.grid(Key(2), 2, gp, |g| {
+                    for k in 10..14u32 {
+                        let mut bp = NodeProps::new();
+                        bp.width = Length::Px(80);
+                        bp.height = Length::Px(40);
+                        bp.focusable = true;
+                        bp.clickable = true;
+                        g.button(Key(k), bp)?;
+                    }
+                    Ok(())
+                })
+            })
+            .unwrap();
+            vb.finish().unwrap();
+        }
+        let mut tree = reconcile_fresh(&draft, screen);
+
+        let mut focus = FocusState::new();
+        let mut ptr = PointerState::new();
+        let mut dmg = DamageSet::new();
+        focus.set_focused_key(Some(Key(10)));
+
+        dispatch_input(
+            &mut tree,
+            &mut focus,
+            &mut ptr,
+            RawInput::Nav(NavDir::Right),
+            screen,
+            &mut dmg,
+        );
+        assert_eq!(focus.focused_key(), Some(Key(11)));
+
+        dispatch_input(
+            &mut tree,
+            &mut focus,
+            &mut ptr,
+            RawInput::Nav(NavDir::Down),
+            screen,
+            &mut dmg,
+        );
+        assert_eq!(focus.focused_key(), Some(Key(13)));
+
+        dispatch_input(
+            &mut tree,
+            &mut focus,
+            &mut ptr,
+            RawInput::Nav(NavDir::Left),
+            screen,
+            &mut dmg,
+        );
+        assert_eq!(focus.focused_key(), Some(Key(12)));
+
+        dispatch_input(
+            &mut tree,
+            &mut focus,
+            &mut ptr,
+            RawInput::Nav(NavDir::Up),
+            screen,
+            &mut dmg,
+        );
+        assert_eq!(focus.focused_key(), Some(Key(10)));
+
+        // Wrap fallback left from top-left jumps back to top-right
+        dispatch_input(
+            &mut tree,
+            &mut focus,
+            &mut ptr,
+            RawInput::Nav(NavDir::Left),
+            screen,
+            &mut dmg,
+        );
+        assert_eq!(focus.focused_key(), Some(Key(11)));
+    }
+
+    #[test]
+    fn scroll_physics_inertia_bounce_and_snap_settle_cleanly() {
+        use crate::time::ScrollPhysics;
+
+        let mut phys = ScrollPhysics::new(0, 200).with_bounce(24).with_snap(50);
+        phys.begin_drag(InstantMs(0));
+        let off = phys.drag_by(-10, InstantMs(16));
+        // Overscroll past min=0 gets damped by 1/3 => -3 px
+        assert!((-24..0).contains(&off));
+        phys.release(InstantMs(16));
+        for step in 1..=20u64 {
+            phys.advance(InstantMs(16 + step * 16));
+        }
+        assert_eq!(phys.offset(), 0);
+        assert!(!phys.is_active());
+
+        // Forward fling settles onto a 50px snap boundary inside [0, 200]
+        phys.set_offset(10);
+        phys.release_with_velocity(600, InstantMs(500));
+        for step in 1..=60u64 {
+            phys.advance(InstantMs(500 + step * 16));
+        }
+        assert!(!phys.is_active());
+        assert!(phys.offset() > 10 && phys.offset() <= 200);
+        assert_eq!(phys.offset() % 50, 0);
+    }
 }

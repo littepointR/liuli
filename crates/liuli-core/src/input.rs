@@ -47,6 +47,10 @@ impl PointerCaptureMode {
 pub enum NavDir {
     Prev,
     Next,
+    Up,
+    Down,
+    Left,
+    Right,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]

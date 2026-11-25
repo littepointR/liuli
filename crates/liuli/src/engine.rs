@@ -629,7 +629,7 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
             let mut s_key = None;
             let mut s_y = 0i32;
             for n in &old_tree.nodes {
-                if n.occupied && n.kind == NodeKind::ScrollY {
+                if n.occupied && matches!(n.kind, NodeKind::ScrollY | NodeKind::ScrollX) {
                     s_key = Some(n.key);
                     s_y = n.scroll_y;
                     break;
@@ -714,7 +714,10 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
             let restore = A::page_restore(&self.model, new_page);
             if let Some(sk) = restore.scroll_key
                 && let Some(scroll_slot) = cand_tree.find_slot_by_key(sk)
-                && cand_tree.nodes[scroll_slot as usize].kind == NodeKind::ScrollY
+                && matches!(
+                    cand_tree.nodes[scroll_slot as usize].kind,
+                    NodeKind::ScrollY | NodeKind::ScrollX
+                )
             {
                 cand_tree.nodes[scroll_slot as usize].scroll_y = restore.scroll_y;
                 relayout_scroll_subtree(cand_tree, scroll_slot, self.screen);
@@ -939,7 +942,7 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
                 tree.nodes[idx].pressed = saved_pressed_mask.get(idx);
                 if tree.nodes[idx].scroll_y != prev_scroll {
                     tree.nodes[idx].scroll_y = prev_scroll;
-                    if tree.nodes[idx].kind == NodeKind::ScrollY {
+                    if matches!(tree.nodes[idx].kind, NodeKind::ScrollY | NodeKind::ScrollX) {
                         scroll_changed_mask.set(idx);
                     }
                 }
@@ -1200,7 +1203,7 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
             .or_else(|| {
                 cur_tree.nodes.iter().enumerate().find_map(|(index, node)| {
                     if node.occupied
-                        && node.kind == NodeKind::ScrollY
+                        && matches!(node.kind, NodeKind::ScrollY | NodeKind::ScrollX)
                         && saved_scroll_y[index] != node.scroll_y
                     {
                         A::on_scroll(&self.model, node.key, node.scroll_y)

@@ -504,6 +504,33 @@ impl PaintMode {
     }
 }
 
+/// Main-axis child distribution inside `Row` / `Column` containers when no `Length::Fill` children consume remaining space.
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Default)]
+#[repr(u8)]
+pub enum Justify {
+    #[default]
+    Start = 0,
+    Center = 1,
+    End = 2,
+    SpaceBetween = 3,
+    SpaceAround = 4,
+    SpaceEvenly = 5,
+}
+
+impl Justify {
+    #[inline]
+    pub const fn from_raw(raw: u8) -> Self {
+        match raw & 0b111 {
+            1 => Self::Center,
+            2 => Self::End,
+            3 => Self::SpaceBetween,
+            4 => Self::SpaceAround,
+            5 => Self::SpaceEvenly,
+            _ => Self::Start,
+        }
+    }
+}
+
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
 #[repr(u8)]
 pub enum NodeKind {
@@ -523,6 +550,8 @@ pub enum NodeKind {
     Custom = 12,
     Wrap = 13,
     CustomContainer = 14,
+    ScrollX = 15,
+    Grid = 16,
 }
 
 impl NodeKind {
@@ -534,9 +563,11 @@ impl NodeKind {
                 | Self::Column
                 | Self::Stack
                 | Self::ScrollY
+                | Self::ScrollX
                 | Self::Modal
                 | Self::Wrap
                 | Self::CustomContainer
+                | Self::Grid
         )
     }
 }
@@ -699,6 +730,8 @@ pub struct NodeProps {
     pub editable: bool,
     pub paint_mode: PaintMode,
     pub stack_align: StackAlign,
+    pub justify: Justify,
+    pub grid_cols: u8,
 }
 
 impl Default for NodeProps {
@@ -760,6 +793,8 @@ impl NodeProps {
             editable: false,
             paint_mode: PaintMode::Default,
             stack_align: StackAlign::TopStart,
+            justify: Justify::Start,
+            grid_cols: 0,
         }
     }
 }
@@ -770,6 +805,8 @@ const EXT_PAINT_MODE_SHIFT: u16 = 3;
 const EXT_PAINT_MODE_MASK: u16 = 0b11 << EXT_PAINT_MODE_SHIFT;
 const EXT_STACK_ALIGN_SHIFT: u16 = 5;
 const EXT_STACK_ALIGN_MASK: u16 = 0x0F << EXT_STACK_ALIGN_SHIFT;
+const EXT_JUSTIFY_SHIFT: u16 = 9;
+const EXT_JUSTIFY_MASK: u16 = 0b111 << EXT_JUSTIFY_SHIFT;
 
 const FLAG_HAS_BG: u16 = 1 << 0;
 const FLAG_HAS_BORDER: u16 = 1 << 1;
@@ -928,6 +965,7 @@ impl StoredProps {
         }
         ext_flags |= ((p.paint_mode as u16) << EXT_PAINT_MODE_SHIFT) & EXT_PAINT_MODE_MASK;
         ext_flags |= ((p.stack_align as u16) << EXT_STACK_ALIGN_SHIFT) & EXT_STACK_ALIGN_MASK;
+        ext_flags |= ((p.justify as u16) << EXT_JUSTIFY_SHIFT) & EXT_JUSTIFY_MASK;
         Self {
             width: p.width,
             height: p.height,
@@ -956,7 +994,11 @@ impl StoredProps {
             max: p.max,
             step: p.step,
             icon: p.icon,
-            series: p.series,
+            series: if p.grid_cols > 0 {
+                p.grid_cols
+            } else {
+                p.series
+            },
             theme_id: p.theme_id,
             flags,
             ext_flags,
@@ -1126,6 +1168,16 @@ impl StoredProps {
         StackAlign::from_raw(
             ((self.ext_flags & EXT_STACK_ALIGN_MASK) >> EXT_STACK_ALIGN_SHIFT) as u8,
         )
+    }
+
+    #[inline]
+    pub const fn justify(&self) -> Justify {
+        Justify::from_raw(((self.ext_flags & EXT_JUSTIFY_MASK) >> EXT_JUSTIFY_SHIFT) as u8)
+    }
+
+    #[inline]
+    pub const fn grid_cols(&self) -> u8 {
+        self.series
     }
 }
 
@@ -1505,6 +1557,33 @@ impl<'a, 'b> Children<'a, 'b> {
             .map_err(|err| self.builder.fail(err))
     }
 
+    /// Constrain minimum/maximum dimensions for an already declared node.
+    pub fn set_layout_constraints(
+        &mut self,
+        key: Key,
+        min_w: Option<u16>,
+        max_w: Option<u16>,
+        min_h: Option<u16>,
+        max_h: Option<u16>,
+    ) -> Result<(), BuildError> {
+        self.ensure_key(key)?;
+        self.builder
+            .draft
+            .layout_extras
+            .set_constraints(key, min_w, max_w, min_h, max_h)
+            .map_err(|err| self.builder.fail(err))
+    }
+
+    /// Attach outer margins around an already declared node.
+    pub fn set_margin(&mut self, key: Key, margin: EdgeInsets) -> Result<(), BuildError> {
+        self.ensure_key(key)?;
+        self.builder
+            .draft
+            .layout_extras
+            .set_margin(key, margin)
+            .map_err(|err| self.builder.fail(err))
+    }
+
     #[inline]
     pub fn wrap<F>(&mut self, key: Key, props: NodeProps, f: F) -> Result<(), BuildError>
     where
@@ -1560,6 +1639,30 @@ impl<'a, 'b> Children<'a, 'b> {
     {
         self.builder
             .scoped_container(key, NodeKind::ScrollY, props, f)
+    }
+
+    #[inline]
+    pub fn scroll_x<F>(&mut self, key: Key, props: NodeProps, f: F) -> Result<(), BuildError>
+    where
+        F: FnOnce(&mut Children<'a, '_>) -> Result<(), BuildError>,
+    {
+        self.builder
+            .scoped_container(key, NodeKind::ScrollX, props, f)
+    }
+
+    #[inline]
+    pub fn grid<F>(
+        &mut self,
+        key: Key,
+        cols: u8,
+        mut props: NodeProps,
+        f: F,
+    ) -> Result<(), BuildError>
+    where
+        F: FnOnce(&mut Children<'a, '_>) -> Result<(), BuildError>,
+    {
+        props.grid_cols = cols.max(1);
+        self.builder.scoped_container(key, NodeKind::Grid, props, f)
     }
 
     #[inline]
@@ -1871,11 +1974,13 @@ impl<'a> ViewBuilder<'a> {
 
         let parent_link = if self.depth > 0 {
             let p_link = self.stack[self.depth - 1];
-            if let Some(p_idx) = p_link.get()
-                && self.draft.nodes[p_idx].kind == NodeKind::ScrollY
-                && matches!(props.height, Length::Fill(_))
-            {
-                return Err(self.fail(BuildError::InvalidScrollFill));
+            if let Some(p_idx) = p_link.get() {
+                let pk = self.draft.nodes[p_idx].kind;
+                if (pk == NodeKind::ScrollY && matches!(props.height, Length::Fill(_)))
+                    || (pk == NodeKind::ScrollX && matches!(props.width, Length::Fill(_)))
+                {
+                    return Err(self.fail(BuildError::InvalidScrollFill));
+                }
             }
             p_link
         } else {
