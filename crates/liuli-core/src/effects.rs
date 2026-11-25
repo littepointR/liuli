@@ -212,7 +212,7 @@ impl Projection {
         }
         let sin = i64::from(crate::bitmap::sine(self.0)) / 16;
         let fit = (3 * 1024 - sin.abs()) as u64;
-        (((1u64 << 34) + fit - 1) / fit) as u32
+        (1u64 << 34).div_ceil(fit) as u32
     }
 
     /// Map a screen pixel centre back to the plane. Input and rendering share the rounding.
@@ -569,7 +569,7 @@ mod tests {
                 return None;
             }
             Some((
-                (i64::from(rect.x) + ((u + Q) * w >> 11)) as i32,
+                (i64::from(rect.x) + (((u + Q) * w) >> 11)) as i32,
                 (3 * Q + u * sin / Q) as i32,
                 fit as i32,
             ))

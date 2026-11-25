@@ -73,7 +73,7 @@ impl<'a, B> SpiWindowTarget<'a, B> {
 
     #[inline]
     fn stage_words(&self) -> usize {
-        (self.chunk.len() / 2).min(MAX_STAGE_WORDS).max(1)
+        (self.chunk.len() / 2).clamp(1, MAX_STAGE_WORDS)
     }
 
     fn write_word_slice(&mut self, words: &[u16]) -> Result<(), B::Error>

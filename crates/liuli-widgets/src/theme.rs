@@ -586,7 +586,7 @@ impl Theme {
         let default_border =
             level
                 .and_then(|l| l.border_override)
-                .unwrap_or_else(|| match spec.elevation {
+                .unwrap_or(match spec.elevation {
                     Elevation::Floating if self.effects.elevation_tone => self.colors.border_strong,
                     _ => self.border,
                 });

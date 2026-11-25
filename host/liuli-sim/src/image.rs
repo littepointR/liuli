@@ -193,7 +193,7 @@ pub fn decode_png_rgb8(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     }
     let cmf = idat[0] as u16;
     let flg = idat[1] as u16;
-    if (cmf * 256 + flg) % 31 != 0 || (idat[0] & 0x0F) != 8 {
+    if !(cmf * 256 + flg).is_multiple_of(31) || (idat[0] & 0x0F) != 8 {
         return Err("invalid zlib header".into());
     }
 
@@ -296,7 +296,7 @@ mod tests {
 
         // 320x240 payload = 230,640 raw scanline bytes => 4 zlib stored blocks (> 65,535 B)
         let mut big = vec![0u8; 320 * 240 * 3];
-        for (i, chunk) in big.chunks_exact_mut(3).enumerate() {
+        for (i, chunk) in big.as_chunks_mut::<3>().0.iter_mut().enumerate() {
             chunk[0] = (i % 251) as u8;
             chunk[1] = ((i / 3) % 241) as u8;
             chunk[2] = ((i / 7) % 233) as u8;

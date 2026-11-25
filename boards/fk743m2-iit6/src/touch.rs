@@ -148,7 +148,7 @@ impl Touch {
             if count > 0 {
                 access(self.addr, 0x814f, data)?;
             }
-            for b in data.chunks_exact(8) {
+            for b in data.as_chunks::<8>().0 {
                 let id = usize::from(b[0] & 15);
                 let x = u16::from_le_bytes([b[1], b[2]]);
                 let y = u16::from_le_bytes([b[3], b[4]]);

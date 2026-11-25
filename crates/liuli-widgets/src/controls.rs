@@ -5,6 +5,7 @@ use crate::Theme;
 
 /// Interactive 270-degree rotary dial backed by `NodeKind::Custom` with free pointer capture.
 #[track_caller]
+#[allow(clippy::too_many_arguments)]
 pub fn arc_knob(
     ui: &mut Children<'_, '_>,
     key: Key,
@@ -93,7 +94,7 @@ pub fn paint_arc_knob(
     let (sin_q12, cos_q12) = sin_cos_q12(angle_deg);
     let dot_x = cx + ((i32::from(radius) * cos_q12) >> 12);
     let dot_y = cy + ((i32::from(radius) * sin_q12) >> 12);
-    let dot_r = ((u16::from(stroke_w) + 1) / 2).max(2);
+    let dot_r = u16::from(stroke_w).div_ceil(2).max(2);
     let dot_col = if state.editing {
         props.focus_color
     } else {

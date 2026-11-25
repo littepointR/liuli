@@ -72,8 +72,8 @@ pub fn reconcile_into(
     // Pass 2: assign freed or unused slots to newly inserted / kind-changed nodes.
     let mut next_free = 0usize;
     let mut saw_exhausted = false;
-    for d_idx in 0..d_count {
-        if draft_to_cand[d_idx] != NO_MAP {
+    for slot in draft_to_cand.iter_mut().take(d_count) {
+        if *slot != NO_MAP {
             continue;
         }
         loop {
@@ -95,7 +95,7 @@ pub fn reconcile_into(
             }
             candidate.generation_hwm[next_free] = prev_gen + 1;
             cand_occupied_mask |= 1u64 << next_free;
-            draft_to_cand[d_idx] = next_free as u8;
+            *slot = next_free as u8;
             next_free += 1;
             break;
         }
@@ -103,8 +103,7 @@ pub fn reconcile_into(
 
     // Track deleted or kind-changed nodes for damage, animation cleanup, and focus/capture cleanup.
     let mut outcome = ReconcileOutcome::default();
-    for old_idx in 0..MAX_NODES {
-        let old = &active.nodes[old_idx];
+    for (old_idx, old) in active.nodes.iter().enumerate() {
         if !old.occupied || (matched_old_mask & (1u64 << old_idx)) != 0 {
             continue;
         }

@@ -27,7 +27,7 @@ pub fn a4_pixel(bitmap: &[u8], width: u16, x: u16, y: u16) -> u8 {
     let row_bytes = w.div_ceil(2);
     let idx = (y as usize) * row_bytes + (x as usize) / 2;
     let byte = bitmap[idx];
-    if x % 2 == 0 {
+    if x.is_multiple_of(2) {
         (byte >> 4) & 0x0F
     } else {
         byte & 0x0F
@@ -269,6 +269,7 @@ pub fn validate_rle(rle: &[u8], expected_bytes: usize) -> bool {
 /// Streams decoded rows from a PackBits RLE blob (`0..height`) into `row_buf`, skipping
 /// rows before `skip_rows` and stopping early after `max_rows` visible rows are emitted.
 #[inline]
+#[allow(clippy::result_unit_err)]
 pub fn decode_rle_rows(
     rle: &[u8],
     row_bytes: usize,
@@ -344,6 +345,7 @@ pub fn decode_rle_rows(
 
 /// Decodes a full PackBits RLE payload directly into `out` (`out.len() == expected raw bytes`).
 #[inline]
+#[allow(clippy::result_unit_err)]
 pub fn decode_rle_into(rle: &[u8], out: &mut [u8]) -> Result<(), ()> {
     let mut pos = 0usize;
     let mut dst = 0usize;

@@ -388,7 +388,9 @@ impl MockSpiBus {
         assert_eq!(self.byte_buf.len() % 2, 0, "odd SPI byte count");
         let words: Vec<u16> = self
             .byte_buf
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|b| match self.order {
                 ByteOrder::BigEndian => u16::from_be_bytes([b[0], b[1]]),
                 ByteOrder::LittleEndian => u16::from_le_bytes([b[0], b[1]]),

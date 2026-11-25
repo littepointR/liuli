@@ -206,6 +206,7 @@ fn collect_kerning(face: &Face<'_>, charset: &BTreeSet<char>, scale: f32) -> Vec
     pairs
 }
 
+#[allow(clippy::too_many_arguments)]
 fn rasterize_phase(
     face: &Face<'_>,
     id: GlyphId,

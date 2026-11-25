@@ -30,6 +30,7 @@ impl<D> FrameError<D, core::convert::Infallible> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn present_sync<T, R>(
     target: &mut T,
     scratch: &mut [u16],

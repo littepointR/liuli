@@ -94,7 +94,7 @@ pub fn atan2_deg_q4(dy: i32, dx: i32) -> i32 {
     let mut lo = 0usize;
     let mut hi = 45usize;
     while lo < hi {
-        let mid = (lo + hi + 1) / 2;
+        let mid = (lo + hi).div_ceil(2);
         if TAN_Q12[mid] <= ratio {
             lo = mid;
         } else {

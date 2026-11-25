@@ -213,10 +213,10 @@ impl FalloffRecip {
             Self::None
         } else if denom <= 16_384 {
             let d = denom as u64;
-            Self::Q32((((1u64 << 32) + d - 1) / d) as u32)
+            Self::Q32((1u64 << 32).div_ceil(d) as u32)
         } else {
             let d = denom as u64;
-            Self::Q46(((1u64 << 46) + d - 1) / d)
+            Self::Q46((1u64 << 46).div_ceil(d))
         }
     }
 
@@ -457,14 +457,14 @@ mod layers {
     /// Q20 ceiling reciprocals for `divisor = 2 * r + 1`, `r in 0..=8`.
     const BLUR_RECIP: [u32; 9] = [
         1 << 20,
-        ((1u32 << 20) + 2) / 3,
-        ((1u32 << 20) + 4) / 5,
-        ((1u32 << 20) + 6) / 7,
-        ((1u32 << 20) + 8) / 9,
-        ((1u32 << 20) + 10) / 11,
-        ((1u32 << 20) + 12) / 13,
-        ((1u32 << 20) + 14) / 15,
-        ((1u32 << 20) + 16) / 17,
+        (1u32 << 20).div_ceil(3),
+        (1u32 << 20).div_ceil(5),
+        (1u32 << 20).div_ceil(7),
+        (1u32 << 20).div_ceil(9),
+        (1u32 << 20).div_ceil(11),
+        (1u32 << 20).div_ceil(13),
+        (1u32 << 20).div_ceil(15),
+        (1u32 << 20).div_ceil(17),
     ];
 
     #[inline(always)]
@@ -785,13 +785,13 @@ mod layers {
                         );
                     }
                 } else {
-                    for lx in 0..len {
+                    for (lx, dst_px) in out_row.iter_mut().enumerate().take(len) {
                         let px = area.x + lx as i32;
                         composite_pixel(
                             &group.color,
                             &group.alpha,
                             src_off + lx,
-                            &mut out_row[lx],
+                            dst_px,
                             0,
                             card_box,
                             px,
@@ -894,7 +894,7 @@ mod layers {
         let mut x = 0;
         while x < dst.len() {
             let i = start + x;
-            if i % 2 == 0 && x + 8 <= dst.len() {
+            if i.is_multiple_of(2) && x + 8 <= dst.len() {
                 let mask = &group.alpha[i / 2..i / 2 + 4];
                 if mask == [0; 4] || mask == [0xff; 4] {
                     let opaque = mask[0] != 0;

@@ -71,10 +71,10 @@ struct PartsModel {
 
 #[derive(Clone, Copy, Debug)]
 enum PartsMsg {
-    SetRightIcon(bool),
-    SetHideScrollbar(bool),
-    SetEnabled(bool),
-    SetSliderInd(Rgb565),
+    RightIcon(bool),
+    HideScrollbar(bool),
+    Enabled(bool),
+    SliderInd(Rgb565),
 }
 
 struct PartsApp;
@@ -85,10 +85,10 @@ impl App for PartsApp {
 
     fn update(model: &mut Self::Model, msg: Self::Msg, _now: InstantMs) -> Change {
         match msg {
-            PartsMsg::SetRightIcon(v) => model.right_icon = v,
-            PartsMsg::SetHideScrollbar(v) => model.hide_scrollbar = v,
-            PartsMsg::SetEnabled(v) => model.btn_enabled = v,
-            PartsMsg::SetSliderInd(c) => model.slider_ind = c,
+            PartsMsg::RightIcon(v) => model.right_icon = v,
+            PartsMsg::HideScrollbar(v) => model.hide_scrollbar = v,
+            PartsMsg::Enabled(v) => model.btn_enabled = v,
+            PartsMsg::SliderInd(c) => model.slider_ind = c,
         }
         Change::View
     }
@@ -337,7 +337,7 @@ fn part_styles_and_visual_states_customize_parts_and_dirty_incrementally() {
 
     // Update ONLY part styles (right icon + slider indicator color + hide scrollbar + disabled button):
     engine
-        .try_message(PartsMsg::SetRightIcon(true), InstantMs(30), false)
+        .try_message(PartsMsg::RightIcon(true), InstantMs(30), false)
         .unwrap();
     assert!(!engine.damage().is_empty());
     let ix_right = find_btn_icon_x(engine.active_commands().as_slice()).unwrap();
@@ -345,7 +345,7 @@ fn part_styles_and_visual_states_customize_parts_and_dirty_incrementally() {
     assert!(ix_right > tx_right);
 
     engine
-        .try_message(PartsMsg::SetHideScrollbar(true), InstantMs(40), false)
+        .try_message(PartsMsg::HideScrollbar(true), InstantMs(40), false)
         .unwrap();
     let has_sb_after = engine.active_commands().as_slice().iter().any(|c| {
         matches!(
@@ -359,7 +359,7 @@ fn part_styles_and_visual_states_customize_parts_and_dirty_incrementally() {
 
     engine
         .try_message(
-            PartsMsg::SetSliderInd(Rgb565::new(31, 0, 31)),
+            PartsMsg::SliderInd(Rgb565::new(31, 0, 31)),
             InstantMs(50),
             false,
         )
@@ -369,7 +369,7 @@ fn part_styles_and_visual_states_customize_parts_and_dirty_incrementally() {
     }));
 
     engine
-        .try_message(PartsMsg::SetEnabled(false), InstantMs(60), false)
+        .try_message(PartsMsg::Enabled(false), InstantMs(60), false)
         .unwrap();
     let (_, btn_fg) = find_btn_text_x(engine.active_commands().as_slice()).unwrap();
     assert_eq!(btn_fg, Rgb565::new(12, 24, 12));

@@ -282,6 +282,7 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
     }
 
     /// Trigger a built-in `AnimPool` interpolation for a custom/overridden control.
+    #[allow(clippy::too_many_arguments)]
     pub fn start_custom_anim(
         &mut self,
         key: Key,

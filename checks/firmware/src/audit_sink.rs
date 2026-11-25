@@ -32,8 +32,8 @@ impl SpiWindowBus for AuditSpiBus {
         self.windows = self.windows.saturating_add(1);
         self.digest ^= (rect.x as u32).wrapping_mul(31)
             ^ ((rect.y as u32) << 8)
-            ^ ((rect.w as u32) << 16)
-            ^ ((rect.h as u32) << 24);
+            ^ (rect.w << 16)
+            ^ (rect.h << 24);
         black_box(self.digest);
         Ok(())
     }

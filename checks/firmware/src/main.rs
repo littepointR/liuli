@@ -86,13 +86,11 @@ pub extern "C" fn firmware_main() -> ! {
 
     // SAFETY: `Reset` initialized RAM and `firmware_main` never returns or re-enters,
     // yielding unique references to these static buffers once.
-    let (storage, band_a, band_b) = unsafe {
-        (
-            &mut *(&raw mut LIULI_STORAGE),
-            &mut *(&raw mut LIULI_DMA_BAND_A),
-            &mut *(&raw mut LIULI_DMA_BAND_B),
-        )
-    };
+    let storage_ptr = &raw mut LIULI_STORAGE;
+    let band_a_ptr = &raw mut LIULI_DMA_BAND_A;
+    let band_b_ptr = &raw mut LIULI_DMA_BAND_B;
+    let (storage, band_a, band_b) =
+        unsafe { (&mut *storage_ptr, &mut *band_a_ptr, &mut *band_b_ptr) };
 
     let screen = Rect::new(0, 0, DEFAULT_SCREEN_WIDTH, DEFAULT_SCREEN_HEIGHT);
     let mut engine = Engine::<TerminalApp>::new_in_place_with_fonts(

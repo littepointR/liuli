@@ -5,7 +5,9 @@ use liuli_text::{
     FontError, Lf4Font, TextLayoutOptions, a4_pixel, blend_rgb565_a4, visit_layout_glyphs,
 };
 
-fn build_synthetic_lf4(glyphs: &[(char, u16, i16, i16, u16, u16, &[u8])]) -> Vec<u8> {
+type SyntheticGlyph<'a> = (char, u16, i16, i16, u16, u16, &'a [u8]);
+
+fn build_synthetic_lf4(glyphs: &[SyntheticGlyph<'_>]) -> Vec<u8> {
     let count = glyphs.len() as u16;
     let fallback_idx = glyphs
         .iter()
@@ -335,7 +337,7 @@ fn build_synthetic_lf4_v2(
     phases: u8,
     advance_q2: bool,
     kern_pairs: &[(char, char, i16)],
-    glyphs: &[(char, u16, i16, i16, u16, u16, &[u8])],
+    glyphs: &[SyntheticGlyph<'_>],
 ) -> Vec<u8> {
     let count = glyphs.len() as u16;
     let fallback_idx = glyphs

@@ -6,6 +6,8 @@ use crate::font::{
     LF4_VERSION, LF4_VERSION_V2, read_entry_mode,
 };
 
+pub type KernBounds = ((u32, u32), (u32, u32));
+
 pub trait ReadAt {
     type Error;
     fn byte_len(&self) -> usize;
@@ -383,7 +385,7 @@ impl<R: ReadAt> StoredFont<R> {
     pub fn has_kerning(&self) -> bool {
         self.kern_count > 0
     }
-    pub fn kern_bounds(&mut self) -> Result<Option<((u32, u32), (u32, u32))>, ReadError<R::Error>> {
+    pub fn kern_bounds(&mut self) -> Result<Option<KernBounds>, ReadError<R::Error>> {
         if self.kern_count == 0 {
             return Ok(None);
         }

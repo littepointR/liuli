@@ -81,8 +81,10 @@ async fn run() -> Result<(), u32> {
     report(6, touch.as_ref().map_or(0, |t| t.product));
     let font = Lf4Font::from_bytes(FONT).map_err(|_| 14u32)?;
     // Reset is the only caller; interrupts never access UI state.
-    let storage = unsafe { &mut *(&raw mut STORAGE) };
-    let band = unsafe { &mut *(&raw mut STRIPE) };
+    let storage_ptr = &raw mut STORAGE;
+    let band_ptr = &raw mut STRIPE;
+    let storage = unsafe { &mut *storage_ptr };
+    let band = unsafe { &mut *band_ptr };
     let mut ui = Engine::<Catalog>::new_in_place_with_fonts(
         storage,
         Model::for_size(Size::new(WIDTH, HEIGHT)),

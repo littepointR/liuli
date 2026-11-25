@@ -21,6 +21,7 @@ pub enum SimEngine<'a, 's> {
     Settings(&'a Engine<'s, 'static, SettingsApp>),
     Terminal(&'a Engine<'s, 'static, TerminalApp>),
 }
+#[allow(clippy::large_enum_variant)]
 pub enum SimSession<'s> {
     Settings(AppSession<'s, 'static, SettingsApp>),
     Terminal(AppSession<'s, 'static, TerminalApp>),

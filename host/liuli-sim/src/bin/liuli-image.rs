@@ -11,7 +11,7 @@ fn pack(source: &Path, output: &Path) -> Result<(), String> {
     let mut asset = b"L565\x01\x00".to_vec();
     asset.extend(w.to_le_bytes());
     asset.extend(h.to_le_bytes());
-    for px in rgb.chunks_exact(3) {
+    for px in rgb.as_chunks::<3>().0 {
         let word =
             (u16::from(px[0] >> 3) << 11) | (u16::from(px[1] >> 2) << 5) | u16::from(px[2] >> 3);
         asset.extend(word.to_le_bytes());

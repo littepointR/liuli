@@ -211,7 +211,7 @@ impl<'a> DmaSink<'a> for FakeDmaDriver<'a> {
                 let returned = if stopped {
                     Some(band.confirm_stopped())
                 } else {
-                    core::mem::forget(band);
+                    let _ = band;
                     None
                 };
                 return PollOutcome::Failed {
@@ -390,7 +390,7 @@ fn dma_ping_pong_cache_order_recovery_guard_and_te_fault_free_paths() {
 
     // Verify exact BSP cache maintenance ordering per started band
     assert_eq!(drv.cache.log.len(), 16); // 4 bands * 4 steps
-    for chunk in drv.cache.log.chunks_exact(4) {
+    for chunk in drv.cache.log.as_chunks::<4>().0 {
         assert!(matches!(chunk[0], CacheOrderStep::SetWindow(..)));
         match chunk[1] {
             CacheOrderStep::CleanDCache(addr, len_bytes) => {
@@ -584,7 +584,7 @@ fn coordinator_ignores_mismatched_triple_and_faults_on_wrong_band_slot() {
                 1 => {
                     self.phase = 2;
                     let _parked = self.in_flight.take().unwrap();
-                    core::mem::forget(_parked);
+                    let _ = _parked;
                     let wrong = self.wrong_slot_buf.take().unwrap();
                     PollOutcome::Completed {
                         slot: BandSlot::A,
