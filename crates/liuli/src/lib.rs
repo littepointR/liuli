@@ -31,6 +31,10 @@ pub mod prelude {
     pub use liuli_core::damage::DamageSet;
     pub use liuli_core::effects::{Layer, PressDepth, Projection, Shadow, SurfaceStyle};
     pub use liuli_core::geometry::{Rect, Rotation, rgb565_to_u16, u16_to_rgb565};
+    pub use liuli_core::i18n::{
+        LocaleId, LocaleTable, PluralForm, TemplateDisplay, TextKey, format_template, plural_cjk,
+        plural_en,
+    };
     pub use liuli_core::input::TextInput;
     pub use liuli_core::input::{
         ActionKind, GesturePhase, HoldKey, NavDir, PointerCaptureMode, PointerEvent, PointerId,

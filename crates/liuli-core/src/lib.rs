@@ -9,6 +9,7 @@ pub mod damage;
 pub mod effects;
 pub mod focus;
 pub mod geometry;
+pub mod i18n;
 pub mod input;
 #[cfg(feature = "layers")]
 pub mod layers;
