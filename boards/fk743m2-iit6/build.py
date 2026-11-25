@@ -40,6 +40,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", choices=["basic", "enhanced"], default="enhanced")
     parser.add_argument("--backend", choices=["st-hal", "embassy"], default="st-hal")
+    parser.add_argument("--showcase", action="store_true")
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--offline", action="store_true")
     args = parser.parse_args()
@@ -51,6 +52,8 @@ def main():
     features = [args.backend]
     if args.profile == "enhanced":
         features.append("enhanced")
+    if args.showcase:
+        features.append("showcase")
     cmd.extend(["--no-default-features", "--features", ",".join(features)])
     subprocess.run(cmd, cwd=BOARD, check=True)
     elf = build / TARGET / "release/liuli-fk743m2"

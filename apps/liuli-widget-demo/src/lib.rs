@@ -8,6 +8,7 @@ use liuli_widgets::{Density, EffectsConfig, Shape, Theme, ThemePreset, paint_met
 mod depth;
 mod motion;
 mod pages;
+pub mod showcase;
 mod studio;
 mod tape;
 pub const FONT: &[u8] = include_bytes!("../assets/body.lf4");

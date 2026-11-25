@@ -10,7 +10,10 @@ mod touch;
 use display::{Display, HEIGHT, WIDTH};
 use hardware as hw;
 use liuli::prelude::*;
+#[cfg(not(feature = "showcase"))]
 use liuli_widget_demo::{Catalog, FONT, Model};
+#[cfg(feature = "showcase")]
+use liuli_widget_demo::showcase::{ShowcaseApp, ShowcaseModel, showcase_fonts};
 
 #[cfg(feature = "embassy")]
 mod embassy;
@@ -42,7 +45,10 @@ fn fail(code: u32) -> ! {
 fn panic(_: &core::panic::PanicInfo) -> ! {
     fail(0xff)
 }
+#[cfg(not(feature = "showcase"))]
 type Ui<'s> = Engine<'s, 'static, Catalog>;
+#[cfg(feature = "showcase")]
+type Ui<'s> = Engine<'s, 'static, ShowcaseApp>;
 
 fn present(
     ui: &mut Ui<'_>,
@@ -77,16 +83,28 @@ async fn run() -> Result<(), u32> {
     let mut screen = Display::new()?;
     let mut touch = touch::Touch::detect().ok();
     report(6, touch.as_ref().map_or(0, |t| t.product));
-    let font = Lf4Font::from_bytes(FONT).map_err(|_| 14u32)?;
     // Reset is the only caller; interrupts never access UI state.
     let storage_ptr = &raw mut STORAGE;
     let band_ptr = &raw mut STRIPE;
     let storage = unsafe { &mut *storage_ptr };
     let band = unsafe { &mut *band_ptr };
-    let mut ui = Engine::<Catalog>::new_in_place_with_fonts(
+    #[cfg(not(feature = "showcase"))]
+    let mut ui = {
+        let font = Lf4Font::from_bytes(FONT).map_err(|_| 14u32)?;
+        Engine::<Catalog>::new_in_place_with_fonts(
+            storage,
+            Model::for_size(Size::new(WIDTH, HEIGHT)),
+            liuli_widget_demo::studio_fonts(font).map_err(|_| 14u32)?,
+            Rect::new(0, 0, WIDTH, HEIGHT),
+            InstantMs(0),
+        )
+        .map_err(|_| 15u32)?
+    };
+    #[cfg(feature = "showcase")]
+    let mut ui = Engine::<ShowcaseApp>::new_in_place_with_fonts(
         storage,
-        Model::for_size(Size::new(WIDTH, HEIGHT)),
-        liuli_widget_demo::studio_fonts(font).map_err(|_| 14u32)?,
+        ShowcaseModel::new(),
+        showcase_fonts().map_err(|_| 14u32)?,
         Rect::new(0, 0, WIDTH, HEIGHT),
         InstantMs(0),
     )
@@ -166,7 +184,10 @@ async fn run() -> Result<(), u32> {
             ui.handle_input(ev, event_time).map_err(|_| 19u32)?;
         }
         present(&mut ui, &mut screen, band, &mut frames)?;
+        #[cfg(not(feature = "showcase"))]
         report(8, ui.model().page as u32);
+        #[cfg(feature = "showcase")]
+        report(8, u32::from(ui.model().page_index()));
         if seq != ack {
             report(13, seq);
         }
