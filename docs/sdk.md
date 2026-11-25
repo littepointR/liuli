@@ -174,6 +174,46 @@ try_message、try_dispatch 和 try_advance 提供事务结果。Busy 会交还�
 导航示例在 liuli-alarms/src/lib.rs。Navigator 以 const 容量保存携带参数的页面枚举。确认框关闭后才处理页面返回。离开列表前保存条目键、偏移和焦点，返回时通过 page_restore 提供这些值。运行 workflow 测试可检查整条路径。
 
 
+## 容量档位与声明式布局进阶
+
+### 1. 编译期容量档位（无需堆分配）
+通过 Cargo feature 在编译期静态调整节点池、文本池、命令缓冲与脏矩形预算，保持零 `alloc` 与静态 `.bss` 分配：
+
+| 档位 Feature | `MAX_NODES` | `MAX_DEPTH` | `MAX_TEXT_BYTES` | `MAX_COMMANDS` | `MAX_DAMAGE` | `MAX_ANIMATIONS` |
+|---|---|---|---|---|---|---|
+| 默认 (`default`) | 64 | 12 | 1024 | 256 | 12 | 8 |
+| `capacity-128` | 128 | 14 | 2048 | 512 | 16 | 12 |
+| `capacity-256` | 250 | 16 | 4096 | 1024 | 24 | 16 |
+
+### 2. 链式 `NodeProps`、网格、横向滚动与 2D 焦点
+- **`const fn` 构建器**：`NodeProps::new().width(...).height(...).padding(...).gap(...).justify(Justify::SpaceBetween).grid_cols(cols).bg(...).fg(...).accent(...).border(color, w).radius(r).focusable(true).clickable(true)`。
+- **扩展容器与排版**：`Justify::{Start, Center, End, SpaceBetween, SpaceAround, SpaceEvenly}` 控制主轴分配；`Children::grid(key, cols, props, ...)` 构建固定列数网格；`Children::scroll_x(key, props, ...)` 支持横向滚动容器。
+- **2D 方向导航与物理滚动**：`NavDir` 在树中执行几何方向焦点移动；`ScrollPhysics` 提供 Q8 定点滑动惯性、阻力衰减、越界回弹（`with_bounce`）和刻度吸附（`with_snap`）。
+
+### 3. 扩展控件、表单、图表与转场
+`liuli_widgets` 新增高阶组件，全部保持 `#![no_std]` 与有界内存：
+- **表单输入**（`inputs`）：`checkbox` / `paint_checkbox`、`radio` / `paint_radio`、`dropdown`（`DropdownState`）、`roller`（`RollerState`）与多行文本编辑器 `multi_line_editor` / `paint_multi_line_editor`（`MultiLineState`）。
+- **数据展示**（`data`）：`data_table`（`TableColumn` 表头与斑马纹行选择）、`gauge` / `paint_gauge`（`GaugeSpec`）、`spinner` / `paint_spinner`、`rich_text` / `paint_rich_text`（多段彩色样式 `TextSpan`）、柱状图 `paint_bar_chart` 与多折线图 `paint_multi_line_chart`（`ChartSeries`）。
+- **页面转场**（`transition`）：`PageTransition` 与 `TransitionKind::{SlideLeft, SlideRight, SlideUp, Fade}`，使用整数像素位移和组透明度控制切页动效。
+
+### 4. L565 v2 压缩纹理、渐变、旋转与硬件 2D 加速
+- **位图打包 v2**：`liuli-image` 支持 `--v2`、`--rle`（行索引行程压缩）与 `--chroma-key <hex>`（透明色键）；对应渲染标志 `L565_FLAG_CHROMA_KEY`、`L565_FLAG_ALPHA4`、`L565_FLAG_RLE`。
+- **流式解码与特效**：`StoredBitmap` 直接从 `ReadAt` 流式解包并逐条带绘制，无需整图驻留 RAM；`WidgetCanvas::gradient_rect`（`GRADIENT_HORIZONTAL` / `GRADIENT_VERTICAL` / `GRADIENT_DIAGONAL`）绘制平滑渐变矩形。
+- **硬件屏幕旋转与 2D 加速**：`RotatedDisplaySink<S, MAX_PIXELS>` 按 `Rotation::{Deg0, Deg90, Deg180, Deg270}` 零堆分块旋转输出；`DrawAccel`（`SoftAccel` 为纯软件默认实现）结合 `render_band_with_accel` 可接入 MCU 2D 填充/混叠外设（如 DMA2D）。
+
+### 5. 零堆多语言国际化（i18n）
+- 运行时核心：`LocaleTable::new(code, entries)`、`TextKey(u16)`、`LocaleId(u8)`、`LocaleTable::resolve`（自动回退到默认语言）、`format_template`（支持 `{0}` 位置参数及 `{{`/`}}` 转义）以及 `plural_en` / `plural_cjk`。
+- 离线编译检查：`python tools/liuli-i18n.py --input locales/ --output src/i18n_gen.rs --check` 校验各语言键完整性与占位符一致性，生成零堆只读 Rust 常量与静态表。
+
+### 6. 开箱即用显示与触摸驱动（`liuli_render::drivers`）
+实现薄适配器 `DisplayCmdBus` 与 `PanelConfig` 后即可直接使用内置 MIPI-DCS 面板驱动（均实现 `ByteWindowBus`，可直接配合 `ByteWindowSink` 使用）：
+- **面板驱动**：`St7789`、`Ili9341`、`Gc9a01`、`Rm67162`。
+- **触摸解码与校准**：`Gt911Decoder`、`Ft3168Decoder`、`Cst816Decoder` 与电阻屏固定点仿射校准器 `Xpt2046Calibrator`，可直接把原始寄存器数据喂给 `TouchTracker`。
+
+### 7. 模拟器性能分析、热刷新与 Figma 工作流
+- **实时性能分析与文件监听**：`host/liuli-sim` 提供 `FrameProfile`（保留最近 64 帧耗时与脏面积统计，`GET /api/profile`）与 `FileWatcher`（通过 `PreviewServer::watch_path` 注册，暴露 `GET /api/watch`）；浏览器预览面板提供“性能 HUD”开关与自动刷新轮询。
+- **设计到代码**：参见 [Figma 设计到代码工作流](figma-workflow.md)。
+
 ## 版本与兼容性
 
 1.0.0 沿用 RC1 已冻结的应用、组件与资源接口。应用、控件、模拟器、资源工具和参考板使用同一个 SDK 版本。升级时先保留原 LF4 和应用回放，再在新 SDK 的供应目录中构建并核对它们。安装包自带 liuli-sim 命令，可在空目录内重放两个 v0.2 应用。打包验收会把 12 幅输出和原始 PPM 逐字节比较。
