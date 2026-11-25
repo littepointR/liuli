@@ -797,6 +797,184 @@ impl NodeProps {
             grid_cols: 0,
         }
     }
+
+    #[inline]
+    pub const fn width(mut self, width: Length) -> Self {
+        self.width = width;
+        self
+    }
+
+    #[inline]
+    pub const fn height(mut self, height: Length) -> Self {
+        self.height = height;
+        self
+    }
+
+    #[inline]
+    pub const fn size(mut self, width: Length, height: Length) -> Self {
+        self.width = width;
+        self.height = height;
+        self
+    }
+
+    #[inline]
+    pub const fn padding(mut self, padding: EdgeInsets) -> Self {
+        self.padding = padding;
+        self
+    }
+
+    #[inline]
+    pub const fn gap(mut self, gap: u16) -> Self {
+        self.gap = gap;
+        self
+    }
+
+    #[inline]
+    pub const fn align_cross(mut self, align: Align) -> Self {
+        self.align_cross = align;
+        self
+    }
+
+    #[inline]
+    pub const fn justify(mut self, justify: Justify) -> Self {
+        self.justify = justify;
+        self
+    }
+
+    #[inline]
+    pub const fn grid_cols(mut self, cols: u8) -> Self {
+        self.grid_cols = cols;
+        self
+    }
+
+    #[inline]
+    pub const fn bg(mut self, bg: Rgb565) -> Self {
+        self.bg = Some(bg);
+        self
+    }
+
+    #[inline]
+    pub const fn fg(mut self, fg: Rgb565) -> Self {
+        self.fg = fg;
+        self
+    }
+
+    #[inline]
+    pub const fn accent(mut self, accent: Rgb565) -> Self {
+        self.accent = accent;
+        self
+    }
+
+    #[inline]
+    pub const fn border(mut self, color: Rgb565, width: u8) -> Self {
+        self.border_color = Some(color);
+        self.border_width = width;
+        self
+    }
+
+    #[inline]
+    pub const fn radius(mut self, radius: u8) -> Self {
+        self.radius = radius;
+        self
+    }
+
+    #[inline]
+    pub const fn text(mut self, text: TextRef) -> Self {
+        self.text = text;
+        self
+    }
+
+    #[inline]
+    pub const fn font(mut self, font: FontId) -> Self {
+        self.font = font;
+        self
+    }
+
+    #[inline]
+    pub const fn text_align(mut self, align: TextAlign) -> Self {
+        self.text_align = align;
+        self
+    }
+
+    #[inline]
+    pub const fn max_lines(mut self, max_lines: u8) -> Self {
+        self.max_lines = max_lines;
+        self
+    }
+
+    #[inline]
+    pub const fn focusable(mut self, focusable: bool) -> Self {
+        self.focusable = focusable;
+        self
+    }
+
+    #[inline]
+    pub const fn clickable(mut self, clickable: bool) -> Self {
+        self.clickable = clickable;
+        self
+    }
+
+    #[inline]
+    pub const fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    #[inline]
+    pub const fn visible(mut self, visible: bool) -> Self {
+        self.visible = visible;
+        self
+    }
+
+    #[inline]
+    pub const fn checked(mut self, checked: bool) -> Self {
+        self.checked = checked;
+        self
+    }
+
+    #[inline]
+    pub const fn range(mut self, min: i16, max: i16, step: i16) -> Self {
+        self.min = min;
+        self.max = max;
+        self.step = step;
+        self
+    }
+
+    #[inline]
+    pub const fn value(mut self, value: i16) -> Self {
+        self.value = value;
+        self
+    }
+
+    #[inline]
+    pub const fn icon(mut self, icon: IconKind) -> Self {
+        self.icon = icon;
+        self
+    }
+
+    #[inline]
+    pub const fn stack_align(mut self, align: StackAlign) -> Self {
+        self.stack_align = align;
+        self
+    }
+
+    #[inline]
+    pub const fn paint_mode(mut self, mode: PaintMode) -> Self {
+        self.paint_mode = mode;
+        self
+    }
+
+    #[inline]
+    pub const fn pointer_capture(mut self, mode: PointerCaptureMode) -> Self {
+        self.pointer_capture = mode;
+        self
+    }
+
+    #[inline]
+    pub const fn editable(mut self, editable: bool) -> Self {
+        self.editable = editable;
+        self
+    }
 }
 
 const EXT_POINTER_CAPTURE_MASK: u16 = 0b11;

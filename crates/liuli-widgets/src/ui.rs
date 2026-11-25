@@ -587,6 +587,106 @@ impl<'a, 'b, 'p> ThemedUi<'a, 'b, 'p> {
         self.ui.set_custom_rev(key, rev)
     }
 
+    #[track_caller]
+    #[inline]
+    pub fn checkbox(&mut self, key: Key, label: TextRef, checked: bool) -> Result<(), BuildError> {
+        crate::inputs::checkbox(self.ui, key, label, checked, self.theme)
+    }
+
+    #[track_caller]
+    #[inline]
+    pub fn radio(&mut self, key: Key, label: TextRef, selected: bool) -> Result<(), BuildError> {
+        crate::inputs::radio(self.ui, key, label, selected, self.theme)
+    }
+
+    #[track_caller]
+    #[inline]
+    pub fn roller(
+        &mut self,
+        key: Key,
+        width: Length,
+        height: u16,
+        options: &[&'static str],
+        state: crate::inputs::RollerState,
+    ) -> Result<(), BuildError> {
+        crate::inputs::roller(self.ui, key, width, height, options, state, self.theme)
+    }
+
+    #[track_caller]
+    #[inline]
+    pub fn gauge(&mut self, key: Key, spec: crate::data::GaugeSpec) -> Result<(), BuildError> {
+        crate::data::gauge(self.ui, key, spec, self.theme)
+    }
+
+    #[track_caller]
+    #[inline]
+    pub fn spinner(&mut self, key: Key, diameter: u16, now: InstantMs) -> Result<(), BuildError> {
+        crate::data::spinner(self.ui, key, diameter, now, self.theme)
+    }
+
+    #[track_caller]
+    #[inline]
+    pub fn rich_text(&mut self, key: Key, width: Length, height: u16) -> Result<(), BuildError> {
+        crate::data::rich_text(self.ui, key, width, height, self.theme)
+    }
+
+    #[track_caller]
+    #[inline]
+    pub fn multi_line_editor<const CAP: usize>(
+        &mut self,
+        key: Key,
+        width: Length,
+        height: u16,
+        state: &crate::inputs::MultiLineState<CAP>,
+    ) -> Result<(), BuildError> {
+        crate::inputs::multi_line_editor(self.ui, key, width, height, state, self.theme)
+    }
+
+    #[track_caller]
+    #[inline]
+    #[allow(clippy::too_many_arguments)]
+    pub fn dropdown(
+        &mut self,
+        wrap_key: Key,
+        trigger_key: Key,
+        list_key: Key,
+        item_base_key: u32,
+        options: &[&'static str],
+        state: crate::inputs::DropdownState,
+    ) -> Result<(), BuildError> {
+        crate::inputs::dropdown(
+            self.ui,
+            wrap_key,
+            trigger_key,
+            list_key,
+            item_base_key,
+            options,
+            state,
+            self.theme,
+        )
+    }
+
+    #[track_caller]
+    #[inline]
+    pub fn data_table(
+        &mut self,
+        base_key: u32,
+        cols: &[crate::data::TableColumn],
+        rows: &[&[&'static str]],
+        selected_row: Option<usize>,
+        row_height: u16,
+    ) -> Result<(), BuildError> {
+        crate::data::data_table(
+            self.ui,
+            base_key,
+            cols,
+            rows,
+            selected_row,
+            row_height,
+            self.theme,
+        )
+    }
+
     #[inline]
     fn apply_part_if_needed(
         &mut self,

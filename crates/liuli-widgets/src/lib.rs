@@ -2,11 +2,14 @@
 #![forbid(unsafe_code)]
 
 pub mod controls;
+pub mod data;
 pub mod ime;
+pub mod inputs;
 mod pinyin_dict;
 pub mod style;
 pub mod theme;
 pub mod tokens;
+pub mod transition;
 pub mod ui;
 
 use liuli::prelude::*;
@@ -14,10 +17,18 @@ use liuli::prelude::*;
 pub use controls::{
     arc_knob, arc_knob_from_pointer, badge_button, paint_arc_knob, paint_ticked_slider,
 };
+pub use data::{
+    ChartSeries, GaugeSpec, TableColumn, TextSpan, data_table, gauge, paint_bar_chart, paint_gauge,
+    paint_multi_line_chart, paint_rich_text, paint_spinner, rich_text, spinner,
+};
 pub use ime::{
     DEFAULT_PINYIN_DICT, FixedTextEditor, ImeDict, ImeEvent, ImeState, InputMode, StaticPinyinDict,
     paint_soft_keyboard, paint_text_box, soft_keyboard, soft_keyboard_on_pointer, text_box,
     text_box_on_pointer, text_box_with_focus,
+};
+pub use inputs::{
+    DropdownState, MultiLineState, RollerState, checkbox, dropdown, multi_line_editor,
+    paint_checkbox, paint_multi_line_editor, paint_radio, paint_roller, radio, roller,
 };
 pub use style::{ButtonVariant, Compositor, Elevation, Material, ResolvedSurface, SurfaceSpec};
 pub use theme::{Style, Theme, ThemePreset};
@@ -26,6 +37,7 @@ pub use tokens::{
     ElevationScale, GlassStyle, InteractionStyle, Motion, Shape, Typography, contrast_ratio_x10,
     rgb8,
 };
+pub use transition::{PageTransition, TransitionKind};
 pub use ui::ThemedUi;
 
 /// Typed route stack. Route variants carry parameters and per-page state.
@@ -1259,5 +1271,208 @@ mod tests {
         assert!(draft.nodes[2].props.focus_ring().rounded);
         assert_eq!(draft.nodes[4].props.bg(), None);
         assert_eq!(draft.nodes[4].props.fg, theme.accent);
+    }
+
+    #[test]
+    fn mature_widgets_builders_states_and_canvas_render_into_band() {
+        let props = NodeProps::new()
+            .width(Length::Px(120))
+            .height(Length::Px(40))
+            .fg(Theme::DARK.text)
+            .accent(Theme::DARK.accent)
+            .checked(true)
+            .focusable(true)
+            .clickable(true);
+        assert_eq!(props.width, Length::Px(120));
+        assert!(props.checked && props.focusable && props.clickable);
+
+        let mut dd = DropdownState::new(0);
+        assert!(dd.handle_action(Key(10), Key(10), 100, 3));
+        assert!(dd.open);
+        assert!(dd.handle_action(Key(102), Key(10), 100, 3));
+        assert!(!dd.open && dd.selected == 2);
+
+        let mut roller = RollerState::new(0, true);
+        assert!(roller.handle_action(ActionKind::Adjust(-1), 4));
+        assert_eq!(roller.selected, 3);
+
+        let mut ml = MultiLineState::<64>::from_text("abc\ndefg");
+        assert_eq!(ml.line_count(), 2);
+        assert_eq!(ml.cursor_line_col(), (1, 4));
+        assert!(ml.apply_nav(NavDir::Up));
+        assert_eq!(ml.cursor_line_col(), (0, 3));
+        assert!(ml.apply_text(TextInput::Commit("!")));
+        assert_eq!(ml.text(), "abc!\ndefg");
+
+        let mut trans = PageTransition::new();
+        trans.start(TransitionKind::SlideLeft, InstantMs(100), 200);
+        assert!(trans.is_active(InstantMs(150)));
+        assert!(trans.offset_for(Size::new(320, 240), InstantMs(150)).0 > 0);
+        assert_eq!(
+            trans.offset_for(Size::new(320, 240), InstantMs(300)),
+            (0, 0)
+        );
+
+        // Build full widget tree using ThemedUi wrappers + custom paint and rasterize a band!
+        let mut draft = liuli::core::view::ViewDraft::new();
+        let mut vb = ViewBuilder::new(&mut draft);
+        vb.root(
+            Key(1),
+            NodeProps::new().bg(Theme::DARK.background).gap(4),
+            |root| {
+                let mut ui = ThemedUi::new(root, Theme::DARK);
+                ui.checkbox(Key(2), TextRef::Static("Enable"), true)?;
+                ui.radio(Key(3), TextRef::Static("Mode A"), true)?;
+                ui.roller(
+                    Key(4),
+                    Length::Px(120),
+                    60,
+                    &["One", "Two", "Three"],
+                    roller,
+                )?;
+                ui.gauge(
+                    Key(5),
+                    GaugeSpec {
+                        min: 0,
+                        max: 100,
+                        value: 65,
+                        ticks: 5,
+                        diameter: 72,
+                        label: TextRef::Static("65%"),
+                    },
+                )?;
+                ui.spinner(Key(6), 32, InstantMs(250))?;
+                ui.rich_text(Key(7), Length::Px(120), 32)?;
+                ui.multi_line_editor(Key(8), Length::Px(140), 48, &ml)?;
+                ui.data_table(
+                    200,
+                    &[
+                        TableColumn::new("Col A", Length::Px(60), TextAlign::Start),
+                        TableColumn::new("Col B", Length::Px(60), TextAlign::End),
+                    ],
+                    &[&["10", "20"], &["30", "40"]],
+                    Some(1),
+                    24,
+                )?;
+                ui.dropdown(
+                    Key(500),
+                    Key(501),
+                    Key(502),
+                    510,
+                    &["Alpha", "Beta"],
+                    DropdownState {
+                        open: true,
+                        selected: 1,
+                    },
+                )?;
+                ui.custom(
+                    Key(400),
+                    NodeProps::new()
+                        .size(Length::Px(120), Length::Px(60))
+                        .bg(Theme::DARK.surface),
+                )?;
+                ui.custom(
+                    Key(401),
+                    NodeProps::new()
+                        .size(Length::Px(120), Length::Px(60))
+                        .bg(Theme::DARK.surface),
+                )
+            },
+        )
+        .unwrap();
+        vb.finish().unwrap();
+
+        let prev = liuli::core::node::RetainedTree::new();
+        let mut tree = liuli::core::node::RetainedTree::new();
+        let mut anims = liuli::core::time::AnimPool::new();
+        let mut dmg = DamageSet::new();
+        let screen = Rect::new(0, 0, 320, 480);
+        let lf4 = include_bytes!("../../../apps/liuli-alarms/assets/body.lf4");
+        let fonts = liuli::text::FontSet::single(liuli::text::Lf4Font::from_bytes(lf4).unwrap());
+        liuli::core::reconcile::reconcile_into(
+            &draft,
+            &prev,
+            &mut tree,
+            screen,
+            &fonts,
+            &mut anims,
+            None,
+            None,
+            InstantMs(250),
+            &mut dmg,
+        )
+        .unwrap();
+
+        let mut cmds = liuli::core::paint::CommandList::new();
+        let series = [
+            ChartSeries {
+                name: "S1",
+                color: Theme::DARK.accent,
+                values: &[10, 40, 25, 60],
+            },
+            ChartSeries {
+                name: "S2",
+                color: Theme::DARK.focus,
+                values: &[20, 30, 50, 40],
+            },
+        ];
+        let spans = [
+            TextSpan::new("Hello "),
+            TextSpan::new("World")
+                .with_color(Theme::DARK.accent)
+                .with_underline(true),
+        ];
+        liuli::core::paint::emit_commands_with(
+            &tree,
+            &anims,
+            liuli::core::paint::PaintFocusInfo {
+                focused_slot: None,
+                ring_visible: false,
+                editing: false,
+            },
+            screen,
+            &mut cmds,
+            |key, stored, canvas| {
+                let ps = PaintState {
+                    checked: stored.checked(),
+                    focused: key == Key(8),
+                    enabled: true,
+                    ..PaintState::default()
+                };
+                match key.0 {
+                    2 => paint_checkbox(stored, ps, canvas),
+                    3 => paint_radio(stored, ps, canvas),
+                    4 => paint_roller(&["One", "Two", "Three"], roller, stored, ps, canvas),
+                    5 => paint_gauge(
+                        GaugeSpec {
+                            min: 0,
+                            max: 100,
+                            value: 65,
+                            ticks: 5,
+                            diameter: 72,
+                            label: TextRef::Static("65%"),
+                        },
+                        stored,
+                        canvas,
+                    ),
+                    6 => paint_spinner(InstantMs(250), stored, canvas),
+                    7 => paint_rich_text(&spans, stored, canvas),
+                    8 => paint_multi_line_editor(&ml, stored, ps, canvas),
+                    400 => paint_bar_chart(&series, 0, 80, stored, canvas),
+                    401 => paint_multi_line_chart(&series, 0, 80, stored, canvas),
+                    _ => Ok(()),
+                }
+            },
+        )
+        .unwrap();
+
+        let mut band = [0u16; 320 * 120];
+        let mut target =
+            liuli::render::BandTarget::new::<()>(&mut band, Rect::new(0, 0, 320, 120)).unwrap();
+        let replayed =
+            liuli::render::render_band(&mut target, &cmds, &SliceSceneResources::EMPTY, &fonts);
+        assert!(replayed > 0);
+        let bg_raw = rgb565_to_u16(Theme::DARK.background);
+        assert!(band.iter().any(|&px| px != bg_raw));
     }
 }
