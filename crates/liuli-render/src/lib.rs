@@ -9,6 +9,7 @@ pub mod band;
 pub mod bitmap_store;
 pub mod display;
 pub mod dma;
+pub mod drivers;
 mod effects;
 pub mod raster;
 pub mod spi;
@@ -27,6 +28,10 @@ pub use dma::{
     AlignedBand, BandMeta, BandSlot, CACHE_LINE_BYTES, DmaCacheOps, DmaCoordinator, DmaSink,
     FreeBand, InFlightBand, NoCacheOps, PollOutcome, ReadyBand, SealError, StartOutcome, TeError,
     TeGate, TeMode, TeWait,
+};
+pub use drivers::{
+    Cst816Decoder, DisplayCmdBus, Ft3168Decoder, Gc9a01, Gt911Decoder, Ili9341, PanelConfig,
+    Rm67162, St7789, Xpt2046Calibrator,
 };
 pub use raster::{draw_eg, render_band, render_band_with_accel, render_band_with_provider};
 pub use spi::{RECOMMENDED_SPI_CHUNK_BYTES, SpiWindowBus, SpiWindowTarget};
