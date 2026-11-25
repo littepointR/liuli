@@ -6,14 +6,16 @@ use embedded_graphics::geometry::{Dimensions, OriginDimensions, Point, Size};
 use embedded_graphics::pixelcolor::{IntoStorage, Rgb565};
 use embedded_graphics::primitives::Rectangle;
 use liuli_core::capacity::{PresentError, PresentStatus};
+use liuli_core::color::PixelFormat;
 use liuli_core::damage::DamageSet;
+use liuli_core::dither::DitherMode;
 use liuli_core::geometry::{Rect, rgb565_to_u16, u16_to_rgb565};
 use liuli_core::paint::{CommandList, PaintCmd, SliceSceneResources};
 use liuli_render::{
     BandTarget, BufferTooSmall, ByteOrder, ByteWindowBus, ByteWindowSink, DisplaySink,
     EgDisplaySink, FrameError, RECOMMENDED_SPI_CHUNK_BYTES, RECOMMENDED_WIRE_CHUNK_BYTES,
-    SpiWindowBus, SpiWindowTarget, encode_rgb565, encode_rgb565_in_place, encode_rgb565_words,
-    present_sink, present_sync, present_sync_with,
+    SpiWindowBus, SpiWindowTarget, encode_rgb565, encode_rgb565_in_place, encode_rgb565_row,
+    encode_rgb565_words, present_sink, present_sync, present_sync_with,
 };
 use liuli_text::{FontSet, Lf4Font};
 
@@ -787,4 +789,162 @@ fn display_sink_byte_window_and_eg_adapter_work_uniformly_without_losing_compat(
     .unwrap_err();
     assert!(matches!(err, FrameError::Display(PresentError::Target(_))));
     assert!(dmg.is_full_screen());
+}
+
+#[derive(Default)]
+struct RecordingByteBus {
+    windows: Vec<Rect>,
+    bytes: Vec<u8>,
+}
+
+impl ByteWindowBus for RecordingByteBus {
+    type Error = ();
+    fn set_window(&mut self, rect: Rect) -> Result<(), Self::Error> {
+        self.windows.push(rect);
+        Ok(())
+    }
+    fn write_bytes(&mut self, bytes: &[u8]) -> Result<(), Self::Error> {
+        self.bytes.extend_from_slice(bytes);
+        Ok(())
+    }
+}
+
+#[test]
+fn encode_rgb565_row_supports_all_pixel_formats_and_byte_window_sink_modes() {
+    // Pixels: Pure Red (0xF800), Mid Gray (~0x8410), Pure White (0xFFFF), Pure Black (0x0000), Pure Blue (0x001F)
+    let row = [0xF800u16, 0x8410, 0xFFFF, 0x0000, 0x001F];
+    let mut buf = [0xAAu8; 32];
+
+    assert_eq!(
+        encode_rgb565_row(&row[..2], 0, 0, PixelFormat::Rgb565Le, DitherMode::None, &mut buf[..3]),
+        Err(BufferTooSmall)
+    );
+    assert_eq!(
+        encode_rgb565_row(&row[..2], 0, 0, PixelFormat::Rgb565Be, DitherMode::None, &mut buf),
+        Ok(4)
+    );
+    assert_eq!(&buf[..4], &[0xF8, 0x00, 0x84, 0x10]);
+
+    assert_eq!(
+        encode_rgb565_row(&row[..1], 0, 0, PixelFormat::Bgr565Be, DitherMode::None, &mut buf),
+        Ok(2)
+    );
+    assert_eq!(&buf[..2], &[0x00, 0x1F]);
+
+    assert_eq!(
+        encode_rgb565_row(&row[..1], 0, 0, PixelFormat::Bgr565Le, DitherMode::None, &mut buf),
+        Ok(2)
+    );
+    assert_eq!(&buf[..2], &[0x1F, 0x00]);
+
+    assert_eq!(
+        encode_rgb565_row(&row[..1], 0, 0, PixelFormat::Rgb666, DitherMode::None, &mut buf),
+        Ok(3)
+    );
+    assert_eq!(&buf[..3], &[0xFC, 0x00, 0x00]);
+
+    assert_eq!(
+        encode_rgb565_row(&row[..1], 0, 0, PixelFormat::Rgb888, DitherMode::None, &mut buf),
+        Ok(3)
+    );
+    assert_eq!(&buf[..3], &[0xFF, 0x00, 0x00]);
+
+    assert_eq!(
+        encode_rgb565_row(&row[..1], 0, 0, PixelFormat::Bgr888, DitherMode::None, &mut buf),
+        Ok(3)
+    );
+    assert_eq!(&buf[..3], &[0x00, 0x00, 0xFF]);
+
+    assert_eq!(
+        encode_rgb565_row(&row[..1], 0, 0, PixelFormat::Argb8888, DitherMode::None, &mut buf),
+        Ok(4)
+    );
+    assert_eq!(&buf[..4], &[0x00, 0x00, 0xFF, 0xFF]);
+
+    assert_eq!(
+        encode_rgb565_row(&row[..1], 0, 0, PixelFormat::Xrgb8888, DitherMode::None, &mut buf),
+        Ok(4)
+    );
+    assert_eq!(&buf[..4], &[0x00, 0x00, 0xFF, 0xFF]);
+
+    assert_eq!(
+        encode_rgb565_row(&row[..1], 0, 0, PixelFormat::Abgr8888, DitherMode::None, &mut buf),
+        Ok(4)
+    );
+    assert_eq!(&buf[..4], &[0xFF, 0x00, 0x00, 0xFF]);
+
+    assert_eq!(
+        encode_rgb565_row(&row[2..4], 0, 0, PixelFormat::Gray8, DitherMode::None, &mut buf),
+        Ok(2)
+    );
+    assert_eq!(&buf[..2], &[255, 0]);
+
+    assert_eq!(
+        encode_rgb565_row(&row[2..5], 0, 0, PixelFormat::Gray4, DitherMode::None, &mut buf),
+        Ok(2)
+    );
+    // px0=white(15<<4), px1=black(0) => 0xF0; px2=blue(luma<16 => 1<<4 = 0x10)
+    assert_eq!(buf[0], 0xF0);
+    assert_eq!(buf[1] & 0x0F, 0x00);
+
+    let bw_row = [0xFFFFu16, 0x0000, 0xFFFF, 0x0000, 0xFFFF, 0xFFFF, 0x0000, 0x0000, 0xFFFF];
+    assert_eq!(
+        encode_rgb565_row(&bw_row, 0, 0, PixelFormat::Mono1Msb, DitherMode::None, &mut buf),
+        Ok(2)
+    );
+    assert_eq!(&buf[..2], &[0b1010_1100, 0b1000_0000]);
+
+    assert_eq!(
+        encode_rgb565_row(&bw_row, 0, 0, PixelFormat::Mono1Lsb, DitherMode::None, &mut buf),
+        Ok(2)
+    );
+    assert_eq!(&buf[..2], &[0b0011_0101, 0b0000_0001]);
+
+    // Bayer dithered Mono1 produces deterministic non-trivial pattern for mid gray (0x8410).
+    let grays = [0x8410u16; 8];
+    assert_eq!(
+        encode_rgb565_row(&grays, 0, 0, PixelFormat::Mono1Msb, DitherMode::Bayer4x4, &mut buf),
+        Ok(1)
+    );
+    assert!(buf[0] != 0x00 && buf[0] != 0xFF);
+
+    // ByteWindowSink::with_format handles RGB666, RGB888, ARGB8888, Gray4, Mono1Msb.
+    for (fmt, dither, expected_bytes) in [
+        (PixelFormat::Rgb666, DitherMode::None, vec![0xFC, 0x00, 0x00, 0xFC, 0xFC, 0xFC]),
+        (PixelFormat::Rgb888, DitherMode::None, vec![0xFF, 0x00, 0x00, 0xFF, 0xFF, 0xFF]),
+        (
+            PixelFormat::Argb8888,
+            DitherMode::None,
+            vec![0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF],
+        ),
+        (PixelFormat::Mono1Msb, DitherMode::None, vec![0b0100_0000]),
+    ] {
+        let mut chunk = [0u8; 64];
+        let mut sink = ByteWindowSink::with_format(
+            RecordingByteBus::default(),
+            Rect::new(0, 0, 4, 2),
+            fmt,
+            dither,
+            &mut chunk,
+        )
+        .unwrap();
+        assert_eq!(sink.format(), fmt);
+        assert_eq!(sink.dither(), dither);
+        sink.flush_rect(Rect::new(0, 0, 2, 1), &[0xF800, 0xFFFF])
+            .unwrap();
+        assert_eq!(sink.bus().bytes, expected_bytes);
+    }
+
+    // Sub-format chunk size checks (Rgb888 requires at least 3 bytes).
+    let mut two_bytes = [0u8; 2];
+    assert!(
+        ByteWindowSink::with_format(
+            RecordingByteBus::default(),
+            Rect::new(0, 0, 4, 2),
+            PixelFormat::Rgb888,
+            DitherMode::None,
+            &mut two_bytes,
+        )
+        .is_err()
+    );
 }

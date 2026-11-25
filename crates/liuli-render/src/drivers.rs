@@ -1,3 +1,4 @@
+use liuli_core::color::PixelFormat;
 use liuli_core::geometry::{Point, Rect, Rotation};
 use liuli_core::input::TouchPoint;
 
@@ -22,6 +23,7 @@ pub struct PanelConfig {
     pub rotation: Rotation,
     pub bgr: bool,
     pub invert: bool,
+    pub pixel_format: Option<PixelFormat>,
 }
 
 impl PanelConfig {
@@ -35,6 +37,7 @@ impl PanelConfig {
             rotation: Rotation::Deg0,
             bgr: false,
             invert: false,
+            pixel_format: None,
         }
     }
 
@@ -62,6 +65,12 @@ impl PanelConfig {
         self.invert = invert;
         self
     }
+
+    #[inline]
+    pub const fn with_pixel_format(mut self, format: PixelFormat) -> Self {
+        self.pixel_format = Some(format);
+        self
+    }
 }
 
 #[derive(Copy, Clone)]
@@ -69,6 +78,7 @@ struct ControllerSpec {
     madctl_by_rot: [u8; 4],
     init_cmds: &'static [(u8, &'static [u8], u32)],
     ramwr_cmd: u8,
+    default_format: PixelFormat,
 }
 
 const MADCTL_DEFAULT: [u8; 4] = [0x00, 0x60, 0xC0, 0xA0];
@@ -87,6 +97,7 @@ const ST7789_SPEC: ControllerSpec = ControllerSpec {
         (0x29, &[], 20),                            // DISPON
     ],
     ramwr_cmd: 0x2C,
+    default_format: PixelFormat::Rgb565Be,
 };
 
 const ILI9341_SPEC: ControllerSpec = ControllerSpec {
@@ -103,6 +114,21 @@ const ILI9341_SPEC: ControllerSpec = ControllerSpec {
         (0x29, &[], 20),    // DISPON
     ],
     ramwr_cmd: 0x2C,
+    default_format: PixelFormat::Rgb565Be,
+};
+
+const ILI9488_SPEC: ControllerSpec = ControllerSpec {
+    madctl_by_rot: MADCTL_ILI9341,
+    init_cmds: &[
+        (0x01, &[], 100),         // SWRESET
+        (0x11, &[], 120),         // SLPOUT
+        (0xC0, &[0x17, 0x15], 0), // PWCTRL1
+        (0xC1, &[0x41], 0),       // PWCTRL2
+        (0x3A, &[0x66], 0),       // COLMOD 18-bit RGB666 for SPI
+        (0x29, &[], 20),          // DISPON
+    ],
+    ramwr_cmd: 0x2C,
+    default_format: PixelFormat::Rgb666,
 };
 
 const GC9A01_SPEC: ControllerSpec = ControllerSpec {
@@ -117,6 +143,7 @@ const GC9A01_SPEC: ControllerSpec = ControllerSpec {
         (0x29, &[], 20),    // DISPON
     ],
     ramwr_cmd: 0x2C,
+    default_format: PixelFormat::Rgb565Be,
 };
 
 const RM67162_SPEC: ControllerSpec = ControllerSpec {
@@ -129,6 +156,7 @@ const RM67162_SPEC: ControllerSpec = ControllerSpec {
         (0x29, &[], 20),    // DISPON
     ],
     ramwr_cmd: 0x2C,
+    default_format: PixelFormat::Rgb565Be,
 };
 
 struct MipiDcsPanel<B> {
@@ -157,14 +185,34 @@ impl<B> MipiDcsPanel<B> {
 }
 
 impl<B: DisplayCmdBus> MipiDcsPanel<B> {
+    fn pixel_format(&self) -> PixelFormat {
+        self.cfg.pixel_format.unwrap_or(self.spec.default_format)
+    }
+
     fn madctl_byte(&self, rot: Rotation) -> u8 {
         let base = self.spec.madctl_by_rot[rot as usize];
-        if self.cfg.bgr { base | 0x08 } else { base }
+        if self.cfg.bgr || self.pixel_format().is_bgr() {
+            base | 0x08
+        } else {
+            base
+        }
     }
 
     fn init(&mut self) -> Result<(), B::Error> {
         for &(cmd, data, delay) in self.spec.init_cmds {
-            self.bus.write_command(cmd, data)?;
+            if cmd == 0x3A
+                && let Some(fmt) = self.cfg.pixel_format
+                && let Some(colmod) = fmt.mipi_colmod()
+            {
+                let byte = if matches!(data, [0x05] | [0x06]) {
+                    colmod & 0x0F
+                } else {
+                    colmod
+                };
+                self.bus.write_command(cmd, &[byte])?;
+            } else {
+                self.bus.write_command(cmd, data)?;
+            }
             if delay > 0 {
                 self.bus.delay_ms(delay);
             }
@@ -226,6 +274,11 @@ macro_rules! define_panel_driver {
             }
 
             #[inline]
+            pub fn pixel_format(&self) -> PixelFormat {
+                self.inner.cfg.pixel_format.unwrap_or(self.inner.spec.default_format)
+            }
+
+            #[inline]
             pub fn bus(&self) -> &B {
                 &self.inner.bus
             }
@@ -283,6 +336,11 @@ define_panel_driver!(
     Ili9341,
     ILI9341_SPEC,
     "Turnkey ILI9341 TFT controller driver implementing [`ByteWindowBus`]."
+);
+define_panel_driver!(
+    Ili9488,
+    ILI9488_SPEC,
+    "Turnkey ILI9488 18-bit SPI/parallel TFT controller driver implementing [`ByteWindowBus`]."
 );
 define_panel_driver!(
     Gc9a01,

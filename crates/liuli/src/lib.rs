@@ -74,12 +74,12 @@ pub mod prelude {
         AlignedBand, BandMeta, BandSlot, BufferTooSmall, ByteOrder, ByteWindowBus, ByteWindowSink,
         CACHE_LINE_BYTES, Cst816Decoder, DisplayCmdBus, DisplaySink, DmaCacheOps, DmaCoordinator,
         DmaSink, DrawAccel, EgDisplaySink, FrameError, FreeBand, Ft3168Decoder, Gc9a01,
-        Gt911Decoder, Ili9341, InFlightBand, NoCacheOps, PanelConfig, PollOutcome,
+        Gt911Decoder, Ili9341, Ili9488, InFlightBand, NoCacheOps, PanelConfig, PollOutcome,
         RECOMMENDED_SPI_CHUNK_BYTES, RECOMMENDED_WIRE_CHUNK_BYTES, ReadyBand, Rm67162,
         RotatedDisplaySink, SealError, SoftAccel, SpiWindowBus, SpiWindowTarget, St7789,
         StartOutcome, StoredBitmap, StoredBitmapError, TeError, TeGate, TeMode, TeWait,
-        Xpt2046Calibrator, encode_rgb565, encode_rgb565_in_place, encode_rgb565_words,
-        render_band_with_accel,
+        Xpt2046Calibrator, byte_order_to_pixel_format, encode_rgb565, encode_rgb565_in_place,
+        encode_rgb565_row, encode_rgb565_words, render_band_with_accel,
     };
     pub use liuli_text::storage::{GlyphPixels, InlinePixels, IoMetrics};
     pub use liuli_text::{

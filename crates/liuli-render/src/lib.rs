@@ -30,8 +30,8 @@ pub use dma::{
     TeGate, TeMode, TeWait,
 };
 pub use drivers::{
-    Cst816Decoder, DisplayCmdBus, Ft3168Decoder, Gc9a01, Gt911Decoder, Ili9341, PanelConfig,
-    Rm67162, St7789, Xpt2046Calibrator,
+    Cst816Decoder, DisplayCmdBus, Ft3168Decoder, Gc9a01, Gt911Decoder, Ili9341, Ili9488,
+    PanelConfig, Rm67162, St7789, Xpt2046Calibrator,
 };
 pub use raster::{draw_eg, render_band, render_band_with_accel, render_band_with_provider};
 pub use spi::{RECOMMENDED_SPI_CHUNK_BYTES, SpiWindowBus, SpiWindowTarget};
@@ -40,7 +40,8 @@ pub use sync::{
     present_sync_with, present_sync_with_provider,
 };
 pub use wire::{
-    BufferTooSmall, ByteOrder, encode_rgb565, encode_rgb565_in_place, encode_rgb565_words,
+    BufferTooSmall, ByteOrder, byte_order_to_pixel_format, encode_rgb565, encode_rgb565_in_place,
+    encode_rgb565_row, encode_rgb565_words,
 };
 
 #[cfg(test)]

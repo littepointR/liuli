@@ -1,8 +1,9 @@
+use liuli_core::color::PixelFormat;
 use liuli_core::geometry::{Point, Rect, Rotation};
 use liuli_core::input::TouchPoint;
 use liuli_render::{
     ByteOrder, ByteWindowSink, Cst816Decoder, DisplayCmdBus, DisplaySink, Ft3168Decoder, Gc9a01,
-    Gt911Decoder, Ili9341, PanelConfig, Rm67162, St7789, Xpt2046Calibrator,
+    Gt911Decoder, Ili9341, Ili9488, PanelConfig, Rm67162, St7789, Xpt2046Calibrator,
 };
 
 #[derive(Default)]
@@ -80,6 +81,40 @@ fn panel_drivers_init_rotate_set_window_and_stream_pixels() {
     rm.init().unwrap();
     rm.set_brightness(180).unwrap();
     assert!(rm.bus().cmds.iter().any(|(c, d)| *c == 0x51 && d == &[180]));
+
+    // ILI9488 defaults to 18-bit RGB666 COLMOD 0x66 for SPI compatibility
+    let mut ili9488 = Ili9488::new(MockCmdBus::default(), PanelConfig::new(320, 480));
+    assert_eq!(ili9488.pixel_format(), PixelFormat::Rgb666);
+    ili9488.init().unwrap();
+    assert!(
+        ili9488
+            .bus()
+            .cmds
+            .iter()
+            .any(|(c, d)| *c == 0x3A && d == &[0x66])
+    );
+
+    // Explicit pixel_format on ST7789 overrides COLMOD (0x66) and enables BGR MADCTL bit
+    let mut st666 = St7789::new(
+        MockCmdBus::default(),
+        PanelConfig::new(240, 320).with_pixel_format(PixelFormat::Bgr888),
+    );
+    assert_eq!(st666.pixel_format(), PixelFormat::Bgr888);
+    st666.init().unwrap();
+    assert!(
+        st666
+            .bus()
+            .cmds
+            .iter()
+            .any(|(c, d)| *c == 0x3A && d == &[0x66])
+    );
+    assert!(
+        st666
+            .bus()
+            .cmds
+            .iter()
+            .any(|(c, d)| *c == 0x36 && (d[0] & 0x08) != 0)
+    );
 }
 
 #[test]

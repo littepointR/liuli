@@ -3,9 +3,13 @@ use embedded_graphics::draw_target::DrawTarget;
 use embedded_graphics::geometry::Dimensions;
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::primitives::Rectangle;
+use liuli_core::color::PixelFormat;
+use liuli_core::dither::DitherMode;
 use liuli_core::geometry::{Point, Rect, Rotation, Size, rgb565_to_u16, u16_to_rgb565};
 
-use crate::wire::{BufferTooSmall, ByteOrder, encode_rgb565};
+use crate::wire::{
+    BufferTooSmall, ByteOrder, byte_order_to_pixel_format, encode_rgb565_row,
+};
 
 /// Recommended byte staging chunk size for [`ByteWindowSink`].
 pub const RECOMMENDED_WIRE_CHUNK_BYTES: usize = 64;
@@ -58,6 +62,8 @@ pub struct ByteWindowSink<'a, B> {
     bus: B,
     bounds: Rect,
     order: ByteOrder,
+    format: PixelFormat,
+    dither: DitherMode,
     chunk: &'a mut [u8],
 }
 
@@ -68,13 +74,35 @@ impl<'a, B> ByteWindowSink<'a, B> {
         order: ByteOrder,
         chunk: &'a mut [u8],
     ) -> Result<Self, BufferTooSmall> {
-        if chunk.len() < 2 {
+        Self::with_format(
+            bus,
+            bounds,
+            byte_order_to_pixel_format(order),
+            DitherMode::None,
+            chunk,
+        )
+    }
+
+    pub fn with_format(
+        bus: B,
+        bounds: Rect,
+        format: PixelFormat,
+        dither: DitherMode,
+        chunk: &'a mut [u8],
+    ) -> Result<Self, BufferTooSmall> {
+        if chunk.len() < format.min_chunk_bytes() {
             return Err(BufferTooSmall);
         }
+        let order = match format {
+            PixelFormat::Rgb565Le | PixelFormat::Bgr565Le => ByteOrder::LittleEndian,
+            _ => ByteOrder::BigEndian,
+        };
         Ok(Self {
             bus,
             bounds,
             order,
+            format,
+            dither,
             chunk,
         })
     }
@@ -87,6 +115,16 @@ impl<'a, B> ByteWindowSink<'a, B> {
     #[inline]
     pub const fn order(&self) -> ByteOrder {
         self.order
+    }
+
+    #[inline]
+    pub const fn format(&self) -> PixelFormat {
+        self.format
+    }
+
+    #[inline]
+    pub const fn dither(&self) -> DitherMode {
+        self.dither
     }
 
     #[inline]
@@ -105,16 +143,49 @@ impl<'a, B> ByteWindowSink<'a, B> {
     }
 
     #[inline]
-    fn stage_words(&self) -> usize {
-        (self.chunk.len() / 2).clamp(1, MAX_STAGE_WORDS)
+    fn max_row_chunk_words(&self) -> usize {
+        match self.format {
+            PixelFormat::Rgb565Le
+            | PixelFormat::Rgb565Be
+            | PixelFormat::Bgr565Le
+            | PixelFormat::Bgr565Be => (self.chunk.len() / 2).max(1),
+            PixelFormat::Rgb666 | PixelFormat::Rgb888 | PixelFormat::Bgr888 => {
+                (self.chunk.len() / 3).max(1)
+            }
+            PixelFormat::Xrgb8888 | PixelFormat::Argb8888 | PixelFormat::Abgr8888 => {
+                (self.chunk.len() / 4).max(1)
+            }
+            PixelFormat::Gray8 => self.chunk.len().max(1),
+            PixelFormat::Gray4 => self.chunk.len().saturating_mul(2).max(2),
+            PixelFormat::Mono1Msb | PixelFormat::Mono1Lsb => {
+                self.chunk.len().saturating_mul(8).max(8)
+            }
+        }
     }
 
-    fn write_word_slice(&mut self, words: &[u16]) -> Result<(), B::Error>
+    #[inline]
+    fn stage_words(&self) -> usize {
+        self.max_row_chunk_words().min(MAX_STAGE_WORDS)
+    }
+
+    fn write_row_words(&mut self, gx0: i32, gy: i32, words: &[u16]) -> Result<(), B::Error>
     where
         B: ByteWindowBus,
     {
-        if let Ok(nbytes) = encode_rgb565(words, self.chunk, self.order) {
-            self.bus.write_bytes(&self.chunk[..nbytes])?;
+        let max_words = self.max_row_chunk_words();
+        let mut off = 0usize;
+        for slice in words.chunks(max_words) {
+            if let Ok(nbytes) = encode_rgb565_row(
+                slice,
+                gx0.saturating_add(off as i32),
+                gy,
+                self.format,
+                self.dither,
+                self.chunk,
+            ) {
+                self.bus.write_bytes(&self.chunk[..nbytes])?;
+            }
+            off += slice.len();
         }
         Ok(())
     }
@@ -136,15 +207,6 @@ impl<B: ByteWindowBus> DisplaySink for ByteWindowSink<'_, B> {
             return Ok(());
         }
         self.bus.set_window(vis)?;
-        let max_words = (self.chunk.len() / 2).max(1);
-        if vis == rect {
-            let total = (vis.w as usize).saturating_mul(vis.h as usize);
-            let src = &pixels[..total.min(pixels.len())];
-            for slice in src.chunks(max_words) {
-                self.write_word_slice(slice)?;
-            }
-            return Ok(());
-        }
 
         let skip_x = (vis.x - rect.x) as usize;
         let skip_y = (vis.y - rect.y) as usize;
@@ -159,9 +221,7 @@ impl<B: ByteWindowBus> DisplaySink for ByteWindowSink<'_, B> {
             }
             let available = (pixels.len() - row_start).min(vis_w);
             let row = &pixels[row_start..row_start + available];
-            for slice in row.chunks(max_words) {
-                self.write_word_slice(slice)?;
-            }
+            self.write_row_words(vis.x, vis.y.saturating_add(ry as i32), row)?;
             if available < vis_w {
                 break;
             }
@@ -194,7 +254,7 @@ impl<B: ByteWindowBus> DrawTarget for ByteWindowSink<'_, B> {
             }
             self.bus.set_window(Rect::new(pt.x, pt.y, 1, 1))?;
             let w = [rgb565_to_u16(color)];
-            self.write_word_slice(&w)?;
+            self.write_row_words(pt.x, pt.y, &w)?;
         }
         Ok(())
     }
@@ -227,45 +287,41 @@ impl<B: ByteWindowBus> DrawTarget for ByteWindowSink<'_, B> {
 
         let cap = self.stage_words();
         let mut word_buf = [0u16; MAX_STAGE_WORDS];
-        let mut count = 0usize;
 
         for ry in 0..vis_h {
+            let gy = vis.y.saturating_add(ry as i32);
             for _ in 0..skip_x {
                 if iter.next().is_none() {
-                    if count > 0 {
-                        self.write_word_slice(&word_buf[..count])?;
-                    }
                     return Ok(());
                 }
             }
+            let mut gx = vis.x;
+            let mut count = 0usize;
             for _ in 0..vis_w {
                 let Some(color) = iter.next() else {
                     if count > 0 {
-                        self.write_word_slice(&word_buf[..count])?;
+                        self.write_row_words(gx, gy, &word_buf[..count])?;
                     }
                     return Ok(());
                 };
                 word_buf[count] = rgb565_to_u16(color);
                 count += 1;
                 if count == cap {
-                    self.write_word_slice(&word_buf[..count])?;
+                    self.write_row_words(gx, gy, &word_buf[..count])?;
+                    gx = gx.saturating_add(count as i32);
                     count = 0;
                 }
+            }
+            if count > 0 {
+                self.write_row_words(gx, gy, &word_buf[..count])?;
             }
             if ry + 1 < vis_h {
                 for _ in 0..tail_x {
                     if iter.next().is_none() {
-                        if count > 0 {
-                            self.write_word_slice(&word_buf[..count])?;
-                        }
                         return Ok(());
                     }
                 }
             }
-        }
-
-        if count > 0 {
-            self.write_word_slice(&word_buf[..count])?;
         }
         Ok(())
     }
@@ -279,11 +335,16 @@ impl<B: ByteWindowBus> DrawTarget for ByteWindowSink<'_, B> {
         let cap = self.stage_words();
         let word = rgb565_to_u16(color);
         let word_buf = [word; MAX_STAGE_WORDS];
-        let mut remaining = vis.area64();
-        while remaining > 0 {
-            let n = remaining.min(cap as u64) as usize;
-            self.write_word_slice(&word_buf[..n])?;
-            remaining -= n as u64;
+        for ry in 0..vis.h {
+            let gy = vis.y.saturating_add(ry as i32);
+            let mut rem = vis.w as usize;
+            let mut gx = vis.x;
+            while rem > 0 {
+                let n = rem.min(cap);
+                self.write_row_words(gx, gy, &word_buf[..n])?;
+                gx = gx.saturating_add(n as i32);
+                rem -= n;
+            }
         }
         Ok(())
     }
