@@ -79,16 +79,58 @@ impl Default for Storage {
     }
 }
 
-#[cfg(target_pointer_width = "32")]
+#[cfg(all(
+    target_pointer_width = "32",
+    not(any(feature = "capacity-128", feature = "capacity-256"))
+))]
 const _: () = {
     assert!(core::mem::size_of::<liuli_core::paint::PaintCmd>() <= 48);
     assert!(core::mem::size_of::<liuli_core::node::RetainedNode>() <= 224);
     assert!(core::mem::size_of::<Storage>() <= 67_456);
 };
 
-#[cfg(target_pointer_width = "64")]
+#[cfg(all(
+    target_pointer_width = "64",
+    not(any(feature = "capacity-128", feature = "capacity-256"))
+))]
 const _: () = {
     assert!(core::mem::size_of::<liuli_core::paint::PaintCmd>() <= 48);
     assert!(core::mem::size_of::<liuli_core::node::RetainedNode>() <= 232);
     assert!(core::mem::size_of::<Storage>() <= 73_120);
+};
+
+#[cfg(all(
+    target_pointer_width = "32",
+    feature = "capacity-128",
+    not(feature = "capacity-256")
+))]
+const _: () = {
+    assert!(core::mem::size_of::<liuli_core::paint::PaintCmd>() <= 48);
+    assert!(core::mem::size_of::<liuli_core::node::RetainedNode>() <= 224);
+    assert!(core::mem::size_of::<Storage>() <= 160_000);
+};
+
+#[cfg(all(
+    target_pointer_width = "64",
+    feature = "capacity-128",
+    not(feature = "capacity-256")
+))]
+const _: () = {
+    assert!(core::mem::size_of::<liuli_core::paint::PaintCmd>() <= 48);
+    assert!(core::mem::size_of::<liuli_core::node::RetainedNode>() <= 232);
+    assert!(core::mem::size_of::<Storage>() <= 176_000);
+};
+
+#[cfg(all(target_pointer_width = "32", feature = "capacity-256"))]
+const _: () = {
+    assert!(core::mem::size_of::<liuli_core::paint::PaintCmd>() <= 48);
+    assert!(core::mem::size_of::<liuli_core::node::RetainedNode>() <= 224);
+    assert!(core::mem::size_of::<Storage>() <= 320_000);
+};
+
+#[cfg(all(target_pointer_width = "64", feature = "capacity-256"))]
+const _: () = {
+    assert!(core::mem::size_of::<liuli_core::paint::PaintCmd>() <= 48);
+    assert!(core::mem::size_of::<liuli_core::node::RetainedNode>() <= 232);
+    assert!(core::mem::size_of::<Storage>() <= 352_000);
 };

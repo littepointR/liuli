@@ -12,3 +12,5 @@ embedded-graphics-core.workspace = true
 owned-images=[]
 layers=["owned-images"]
 inspector=[]
+capacity-128=[]
+capacity-256=["capacity-128"]

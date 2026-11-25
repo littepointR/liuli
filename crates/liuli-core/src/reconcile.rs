@@ -1,4 +1,4 @@
-use crate::capacity::{BuildError, MAX_NODES};
+use crate::capacity::{BuildError, MAX_NODES, NodeMask};
 use crate::damage::DamageSet;
 use crate::geometry::Rect;
 use crate::layout::{TextMeasurer, layout_tree, refresh_node_ink_rect};
@@ -7,7 +7,7 @@ use crate::time::{ANIM_SCALE, AnimPool, AnimProp, InstantMs, TOGGLE_ANIM_DURATIO
 use crate::view::{NodeKind, SlotLink, ViewDraft};
 
 const NO_MAP: u8 = u8::MAX;
-const _: () = assert!(MAX_NODES <= 64 && MAX_NODES < NO_MAP as usize);
+const _: () = assert!(MAX_NODES < NO_MAP as usize);
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
 pub struct ReconcileOutcome {
@@ -51,8 +51,8 @@ pub fn reconcile_into(
     let d_count = draft.count as usize;
     let mut draft_to_cand = [NO_MAP; MAX_NODES];
     let mut matched_from_old = [NO_MAP; MAX_NODES];
-    let mut matched_old_mask = 0u64;
-    let mut cand_occupied_mask = 0u64;
+    let mut matched_old_mask = NodeMask::ZERO;
+    let mut cand_occupied_mask = NodeMask::ZERO;
 
     // Pass 1: match nodes with identical Key + Kind, preserving their exact slot and NodeId.
     for d_idx in 0..d_count {
@@ -62,8 +62,8 @@ pub fn reconcile_into(
             if old.kind == d.kind {
                 let s_u8 = old_slot as u8;
                 draft_to_cand[d_idx] = s_u8;
-                matched_old_mask |= 1u64 << old_slot;
-                cand_occupied_mask |= 1u64 << old_slot;
+                matched_old_mask.set(old_slot as usize);
+                cand_occupied_mask.set(old_slot as usize);
                 matched_from_old[old_slot as usize] = s_u8;
             }
         }
@@ -77,7 +77,7 @@ pub fn reconcile_into(
             continue;
         }
         loop {
-            while next_free < MAX_NODES && (cand_occupied_mask & (1u64 << next_free)) != 0 {
+            while next_free < MAX_NODES && cand_occupied_mask.get(next_free) {
                 next_free += 1;
             }
             if next_free >= MAX_NODES {
@@ -94,7 +94,7 @@ pub fn reconcile_into(
                 continue;
             }
             candidate.generation_hwm[next_free] = prev_gen + 1;
-            cand_occupied_mask |= 1u64 << next_free;
+            cand_occupied_mask.set(next_free);
             *slot = next_free as u8;
             next_free += 1;
             break;
@@ -104,7 +104,7 @@ pub fn reconcile_into(
     // Track deleted or kind-changed nodes for damage, animation cleanup, and focus/capture cleanup.
     let mut outcome = ReconcileOutcome::default();
     for (old_idx, old) in active.nodes.iter().enumerate() {
-        if !old.occupied || (matched_old_mask & (1u64 << old_idx)) != 0 {
+        if !old.occupied || matched_old_mask.get(old_idx) {
             continue;
         }
         outcome.tree_changed = true;
@@ -385,14 +385,14 @@ pub fn reconcile_into(
     }
 
     // Propagate dirty_measure up parent chain using bitmask.
-    let mut dirty_mask = 0u64;
+    let mut dirty_mask = NodeMask::ZERO;
     for (idx, n) in candidate.nodes.iter().enumerate() {
         if n.occupied && n.dirty_measure {
-            dirty_mask |= 1u64 << idx;
+            dirty_mask.set(idx);
         }
     }
     for idx in 0..MAX_NODES {
-        if (dirty_mask & (1u64 << idx)) == 0 {
+        if !dirty_mask.get(idx) {
             continue;
         }
         let mut p = candidate.nodes[idx].parent;

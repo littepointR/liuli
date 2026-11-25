@@ -457,12 +457,12 @@ impl RetainedTree {
         if self.effects.iter().is_empty() {
             return;
         }
-        let mask = self
-            .nodes
-            .iter()
-            .enumerate()
-            .filter(|(_, n)| n.occupied && n.pressed)
-            .fold(0u64, |m, (i, _)| m | 1u64 << i);
+        let mut mask = crate::capacity::NodeMask::ZERO;
+        for (i, n) in self.nodes.iter().enumerate() {
+            if n.occupied && n.pressed {
+                mask.set(i);
+            }
+        }
         for &(key, style) in self.effects.iter() {
             if style.shadow.is_none()
                 || !style.press_depth.is_enabled()
@@ -495,10 +495,9 @@ impl RetainedTree {
             }
         }
     }
-    fn subtree_pressed(&self, ancestor: u16, mut mask: u64) -> bool {
-        while mask != 0 {
-            let mut cur = Some(mask.trailing_zeros() as u16);
-            mask &= mask - 1;
+    fn subtree_pressed(&self, ancestor: u16, mut mask: crate::capacity::NodeMask) -> bool {
+        while let Some(idx) = mask.pop_first() {
+            let mut cur = Some(idx as u16);
             while let Some(s) = cur {
                 if s == ancestor {
                     return true;

@@ -1,8 +1,8 @@
 use embedded_graphics_core::draw_target::DrawTarget;
 use embedded_graphics_core::pixelcolor::Rgb565;
 use liuli_core::capacity::{
-    BuildError, DEFAULT_BAND_HEIGHT, DispatchError, FrameMetrics, MAX_NODES, PresentError,
-    PresentStatus, TimeError, TransactionError,
+    BuildError, DEFAULT_BAND_HEIGHT, DispatchError, FrameMetrics, MAX_NODES, NodeMask,
+    PresentError, PresentStatus, TimeError, TransactionError,
 };
 use liuli_core::damage::DamageSet;
 use liuli_core::focus::{
@@ -925,7 +925,7 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
         saved_pointer: PointerState,
         saved_repeat: RepeatState,
         saved_last_content_focus: Option<Key>,
-        saved_pressed_mask: u64,
+        saved_pressed_mask: NodeMask,
         saved_scroll_y: &[i32; MAX_NODES],
     ) {
         self.storage.focus = saved_focus;
@@ -933,21 +933,21 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
         self.storage.repeat = saved_repeat;
         self.last_content_focus = saved_last_content_focus;
         let tree = &mut self.storage.trees[active_t_idx];
-        let mut scroll_changed_mask = 0u64;
+        let mut scroll_changed_mask = NodeMask::ZERO;
         for (idx, &prev_scroll) in saved_scroll_y.iter().enumerate() {
             if tree.nodes[idx].occupied {
-                tree.nodes[idx].pressed = (saved_pressed_mask & (1u64 << idx)) != 0;
+                tree.nodes[idx].pressed = saved_pressed_mask.get(idx);
                 if tree.nodes[idx].scroll_y != prev_scroll {
                     tree.nodes[idx].scroll_y = prev_scroll;
                     if tree.nodes[idx].kind == NodeKind::ScrollY {
-                        scroll_changed_mask |= 1u64 << idx;
+                        scroll_changed_mask.set(idx);
                     }
                 }
             }
         }
-        if scroll_changed_mask != 0 {
+        if scroll_changed_mask.any() {
             for idx in 0..MAX_NODES {
-                if (scroll_changed_mask & (1u64 << idx)) != 0 {
+                if scroll_changed_mask.get(idx) {
                     relayout_scroll_subtree(tree, idx as u16, self.screen);
                 }
             }
@@ -1050,12 +1050,12 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
                 if id == saved_repeat.pointer_id && saved_repeat.fired_any
         );
 
-        let mut saved_pressed_mask = 0u64;
+        let mut saved_pressed_mask = NodeMask::ZERO;
         let mut saved_scroll_y = [0i32; MAX_NODES];
         for (idx, n) in self.storage.trees[active_t_idx].nodes.iter().enumerate() {
             if n.occupied {
                 if n.pressed {
-                    saved_pressed_mask |= 1u64 << idx;
+                    saved_pressed_mask.set(idx);
                 }
                 saved_scroll_y[idx] = n.scroll_y;
             }

@@ -23,8 +23,8 @@ pub mod prelude {
         BuildError, DEFAULT_BAND_HEIGHT, DEFAULT_BAND_PIXELS, DEFAULT_BAND_WIDTH,
         DEFAULT_SCREEN_HEIGHT, DEFAULT_SCREEN_WIDTH, DispatchError, FrameMetrics, LayoutError,
         MAX_ANIMATIONS, MAX_COMMANDS, MAX_DAMAGE, MAX_DEPTH, MAX_MODALS, MAX_NODES,
-        MAX_SPARKLINE_SAMPLES, MAX_SPARKLINES, MAX_TEXT_BYTES, PresentError, PresentStatus,
-        TimeError, TransactionError,
+        MAX_SPARKLINE_SAMPLES, MAX_SPARKLINES, MAX_TEXT_BYTES, NodeMask, PresentError,
+        PresentStatus, TimeError, TransactionError,
     };
     pub use liuli_core::damage::DamageSet;
     pub use liuli_core::effects::{Layer, PressDepth, Projection, Shadow, SurfaceStyle};

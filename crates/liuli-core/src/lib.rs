@@ -122,10 +122,12 @@ mod tests {
         dmg.add(Rect::new(10, 0, 10, 10), screen); // area 100, union = 20*100 = 2000 > 1100*5/4=1375
         assert_eq!(dmg.as_slice().len(), 2);
 
-        // Overflow > 12 degrades to full screen
+        // Overflow > MAX_DAMAGE degrades to full screen (disjoint 5x5 grid well under 60% area)
         dmg.clear();
         for i in 0..=MAX_DAMAGE {
-            dmg.add(Rect::new((i as i32) * 20, (i as i32) * 15, 5, 5), screen);
+            let gx = ((i % 16) as i32) * 20;
+            let gy = ((i / 16) as i32) * 20;
+            dmg.add(Rect::new(gx, gy, 5, 5), screen);
         }
         assert!(dmg.is_full_screen());
         assert_eq!(dmg.as_slice(), &[screen]);

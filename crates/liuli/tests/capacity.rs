@@ -27,10 +27,51 @@ fn static_ram_sizes_fit_128_kib_budget() {
         total_core
     );
 
+    #[cfg(not(any(feature = "capacity-128", feature = "capacity-256")))]
     assert!(
         total_core <= 128 * 1024,
         "Storage + 2 DMA bands ({total_core} B) exceeded 128 KiB!"
     );
+}
+
+#[test]
+fn capacity_profile_scales_max_nodes_beyond_64() {
+    let font = Lf4Font::from_bytes(SETTINGS_LF4).unwrap();
+    let screen = Rect::new(0, 0, 320, 240);
+    let mut t1 = Box::new(RetainedTree::new());
+    let mut t2 = Box::new(RetainedTree::new());
+    let mut draft = Box::new(ViewDraft::new());
+    let mut anims = AnimPool::new();
+    let mut dmg = DamageSet::new();
+
+    {
+        let mut vb = ViewBuilder::new(&mut draft);
+        let target_children = MAX_NODES - 4;
+        vb.root(Key(1), NodeProps::new(), |ui| {
+            for i in 0..target_children {
+                ui.label(Key(100 + i as u32), NodeProps::new())?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        vb.finish().unwrap();
+    }
+
+    reconcile_into(
+        &draft,
+        &t1,
+        &mut t2,
+        screen,
+        &font,
+        &mut anims,
+        None,
+        None,
+        InstantMs(0),
+        &mut dmg,
+    )
+    .unwrap();
+    assert_eq!(t2.active_count as usize, MAX_NODES - 3);
+    let _ = &mut t1;
 }
 
 #[test]

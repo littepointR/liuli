@@ -11,7 +11,7 @@ use crate::time::{InstantMs, NextWakeup};
 use crate::view::{Key, NodeKind, SlotLink};
 
 const DRAG_THRESHOLD_PX: i32 = 6;
-const _: () = assert!(MAX_NODES <= 64 && MAX_NODES < u8::MAX as usize);
+const _: () = assert!(MAX_NODES < u8::MAX as usize);
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 #[repr(u8)]

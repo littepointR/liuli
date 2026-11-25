@@ -130,7 +130,8 @@ impl App for FaultApp {
             FaultMode::TextOverflow => {
                 let mut p = NodeProps::new();
                 let s = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-                for i in 0..20 {
+                let iters = (liuli::core::capacity::MAX_TEXT_BYTES / 128) + 2;
+                for i in 0..iters {
                     p.text = out.text_fmt(format_args!("{s}{s}{i}"))?;
                 }
                 out.leaf(Key(10), NodeKind::Label, p)?;
