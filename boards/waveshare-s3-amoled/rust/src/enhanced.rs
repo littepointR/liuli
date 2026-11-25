@@ -34,6 +34,7 @@ impl ReadAt for Partition {
     }
 }
 pub struct Reader<'a> {
+    mapped: core::ops::Range<usize>,
     font: StoredFont<BlockCache<'a, Partition, 8>>,
     scratch: [u8; 512],
     #[cfg(any(feature = "benchmark", feature = "effects-benchmark"))]
@@ -45,16 +46,18 @@ pub struct Reader<'a> {
     baseline: IoMetrics,
 }
 impl<'a> Reader<'a> {
-    pub fn new(len: usize, cache: &'a mut [u8]) -> Result<Self, ReadError<i32>> {
+    pub fn new(mapped: &[u8], cache: &'a mut [u8]) -> Result<Self, ReadError<i32>> {
         let cache_size = cache.len();
-        let font = StoredFont::open(BlockCache::new(Partition(len), cache))?;
+        let font = StoredFont::open(BlockCache::new(Partition(mapped.len()), cache))?;
         let m = font.source().metrics();
         unsafe {
             board_font_metrics(m.reads, m.bytes, m.cache_hits, cache_size);
         }
         #[cfg(any(feature = "benchmark", feature = "effects-benchmark"))]
         let seen = alloc::vec::Vec::with_capacity(font.glyph_count().into());
+        let address = mapped.as_ptr() as usize;
         Ok(Self {
+            mapped: address..address.saturating_add(mapped.len()),
             font,
             scratch: [0; 512],
             #[cfg(any(feature = "benchmark", feature = "effects-benchmark"))]
@@ -106,9 +109,9 @@ impl GlyphPixels for Reader<'_> {
         _slot: FontId,
         g: GlyphBitmap<'a>,
     ) -> Result<&'a [u8], Self::Error> {
-        // Heading glyph offsets belong to the demo's linked asset, body offsets to the partition.
-        #[cfg(all(feature = "widget-demo", not(feature = "benchmark")))]
-        if _slot == FontId::Title20 {
+        // Linked and partition-backed fonts can share a slot through fallback.
+        // Only offsets belonging to the mapped partition are valid for this reader.
+        if !self.mapped.contains(&(g.data.as_ptr() as usize)) {
             return Ok(g.data);
         }
         self.requests += 1;

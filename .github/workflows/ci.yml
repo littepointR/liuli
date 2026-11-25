@@ -20,6 +20,7 @@ jobs:
       - run: cargo check --workspace --all-targets --locked
       - run: cargo test --workspace --locked
       - run: cargo test --workspace --release --locked
+      - run: cargo test -p liuli-widget-demo --features desktop,enhanced --test showcase --release --locked
       - run: cargo test -p liuli-core --doc --locked
       - run: cargo test -p liuli-render --doc --locked
       - run: cargo test -p liuli --test capacity --locked -- --nocapture

@@ -14,6 +14,8 @@ python boards/fk743m2-iit6/jlink.py
 python boards/fk743m2-iit6/jlink.py --flash target/fk743-st-enhanced/widget-demo.bin
 ~~~
 
+默认固件进入功能展台。桌面可生成回放参考图，J-Link 可注入同一组触摸并核对实板扫描缓冲区。[功能展台指南](widget-demo.md) 要运行下文的 Spool 录音台全屏检查点与磁带套滚动轨迹，请在构建对应固件时传入 `--studio`。
+
 `--profile basic` 用相同入口构建零堆固件。默认后端 `st-hal` 由 HAL 配置 RCC、PWR、FMC、SDRAM、LTDC 和 MPU；LL 负责 GPIO 快速读写，SysTick 提供 HAL 超时。选 `embassy` 时，`embassy-stm32` 配置时钟，TIM5 提供单调时间，UI 在 Embassy 线程执行器上运行，按 4 ms 定时器让出执行权。两个后端共用 STM32Cube 显示、SDRAM 和触控引脚驱动，以及同一套应用与调试接口。PI11 和 PI8 分属不同的硬件 I²C 复用组合，因此 GT911 使用开漏 GPIO 实现 I²C。[STM32CubeH7 HAL](https://github.com/STMicroelectronics/stm32h7xx-hal-driver) · [Embassy STM32H743II](https://docs.embassy.dev/embassy-stm32/0.6.0/stm32h743ii/)
 
 Windows 的 Commander 可执行文件是 `JLink.exe`，Linux 和 macOS 是 `JLinkExe`。可用 `--jlink "安装目录/JLink.exe"` 指定。工具自动选择唯一的 SEGGER USB 探针，有多个探针时用 `--serial` 选择。连接使用 SWD，默认 100 kHz（`--speed` 的单位是 kHz），可用 `--speed` 调整。板卡使用独立稳定供电，连接 SWCLK、SWDIO、GND 和 3.3 V VTref，复位线接 NRST。核心板 P1 的 1、2、3、7、8 脚分别对应上述 SWCLK、SWDIO、GND、NRST、VTref。
@@ -37,8 +39,8 @@ python boards/fk743m2-iit6/jlink.py --ram-writer --speed 12000 --flash target/fk
 | 面板 | HSYNC / HBP / HFP 为 1 / 80 / 200，VSYNC / VBP / VFP 为 1 / 40 / 22，背光 PH6 |
 | RGB565 扫描缓冲区 | SDRAM `0xC0000000` 和 `0xC00C0000`，每块 768,000 字节 |
 | UI | 内部 AXI SRAM 存放 Engine 和 800 × 32 像素条带，调用栈位于 DTCM |
-| 基础档 | 九页 Widget Demo，零堆，使用外部 SDRAM 作为显示内存 |
-| 增强档 | 十页，增加复杂文字、透明图层、毛玻璃和透视翻转。UI 优先从静态对象之后的空闲 AXI SRAM 分配，空间不足时使用 SDRAM 的后 30 MiB。每份命令列表的图层预算为 1 MiB |
+| 基础档 | 六个顶层页签，控件页含五组交互样例。UI 零堆，使用外部 SDRAM 作为显示内存 |
+| 增强档 | 同一套页签，增加复杂文字、双触点变换、透明图层和毛玻璃。UI 优先从静态对象之后的空闲 AXI SRAM 分配，空间不足时使用 SDRAM 的后 30 MiB。每份命令列表的图层预算为 1 MiB |
 | Goodix 触摸 | PI11 SCL、PI8 SDA、PG3 INT、PH4 RESET。探测 0x5D、0x14，读取产品 ID 和分辨率，按触点 ID 生成事件 |
 
 LTDC 在垂直消隐时换到新帧，SDRAM 的 MPU 属性为普通、Write-Back 可缓存，驱动在 LTDC/DMA2D 与 CPU 交接处显式执行 D-Cache clean/invalidate 与数据同步屏障。换帧完成后，由硬件 Chrom-ART `DMA2D` 异步 2D 跨步搬移将已更新像素区域回填到备用缓冲区，与下一帧 CPU 绘制并行。扫描缓冲区由外设持续读取，UI 静止时无需提交新帧。触摸驱动区分暂无新报告、释放和 I²C 错误。未检测到控制器时保持显示并重试。
@@ -50,18 +52,19 @@ LTDC 在垂直消隐时换到新帧，SDRAM 的 MPU 属性为普通、Write-Back
 桌面程序支持 `--size 800x480` 预览、无头回放和截图。在 SDK 中执行下列命令可先跑完整横屏回归，再生成实板对照输入和每个检查点的参考帧。Windows 可使用 `tools/bin/liuli-widget-demo.exe`。
 
 ~~~sh
-tools/bin/liuli-widget-demo --size 800x480 --headless
+tools/bin/liuli-widget-demo --studio --size 800x480 --headless
 tools/bin/liuli-widget-demo --size 800x480 --panel-frames target/fk743-frames
 python boards/fk743m2-iit6/jlink.py --compare target/fk743-frames
 ~~~
 
 Spool 增强档共 31 个检查点，覆盖三个主区、上下级页面切换，以及返回录音台。比较工具通过 SWD 写入原始按下、松开及逻辑坐标，等待固件确认提交，核对页面，再对当前 LTDC 扫描缓冲区的 768,000 字节做逐字节比对。固件在收到快照命令时将当前扫描像素按游程无损编码到预留 SDRAM，主机还原完整帧并逐字节比较。`--probe-api` 使用 SEGGER 动态库轮询每次提交的确认序号，分块重复读回一份稳定的快照，适合诊断间歇性 SWD 传输错误。`--raw-scanout` 可直接导出未压缩像素。物理触摸坐标和面板实际出画可另行观察。SDK 默认桌面程序启用了增强特性，基础档的参考帧须用仅启用 `desktop` 的 Widget Demo 生成。
 
-在解压后的 SDK 中，下面两条命令分别生成基础档参考帧、运行完整基础档实板回归。把 `embassy-basic.bin` 换成 `st-hal-basic.bin` 可复用同一组参考帧校验另一个后端。增强档使用上面的十页参考帧目录和对应的 `*-enhanced.bin`。
+在解压后的 SDK 中，先用 `--studio` 构建用于此组检查点的固件。两个后端可共用同一档位的桌面参考帧。
 
 ~~~sh
 cargo run --locked --offline --release --manifest-path liuli-widget-demo/Cargo.toml --no-default-features --features desktop -- --size 800x480 --panel-frames target/fk743-frames-basic
-python boards/fk743m2-iit6/jlink.py --speed 12000 --ram-writer --probe-api --flash boards/fk743m2-iit6/firmware/embassy-basic.bin --compare target/fk743-frames-basic
+python boards/fk743m2-iit6/build.py --offline --backend embassy --profile basic --studio --out target/fk743-studio-basic
+python boards/fk743m2-iit6/jlink.py --speed 12000 --ram-writer --probe-api --flash target/fk743-studio-basic/widget-demo.bin --compare target/fk743-frames-basic
 ~~~
 
 片内 SRAM `0x24000000` 起有 16 个小端 32 位诊断字。字 0 为签名 `0x4C554C49`，字 1 为启动阶段（4 表示首帧就绪），字 2 至 5 为帧数、扫描地址、最近一次提交像素数和呈现耗时（微秒），字 6 至 9 为触控产品 ID、I²C 报错数、当前页面和 LTDC 状态。字 10 至 13 为输入序列、动作、打包坐标和已提交序列。动作 6 导出当前帧；字 14 为 `0xC0180000` 处快照的字节数，超出 512 KiB 返回 `0xFFFFFFFF`。字 15 记录故障状态。异常时阶段为 `0xBAD00000 | 错误码`。这些字段与桌面参考帧共同定位启动、渲染和传输问题。
@@ -74,7 +77,7 @@ python boards/fk743m2-iit6/jlink.py --speed 12000 --ram-writer --probe-api --fla
 
 ~~~sh
 cargo build --offline --locked --release -p liuli-widget-demo --features desktop,enhanced
-target/release/liuli-widget-demo --size 800x480 --replay apps/liuli-widget-demo/tests/fixtures/h743-depth-scroll.trace
+target/release/liuli-widget-demo --studio --size 800x480 --replay apps/liuli-widget-demo/tests/fixtures/h743-depth-scroll.trace
 python boards/fk743m2-iit6/jlink.py --speed 12000 --depth-scroll apps/liuli-widget-demo/tests/fixtures/h743-depth-scroll.trace target/release/liuli-widget-demo
 ~~~
 

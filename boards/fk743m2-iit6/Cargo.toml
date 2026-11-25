@@ -10,7 +10,7 @@ publish = false
 build = "build.rs"
 
 [features]
-default = ["st-hal", "enhanced"]
+default = ["st-hal", "enhanced", "showcase"]
 st-hal = []
 embassy = ["dep:embassy-stm32", "dep:embassy-executor", "dep:embassy-time", "dep:cortex-m-rt"]
 enhanced = ["liuli/enhanced", "liuli-widget-demo/enhanced", "dep:linked_list_allocator"]

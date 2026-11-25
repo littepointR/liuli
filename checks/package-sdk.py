@@ -198,6 +198,8 @@ def package(output, fetch=False):
         if missing.returncode==0 or b"U+10FFFF" not in missing.stderr:
             raise ValueError("missing-glyph diagnostic for numeric project")
         cargo("test", "--offline", cwd=widgets, env=env)
+        cargo("test", "--offline", "--release", "--features", "desktop,enhanced",
+              "--test", "showcase", cwd=catalog, env=env)
         cargo("generate-lockfile", "--offline", cwd=board / "rust", env=env)
         cargo("doc", "--offline", "--no-deps", "--features", "enhanced", "-p", "liuli-alarms",
               "-p", "liuli","-p","liuli-core","-p","liuli-text","-p","liuli-render",

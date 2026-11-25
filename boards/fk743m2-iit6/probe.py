@@ -108,7 +108,7 @@ def depth_scroll(commander, uid, trace, demo):
             prefix = commander.temp / "scroll.trace"
             frame = commander.temp / "scroll.rgb565"
             prefix.write_text("\n".join(lines[:i+1]) + "\n", encoding="ascii")
-            subprocess.run([str(demo.resolve()), "--size", "800x480", "--replay", str(prefix),
+            subprocess.run([str(demo.resolve()), "--studio", "--size", "800x480", "--replay", str(prefix),
                             "--scanout", str(frame)], check=True)
             references[i] = frame.read_bytes()
     visible, hidden = [], []
@@ -149,6 +149,98 @@ def depth_scroll(commander, uid, trace, demo):
         # 1081 x 543 total clocks at 33 MHz is one 17.8 ms panel refresh.
         if flags & 6 or top - away > 18000:
             raise RuntimeError("LTDC scanout error or top graphic costs more than one additional refresh")
+    finally:
+        link.close()
+
+
+def showcase_trace(commander, uid, trace, reference, page, label):
+    """Replay raw touch through the board mailbox and compare the complete settled content pane."""
+    from urllib.parse import parse_qsl
+    from jlink import expand_snapshot, compare_pixels
+    rows = trace.read_text(encoding="ascii").splitlines()
+    if rows[:1] != ["liuli-trace 1"]:
+        raise ValueError("expected a liuli-trace 1 input")
+    expected = reference.read_bytes()
+    if len(expected) != 800*480*2:
+        raise ValueError("expected an 800x480 RGB565 frame")
+    link = new_link(commander)
+    try:
+        attach(commander, link, uid)
+        link.reset(halt=True)
+        link.memory_write32(0x24000000, [0])
+        link.restart()
+        wait_for_ack(link, 0)
+        started = time.monotonic()
+        for seq, line in enumerate(rows[1:], 1):
+            millis, query = line.split(" ", 1)
+            time.sleep(max(0, started + int(millis)/1000 - time.monotonic()))
+            if query == "tick":
+                continue
+            event = dict(parse_qsl(query, strict_parsing=True))
+            action = {"down":1, "up":2, "move":3}[event["kind"]]
+            issue(link, seq, action, int(event["x"]) | int(event["y"]) << 16)
+        snap = issue(link, len(rows)+1, 6)
+        if snap[8] != page or snap[9] & 6 or not 0 < snap[14] <= 512*1024:
+            raise RuntimeError(f"invalid {label} page or scanout: {snap}")
+        frame = expand_snapshot(read_snapshot(link, snap[14]))
+        # Only the footer contains board-clock telemetry. Include the complete tab bar and title.
+        pane = slice(0,430*800*2)
+        compare_pixels(label, frame[pane], expected[pane])
+        print(f"{label} matches the desktop replay (344000 RGB565 pixels)")
+        link.reset(halt=False)
+    finally:
+        link.close()
+
+
+def motion_gallery(commander, uid, reference):
+    from jlink import expand_snapshot
+
+    from urllib.parse import parse_qs
+    root = Path(__file__).resolve().parents[2]
+    apps = root / "apps" if (root / "apps").is_dir() else root
+    trace = apps / "liuli-widget-demo/tests/fixtures/h743-motion.trace"
+    taps = []
+    for line in trace.read_text(encoding="ascii").splitlines()[1:]:
+        fields = parse_qs(line.split(" ", 1)[1])
+        if fields.get("kind") == ["down"]:
+            taps.append(int(fields["x"][0]) | int(fields["y"][0]) << 16)
+    select_layout, select_flip, replay = taps
+
+    def stage(frame):
+        if len(frame) != 800 * 480 * 2:
+            raise ValueError("expected an 800x480 RGB565 scanout")
+        return frame[:430 * 800 * 2]
+
+    expected = stage(reference.read_bytes())
+    link = new_link(commander)
+    try:
+        attach(commander, link, uid)
+        link.reset(halt=True)
+        link.memory_write32(0x24000000, [0])
+        link.restart()
+        wait_for_ack(link, 0)
+
+        def snapshot(seq):
+            state = issue(link, seq, 6)
+            if state[8] != 3 or not 0 < state[14] <= 512*1024 or state[9] & 6:
+                raise RuntimeError(f"unexpected showcase page, snapshot size or LTDC status: {state}")
+            return stage(expand_snapshot(read_snapshot(link, state[14])))
+
+        issue(link, 1, 5, select_layout)
+        time.sleep(.35)
+        issue(link, 2, 5, select_flip)
+        time.sleep(.85)
+        if snapshot(3) != expected:
+            raise ValueError("settled Flip preset differs from the desktop trace")
+        issue(link, 4, 5, replay)
+        time.sleep(.12)
+        moving = snapshot(5)
+        time.sleep(.85)
+        settled = snapshot(6)
+        changed = sum(moving[i:i+2] != settled[i:i+2] for i in range(0, len(moving), 2))
+        if not changed or settled != expected:
+            raise ValueError(f"Flip replay: {changed} moving pixels, endpoint matches={settled == expected}")
+        print(f"Flip replay: {changed} moving pixels; all {len(expected)//2} settled stage pixels match desktop")
     finally:
         link.close()
 

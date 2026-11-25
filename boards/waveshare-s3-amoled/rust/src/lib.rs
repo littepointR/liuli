@@ -3,11 +3,24 @@ use core::panic::PanicInfo;
 use liuli::prelude::*;
 #[cfg(any(not(feature = "widget-demo"), feature = "benchmark"))]
 mod application;
-#[cfg(all(feature = "widget-demo", not(feature = "benchmark")))]
+#[cfg(all(feature = "effects-benchmark", not(feature = "benchmark")))]
 mod application {
     pub use liuli_widget_demo::Catalog as BoardApp;
     pub fn model(height: u16) -> liuli_widget_demo::Model {
         liuli_widget_demo::Model::new(height)
+    }
+}
+#[cfg(all(
+    feature = "widget-demo",
+    not(any(feature = "effects-benchmark", feature = "benchmark"))
+))]
+mod application {
+    pub use liuli_widget_demo::showcase::ShowcaseApp as BoardApp;
+    pub fn model(height: u16) -> liuli_widget_demo::showcase::ShowcaseModel {
+        liuli_widget_demo::showcase::ShowcaseModel::for_size(liuli::prelude::Size::new(
+            super::WIDTH,
+            height.into(),
+        ))
     }
 }
 use application::BoardApp;
@@ -134,13 +147,19 @@ pub extern "C" fn liuli_task_stack() -> u32 {
 /// The caller must provide readable font memory and exclusive use of the UI statics.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn liuli_run(ptr: *const u8, len: usize) -> i32 {
-    let Ok(font) = Lf4Font::from_bytes(unsafe { core::slice::from_raw_parts(ptr, len) }) else {
+    let mapped = unsafe { core::slice::from_raw_parts(ptr, len) };
+    #[cfg(any(
+        not(feature = "widget-demo"),
+        feature = "benchmark",
+        feature = "effects-benchmark"
+    ))]
+    let Ok(font) = Lf4Font::from_bytes(mapped) else {
         return -1;
     };
     #[cfg(feature = "enhanced")]
     let mut cache = enhanced::cache();
     #[cfg(feature = "enhanced")]
-    let Ok(mut glyphs) = enhanced::Reader::new(len, &mut cache) else {
+    let Ok(mut glyphs) = enhanced::Reader::new(mapped, &mut cache) else {
         return -6;
     };
     #[cfg(not(feature = "enhanced"))]
@@ -157,7 +176,14 @@ pub unsafe extern "C" fn liuli_run(ptr: *const u8, len: usize) -> i32 {
         wire: [w0, w1],
         slot: 0,
     };
-    #[cfg(all(feature = "widget-demo", not(feature = "benchmark")))]
+    #[cfg(all(
+        feature = "widget-demo",
+        not(any(feature = "effects-benchmark", feature = "benchmark"))
+    ))]
+    let Ok(fonts) = liuli_widget_demo::showcase::showcase_fonts() else {
+        return -1;
+    };
+    #[cfg(all(feature = "effects-benchmark", not(feature = "benchmark")))]
     let Ok(fonts) = liuli_widget_demo::studio_fonts(font) else {
         return -1;
     };

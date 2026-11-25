@@ -128,7 +128,7 @@ def compare_pixels(name, actual, expected):
     if actual != expected:
         pixel = next((i // 2 for i, (a, b) in enumerate(zip(actual, expected)) if a != b), len(actual) // 2)
         raise ValueError(f"{name}: pixel mismatch at ({pixel % 800},{pixel // 800})")
-    print(f"{name} matches {FRAME_BYTES} bytes")
+    print(f"{name} matches {len(expected)} bytes")
 
 
 def compare_snapshots(c, checkpoints, lengths):
@@ -225,6 +225,11 @@ def main():
     p.add_argument("--probe-api", action="store_true", help="poll frame acknowledgements and double-read snapshot blocks with pylink-square")
     p.add_argument("--depth-scroll", nargs=2, type=Path, metavar=("TRACE", "DEMO"),
                    help="replay the enhanced H743 depth-scroll fixture and compare with the desktop executable")
+    p.add_argument("--motion-gallery", type=Path, metavar="SCANOUT",
+                   help="exercise the H743 showcase gallery against the desktop h743-motion.trace scanout")
+    p.add_argument("--themed-motion", nargs=2, type=Path, metavar=("TRACE","SCANOUT"), help="replay the Motion style fixture and compare its full content pane")
+    p.add_argument("--widget-samples", nargs=2, type=Path, metavar=("TRACE", "SCANOUT"),
+                   help="replay the widget catalog trace and compare its content pane")
     args=p.parse_args()
     if args.speed <= 0:
         p.error("--speed must be a positive SWD frequency in kHz")
@@ -254,6 +259,15 @@ def main():
         if args.depth_scroll:
             from probe import depth_scroll
             depth_scroll(c, uid, *args.depth_scroll)
+        if args.motion_gallery:
+            from probe import motion_gallery
+            motion_gallery(c, uid, args.motion_gallery)
+        if args.themed_motion:
+            from probe import showcase_trace
+            showcase_trace(c, uid, *args.themed_motion, 4, "Motion")
+        if args.widget_samples:
+            from probe import showcase_trace
+            showcase_trace(c, uid, *args.widget_samples, 5, "Widget samples")
 
 
 if __name__=="__main__":
