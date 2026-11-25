@@ -154,12 +154,14 @@ pub fn encode_rgb565_row(
         }
         PixelFormat::Xrgb8888 | PixelFormat::Argb8888 => {
             for (i, &w) in words.iter().enumerate() {
-                out[i * 4..i * 4 + 4].copy_from_slice(&rgb565_u16_to_argb8888(w, 0xFF).to_le_bytes());
+                out[i * 4..i * 4 + 4]
+                    .copy_from_slice(&rgb565_u16_to_argb8888(w, 0xFF).to_le_bytes());
             }
         }
         PixelFormat::Abgr8888 => {
             for (i, &w) in words.iter().enumerate() {
-                out[i * 4..i * 4 + 4].copy_from_slice(&rgb565_u16_to_abgr8888(w, 0xFF).to_le_bytes());
+                out[i * 4..i * 4 + 4]
+                    .copy_from_slice(&rgb565_u16_to_abgr8888(w, 0xFF).to_le_bytes());
             }
         }
         PixelFormat::Gray8 => {
@@ -172,7 +174,9 @@ pub fn encode_rgb565_row(
             for (i, &w) in words.iter().enumerate() {
                 let g = rgb888_to_gray8(rgb565_u16_to_rgb888(w)).0;
                 let q4 = match dither {
-                    DitherMode::Bayer4x4 => gray8_to_gray4_dithered(g, gx0.saturating_add(i as i32), gy),
+                    DitherMode::Bayer4x4 => {
+                        gray8_to_gray4_dithered(g, gx0.saturating_add(i as i32), gy)
+                    }
                     DitherMode::None => g >> 4,
                 };
                 if (i & 1) == 0 {
@@ -188,7 +192,9 @@ pub fn encode_rgb565_row(
             for (i, &w) in words.iter().enumerate() {
                 let g = rgb888_to_gray8(rgb565_u16_to_rgb888(w)).0;
                 let on = match dither {
-                    DitherMode::Bayer4x4 => gray8_to_mono1_dithered(g, gx0.saturating_add(i as i32), gy),
+                    DitherMode::Bayer4x4 => {
+                        gray8_to_mono1_dithered(g, gx0.saturating_add(i as i32), gy)
+                    }
                     DitherMode::None => g >= 128,
                 };
                 if on {

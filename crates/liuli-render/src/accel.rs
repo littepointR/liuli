@@ -1,6 +1,4 @@
-use liuli_core::color::{
-    PixelFormat, rgb565_swap_rb, rgb888_to_rgb565_round,
-};
+use liuli_core::color::{PixelFormat, rgb565_swap_rb, rgb888_to_rgb565_round};
 use liuli_core::dither::{DitherMode, rgb888_to_rgb565_dithered};
 use liuli_core::geometry::{Rect, Rgb565, rgb565_to_u16};
 use liuli_text::blend_rgb565_a4_u16;
@@ -95,7 +93,8 @@ pub trait DrawAccel {
             match src_fmt {
                 PixelFormat::Rgb888 => {
                     for (i, px) in src[..src_needed].as_chunks::<3>().0.iter().enumerate() {
-                        let w = quantize_rgb888(px[0], px[1], px[2], i as i32, i32::from(y), dither);
+                        let w =
+                            quantize_rgb888(px[0], px[1], px[2], i as i32, i32::from(y), dither);
                         dst[i * 2..i * 2 + 2].copy_from_slice(&w.to_le_bytes());
                     }
                     return Ok(dst_needed);
@@ -103,7 +102,8 @@ pub trait DrawAccel {
                 PixelFormat::Argb8888 | PixelFormat::Xrgb8888 => {
                     for (i, px) in src[..src_needed].as_chunks::<4>().0.iter().enumerate() {
                         // ARGB8888 / XRGB8888 LE wire order: [B, G, R, A/X]
-                        let w = quantize_rgb888(px[2], px[1], px[0], i as i32, i32::from(y), dither);
+                        let w =
+                            quantize_rgb888(px[2], px[1], px[0], i as i32, i32::from(y), dither);
                         dst[i * 2..i * 2 + 2].copy_from_slice(&w.to_le_bytes());
                     }
                     return Ok(dst_needed);
@@ -263,7 +263,11 @@ fn read_pixel_as_rgb565(
             } else {
                 index & 7
             };
-            if ((b >> bit) & 1) != 0 { 0xFFFF } else { 0x0000 }
+            if ((b >> bit) & 1) != 0 {
+                0xFFFF
+            } else {
+                0x0000
+            }
         }
     })
 }

@@ -405,7 +405,8 @@ mod tests {
         assert!((73..=77).contains(&blended.b()));
 
         // Drawing over transparent background preserves source color without dark fringe
-        let over_clear = PixelArgb8888::TRANSPARENT.blend_a8(PixelArgb8888::from_rgb(200, 40, 80), 128);
+        let over_clear =
+            PixelArgb8888::TRANSPARENT.blend_a8(PixelArgb8888::from_rgb(200, 40, 80), 128);
         assert_eq!(over_clear, PixelArgb8888::new(128, 200, 40, 80));
     }
 
@@ -414,7 +415,10 @@ mod tests {
         let mut dst_buf = [PixelArgb8888::from_rgb(10, 20, 30); 4 * 4];
         let mut dst = TypedBandTarget::new(&mut dst_buf, Rect::new(10, 20, 4, 4)).unwrap();
         dst.fill_rect(Rect::new(11, 21, 2, 2), PixelArgb8888::from_rgb(255, 0, 0));
-        assert_eq!(dst.get_pixel(11, 21), Some(PixelArgb8888::from_rgb(255, 0, 0)));
+        assert_eq!(
+            dst.get_pixel(11, 21),
+            Some(PixelArgb8888::from_rgb(255, 0, 0))
+        );
         assert_eq!(dst.get_pixel(9, 20), None);
 
         let mut src_buf = [PixelArgb8888::new(128, 0, 0, 255); 2 * 2];

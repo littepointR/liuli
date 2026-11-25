@@ -91,7 +91,8 @@ impl StoredBitmap {
                 })
             }
             2 => {
-                let fmt_bits = flags & (L565_FLAG_MASK_A4 | L565_FLAG_INDEXED4 | L565_FLAG_INDEXED8);
+                let fmt_bits =
+                    flags & (L565_FLAG_MASK_A4 | L565_FLAG_INDEXED4 | L565_FLAG_INDEXED8);
                 if fmt_bits.count_ones() > 1 {
                     return Err(StoredBitmapError::InvalidFormat);
                 }
@@ -137,7 +138,11 @@ impl StoredBitmap {
                     data_offset
                 } else if is_i4 || is_i8 {
                     let pal_bytes = if is_i4 { 16 * 2 } else { 256 * 2 };
-                    let idx_bytes = if is_i4 { px_count.div_ceil(2) } else { px_count };
+                    let idx_bytes = if is_i4 {
+                        px_count.div_ceil(2)
+                    } else {
+                        px_count
+                    };
                     let a_bytes = if has_a4 { px_count.div_ceil(2) } else { 0 };
                     let needed = data_offset
                         .checked_add(pal_bytes)
@@ -193,8 +198,7 @@ impl StoredBitmap {
 
     #[inline]
     pub const fn has_alpha(&self) -> bool {
-        self.chroma_key.is_some()
-            || (self.flags & (L565_FLAG_ALPHA4 | L565_FLAG_MASK_A4)) != 0
+        self.chroma_key.is_some() || (self.flags & (L565_FLAG_ALPHA4 | L565_FLAG_MASK_A4)) != 0
     }
 
     #[inline]
@@ -228,11 +232,7 @@ impl StoredBitmap {
         let mut done = 0usize;
         while done < count {
             let chunk = (count - done).min(32);
-            read_exact_at(
-                reader,
-                self.data_offset + done * 2,
-                &mut buf[..chunk * 2],
-            )?;
+            read_exact_at(reader, self.data_offset + done * 2, &mut buf[..chunk * 2])?;
             for i in 0..chunk {
                 palette[done + i] = u16::from_le_bytes([buf[i * 2], buf[i * 2 + 1]]);
             }
@@ -284,10 +284,7 @@ impl StoredBitmap {
         } else {
             let mut rgb_buf = [0u8; 2];
             read_exact_at(reader, self.data_offset + idx * 2, &mut rgb_buf)?;
-            (
-                u16::from_le_bytes(rgb_buf),
-                self.data_offset + px_count * 2,
-            )
+            (u16::from_le_bytes(rgb_buf), self.data_offset + px_count * 2)
         };
 
         let mut alpha = if has_a4 {
@@ -478,9 +475,17 @@ impl StoredBitmap {
                     let nib_start = px_idx / 2;
                     let nib_bytes = (px_idx + count - 1) / 2 - nib_start + 1;
                     if is_mask {
-                        read_exact_at(reader, self.payload_offset + nib_start, &mut a4_buf[..nib_bytes])?;
+                        read_exact_at(
+                            reader,
+                            self.payload_offset + nib_start,
+                            &mut a4_buf[..nib_bytes],
+                        )?;
                     } else if is_i4 {
-                        read_exact_at(reader, self.payload_offset + nib_start, &mut raw_buf[..nib_bytes])?;
+                        read_exact_at(
+                            reader,
+                            self.payload_offset + nib_start,
+                            &mut raw_buf[..nib_bytes],
+                        )?;
                     } else if is_i8 {
                         read_exact_at(reader, self.payload_offset + px_idx, &mut raw_buf[..count])?;
                     } else {

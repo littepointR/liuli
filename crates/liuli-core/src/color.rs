@@ -568,14 +568,8 @@ mod tests {
 
     #[test]
     fn hex_parsing_handles_short_full_and_invalid_strings() {
-        assert_eq!(
-            parse_hex_str("#f80"),
-            Some(Rgba8888::new(255, 136, 0, 255))
-        );
-        assert_eq!(
-            parse_hex_str("08f4"),
-            Some(Rgba8888::new(0, 136, 255, 68))
-        );
+        assert_eq!(parse_hex_str("#f80"), Some(Rgba8888::new(255, 136, 0, 255)));
+        assert_eq!(parse_hex_str("08f4"), Some(Rgba8888::new(0, 136, 255, 68)));
         assert_eq!(
             parse_hex_str("  #1490ec "),
             Some(Rgba8888::new(20, 144, 236, 255))
@@ -614,8 +608,14 @@ mod tests {
             assert!(back.r.abs_diff(rgb.r) <= 1);
             assert!(back.g.abs_diff(rgb.g) <= 1);
             assert!(back.b.abs_diff(rgb.b) <= 1);
-            assert_eq!(hsl_to_rgb565(hsl), rgb888_to_rgb565_round(rgb.r, rgb.g, rgb.b));
-            assert_eq!(hsv_to_rgb565(hsv), rgb888_to_rgb565_round(rgb.r, rgb.g, rgb.b));
+            assert_eq!(
+                hsl_to_rgb565(hsl),
+                rgb888_to_rgb565_round(rgb.r, rgb.g, rgb.b)
+            );
+            assert_eq!(
+                hsv_to_rgb565(hsv),
+                rgb888_to_rgb565_round(rgb.r, rgb.g, rgb.b)
+            );
         }
 
         for gray in [0u8, 64, 128, 255] {

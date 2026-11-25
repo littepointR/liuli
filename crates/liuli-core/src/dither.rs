@@ -63,7 +63,10 @@ pub const fn rgb565_lerp_dithered(start_raw: u16, end_raw: u16, t_q8: u32, x: i3
 /// Quantizes 8-bit grayscale to 4-bit grayscale (`0..=15`) using stateless Bayer 4x4 dithering.
 #[inline(always)]
 pub const fn gray8_to_gray4_dithered(g: u8, x: i32, y: i32) -> u8 {
-    clamp_max(((g as u32 * 15 * 16) / 255 + bayer_4x4(x, y) as u32) >> 4, 15) as u8
+    clamp_max(
+        ((g as u32 * 15 * 16) / 255 + bayer_4x4(x, y) as u32) >> 4,
+        15,
+    ) as u8
 }
 
 /// Thresholds 8-bit grayscale to 1-bit monochrome using stateless Bayer 4x4 ordered halftone.

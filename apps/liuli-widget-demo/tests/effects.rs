@@ -182,8 +182,17 @@ fn h743_scrolls_glass_card_out_and_back_without_changing_its_pixels() {
             heights.push(card.visible_rect.h);
             let position = card.layout_rect.y;
             if let Some(expected) = by_position.get(&position) {
-                let mismatch = app.screen().words().iter().zip(expected).position(|(a,b)|a!=b);
-                assert!(mismatch.is_none(),"different scanout at card y={position}, first pixel {:?}", mismatch.map(|p|(p%800,p/800)));
+                let mismatch = app
+                    .screen()
+                    .words()
+                    .iter()
+                    .zip(expected)
+                    .position(|(a, b)| a != b);
+                assert!(
+                    mismatch.is_none(),
+                    "different scanout at card y={position}, first pixel {:?}",
+                    mismatch.map(|p| (p % 800, p / 800))
+                );
             } else {
                 by_position.insert(position, app.screen().words().to_vec());
             }
@@ -719,7 +728,7 @@ fn rounded_glass_and_outline_button_have_no_square_or_black_corners() {
     )
     .unwrap();
     // Sample the themed press transition after the pointer-down frame.
-    app.step(InstantMs(76),None,true).unwrap();
+    app.step(InstantMs(76), None, true).unwrap();
     let pressed_bg = app
         .screen()
         .pixel((out_rect.x + 12) as u32, (out_rect.y + 4) as u32);

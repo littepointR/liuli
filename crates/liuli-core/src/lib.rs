@@ -2450,11 +2450,17 @@ mod tests {
 
         let n40 = &tree.nodes[tree.find_slot_by_key(Key(40)).unwrap() as usize];
         let n41 = &tree.nodes[tree.find_slot_by_key(Key(41)).unwrap() as usize];
-        assert_eq!((n41.layout_rect.x, n41.layout_rect.y), (5, n40.layout_rect.y - 2));
+        assert_eq!(
+            (n41.layout_rect.x, n41.layout_rect.y),
+            (5, n40.layout_rect.y - 2)
+        );
 
         let n50 = &tree.nodes[tree.find_slot_by_key(Key(50)).unwrap() as usize];
         let n51 = &tree.nodes[tree.find_slot_by_key(Key(51)).unwrap() as usize];
-        assert_eq!((n51.layout_rect.x, n51.layout_rect.y), (7, n50.layout_rect.y + 4));
+        assert_eq!(
+            (n51.layout_rect.x, n51.layout_rect.y),
+            (7, n50.layout_rect.y + 4)
+        );
     }
 
     #[test]

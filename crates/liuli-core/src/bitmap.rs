@@ -227,11 +227,7 @@ impl<'a> BitmapView<'a> {
                     } else {
                         px_count
                     };
-                    let a_bytes = if has_alpha4 {
-                        px_count.div_ceil(2)
-                    } else {
-                        0
-                    };
+                    let a_bytes = if has_alpha4 { px_count.div_ceil(2) } else { 0 };
                     let Some(pal_plus_idx) = pal_bytes.checked_add(idx_bytes) else {
                         return None;
                     };

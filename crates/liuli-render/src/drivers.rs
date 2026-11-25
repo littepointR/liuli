@@ -275,7 +275,10 @@ macro_rules! define_panel_driver {
 
             #[inline]
             pub fn pixel_format(&self) -> PixelFormat {
-                self.inner.cfg.pixel_format.unwrap_or(self.inner.spec.default_format)
+                self.inner
+                    .cfg
+                    .pixel_format
+                    .unwrap_or(self.inner.spec.default_format)
             }
 
             #[inline]

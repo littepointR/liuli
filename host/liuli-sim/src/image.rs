@@ -192,11 +192,7 @@ fn parse_png_stored(bytes: &[u8]) -> Result<ParsedPng, String> {
                 height = u32::from_be_bytes(data[4..8].try_into().unwrap());
                 color_type = data[9];
                 let supported_ct = matches!(color_type, 0 | 2 | 3 | 4 | 6);
-                if data[8] != 8
-                    || !supported_ct
-                    || data[10] != 0
-                    || data[11] != 0
-                    || data[12] != 0
+                if data[8] != 8 || !supported_ct || data[10] != 0 || data[11] != 0 || data[12] != 0
                 {
                     return Err("unsupported PNG IHDR format".into());
                 }
@@ -442,30 +438,10 @@ pub fn decode_pam_rgba8(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
             .next()
             .ok_or_else(|| format!("missing value for PAM header key '{key}'"))?;
         match key {
-            "WIDTH" => {
-                width = Some(
-                    val.parse()
-                        .map_err(|e| format!("bad PAM WIDTH: {e}"))?,
-                )
-            }
-            "HEIGHT" => {
-                height = Some(
-                    val.parse()
-                        .map_err(|e| format!("bad PAM HEIGHT: {e}"))?,
-                )
-            }
-            "DEPTH" => {
-                depth = Some(
-                    val.parse()
-                        .map_err(|e| format!("bad PAM DEPTH: {e}"))?,
-                )
-            }
-            "MAXVAL" => {
-                maxval = Some(
-                    val.parse()
-                        .map_err(|e| format!("bad PAM MAXVAL: {e}"))?,
-                )
-            }
+            "WIDTH" => width = Some(val.parse().map_err(|e| format!("bad PAM WIDTH: {e}"))?),
+            "HEIGHT" => height = Some(val.parse().map_err(|e| format!("bad PAM HEIGHT: {e}"))?),
+            "DEPTH" => depth = Some(val.parse().map_err(|e| format!("bad PAM DEPTH: {e}"))?),
+            "MAXVAL" => maxval = Some(val.parse().map_err(|e| format!("bad PAM MAXVAL: {e}"))?),
             "TUPLTYPE" => {}
             _ => return Err(format!("unsupported PAM header key '{key}'")),
         }
@@ -661,7 +637,9 @@ mod tests {
         assert_eq!((wf, hf, df), (5, 6, rgba.clone()));
 
         // P7 PAM RGB_ALPHA roundtrip via decode_image_rgba8
-        let mut pam = b"P7\n# comment\nWIDTH 5\nHEIGHT 6\nDEPTH 4\nMAXVAL 255\nTUPLTYPE RGB_ALPHA\nENDHDR\n".to_vec();
+        let mut pam =
+            b"P7\n# comment\nWIDTH 5\nHEIGHT 6\nDEPTH 4\nMAXVAL 255\nTUPLTYPE RGB_ALPHA\nENDHDR\n"
+                .to_vec();
         pam.extend_from_slice(&rgba);
         let (wp, hp, dp) = decode_image_rgba8(&pam).unwrap();
         assert_eq!((wp, hp, dp), (5, 6, rgba));

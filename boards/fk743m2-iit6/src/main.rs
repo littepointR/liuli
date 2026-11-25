@@ -10,10 +10,10 @@ mod touch;
 use display::{Display, HEIGHT, WIDTH};
 use hardware as hw;
 use liuli::prelude::*;
-#[cfg(not(feature = "showcase"))]
-use liuli_widget_demo::{Catalog, FONT, Model};
 #[cfg(feature = "showcase")]
 use liuli_widget_demo::showcase::{ShowcaseApp, ShowcaseModel, showcase_fonts};
+#[cfg(not(feature = "showcase"))]
+use liuli_widget_demo::{Catalog, FONT, Model};
 
 #[cfg(feature = "embassy")]
 mod embassy;

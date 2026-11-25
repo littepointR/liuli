@@ -816,86 +816,186 @@ fn encode_rgb565_row_supports_all_pixel_formats_and_byte_window_sink_modes() {
     let mut buf = [0xAAu8; 32];
 
     assert_eq!(
-        encode_rgb565_row(&row[..2], 0, 0, PixelFormat::Rgb565Le, DitherMode::None, &mut buf[..3]),
+        encode_rgb565_row(
+            &row[..2],
+            0,
+            0,
+            PixelFormat::Rgb565Le,
+            DitherMode::None,
+            &mut buf[..3]
+        ),
         Err(BufferTooSmall)
     );
     assert_eq!(
-        encode_rgb565_row(&row[..2], 0, 0, PixelFormat::Rgb565Be, DitherMode::None, &mut buf),
+        encode_rgb565_row(
+            &row[..2],
+            0,
+            0,
+            PixelFormat::Rgb565Be,
+            DitherMode::None,
+            &mut buf
+        ),
         Ok(4)
     );
     assert_eq!(&buf[..4], &[0xF8, 0x00, 0x84, 0x10]);
 
     assert_eq!(
-        encode_rgb565_row(&row[..1], 0, 0, PixelFormat::Bgr565Be, DitherMode::None, &mut buf),
+        encode_rgb565_row(
+            &row[..1],
+            0,
+            0,
+            PixelFormat::Bgr565Be,
+            DitherMode::None,
+            &mut buf
+        ),
         Ok(2)
     );
     assert_eq!(&buf[..2], &[0x00, 0x1F]);
 
     assert_eq!(
-        encode_rgb565_row(&row[..1], 0, 0, PixelFormat::Bgr565Le, DitherMode::None, &mut buf),
+        encode_rgb565_row(
+            &row[..1],
+            0,
+            0,
+            PixelFormat::Bgr565Le,
+            DitherMode::None,
+            &mut buf
+        ),
         Ok(2)
     );
     assert_eq!(&buf[..2], &[0x1F, 0x00]);
 
     assert_eq!(
-        encode_rgb565_row(&row[..1], 0, 0, PixelFormat::Rgb666, DitherMode::None, &mut buf),
+        encode_rgb565_row(
+            &row[..1],
+            0,
+            0,
+            PixelFormat::Rgb666,
+            DitherMode::None,
+            &mut buf
+        ),
         Ok(3)
     );
     assert_eq!(&buf[..3], &[0xFC, 0x00, 0x00]);
 
     assert_eq!(
-        encode_rgb565_row(&row[..1], 0, 0, PixelFormat::Rgb888, DitherMode::None, &mut buf),
+        encode_rgb565_row(
+            &row[..1],
+            0,
+            0,
+            PixelFormat::Rgb888,
+            DitherMode::None,
+            &mut buf
+        ),
         Ok(3)
     );
     assert_eq!(&buf[..3], &[0xFF, 0x00, 0x00]);
 
     assert_eq!(
-        encode_rgb565_row(&row[..1], 0, 0, PixelFormat::Bgr888, DitherMode::None, &mut buf),
+        encode_rgb565_row(
+            &row[..1],
+            0,
+            0,
+            PixelFormat::Bgr888,
+            DitherMode::None,
+            &mut buf
+        ),
         Ok(3)
     );
     assert_eq!(&buf[..3], &[0x00, 0x00, 0xFF]);
 
     assert_eq!(
-        encode_rgb565_row(&row[..1], 0, 0, PixelFormat::Argb8888, DitherMode::None, &mut buf),
+        encode_rgb565_row(
+            &row[..1],
+            0,
+            0,
+            PixelFormat::Argb8888,
+            DitherMode::None,
+            &mut buf
+        ),
         Ok(4)
     );
     assert_eq!(&buf[..4], &[0x00, 0x00, 0xFF, 0xFF]);
 
     assert_eq!(
-        encode_rgb565_row(&row[..1], 0, 0, PixelFormat::Xrgb8888, DitherMode::None, &mut buf),
+        encode_rgb565_row(
+            &row[..1],
+            0,
+            0,
+            PixelFormat::Xrgb8888,
+            DitherMode::None,
+            &mut buf
+        ),
         Ok(4)
     );
     assert_eq!(&buf[..4], &[0x00, 0x00, 0xFF, 0xFF]);
 
     assert_eq!(
-        encode_rgb565_row(&row[..1], 0, 0, PixelFormat::Abgr8888, DitherMode::None, &mut buf),
+        encode_rgb565_row(
+            &row[..1],
+            0,
+            0,
+            PixelFormat::Abgr8888,
+            DitherMode::None,
+            &mut buf
+        ),
         Ok(4)
     );
     assert_eq!(&buf[..4], &[0xFF, 0x00, 0x00, 0xFF]);
 
     assert_eq!(
-        encode_rgb565_row(&row[2..4], 0, 0, PixelFormat::Gray8, DitherMode::None, &mut buf),
+        encode_rgb565_row(
+            &row[2..4],
+            0,
+            0,
+            PixelFormat::Gray8,
+            DitherMode::None,
+            &mut buf
+        ),
         Ok(2)
     );
     assert_eq!(&buf[..2], &[255, 0]);
 
     assert_eq!(
-        encode_rgb565_row(&row[2..5], 0, 0, PixelFormat::Gray4, DitherMode::None, &mut buf),
+        encode_rgb565_row(
+            &row[2..5],
+            0,
+            0,
+            PixelFormat::Gray4,
+            DitherMode::None,
+            &mut buf
+        ),
         Ok(2)
     );
     // px0=white(15<<4), px1=black(0) => 0xF0; px2=blue(luma<16 => 1<<4 = 0x10)
     assert_eq!(buf[0], 0xF0);
     assert_eq!(buf[1] & 0x0F, 0x00);
 
-    let bw_row = [0xFFFFu16, 0x0000, 0xFFFF, 0x0000, 0xFFFF, 0xFFFF, 0x0000, 0x0000, 0xFFFF];
+    let bw_row = [
+        0xFFFFu16, 0x0000, 0xFFFF, 0x0000, 0xFFFF, 0xFFFF, 0x0000, 0x0000, 0xFFFF,
+    ];
     assert_eq!(
-        encode_rgb565_row(&bw_row, 0, 0, PixelFormat::Mono1Msb, DitherMode::None, &mut buf),
+        encode_rgb565_row(
+            &bw_row,
+            0,
+            0,
+            PixelFormat::Mono1Msb,
+            DitherMode::None,
+            &mut buf
+        ),
         Ok(2)
     );
     assert_eq!(&buf[..2], &[0b1010_1100, 0b1000_0000]);
 
     assert_eq!(
-        encode_rgb565_row(&bw_row, 0, 0, PixelFormat::Mono1Lsb, DitherMode::None, &mut buf),
+        encode_rgb565_row(
+            &bw_row,
+            0,
+            0,
+            PixelFormat::Mono1Lsb,
+            DitherMode::None,
+            &mut buf
+        ),
         Ok(2)
     );
     assert_eq!(&buf[..2], &[0b0011_0101, 0b0000_0001]);
@@ -903,15 +1003,30 @@ fn encode_rgb565_row_supports_all_pixel_formats_and_byte_window_sink_modes() {
     // Bayer dithered Mono1 produces deterministic non-trivial pattern for mid gray (0x8410).
     let grays = [0x8410u16; 8];
     assert_eq!(
-        encode_rgb565_row(&grays, 0, 0, PixelFormat::Mono1Msb, DitherMode::Bayer4x4, &mut buf),
+        encode_rgb565_row(
+            &grays,
+            0,
+            0,
+            PixelFormat::Mono1Msb,
+            DitherMode::Bayer4x4,
+            &mut buf
+        ),
         Ok(1)
     );
     assert!(buf[0] != 0x00 && buf[0] != 0xFF);
 
     // ByteWindowSink::with_format handles RGB666, RGB888, ARGB8888, Gray4, Mono1Msb.
     for (fmt, dither, expected_bytes) in [
-        (PixelFormat::Rgb666, DitherMode::None, vec![0xFC, 0x00, 0x00, 0xFC, 0xFC, 0xFC]),
-        (PixelFormat::Rgb888, DitherMode::None, vec![0xFF, 0x00, 0x00, 0xFF, 0xFF, 0xFF]),
+        (
+            PixelFormat::Rgb666,
+            DitherMode::None,
+            vec![0xFC, 0x00, 0x00, 0xFC, 0xFC, 0xFC],
+        ),
+        (
+            PixelFormat::Rgb888,
+            DitherMode::None,
+            vec![0xFF, 0x00, 0x00, 0xFF, 0xFF, 0xFF],
+        ),
         (
             PixelFormat::Argb8888,
             DitherMode::None,

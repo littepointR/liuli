@@ -6,9 +6,7 @@ use liuli::core::bitmap::{
     L565_FLAG_ALPHA4, L565_FLAG_CHROMA_KEY, L565_FLAG_INDEXED4, L565_FLAG_INDEXED8,
     L565_FLAG_MASK_A4, L565_FLAG_RLE,
 };
-use liuli::core::color::{
-    Rgb888, rgb565_u16_to_rgb888, rgb888_to_gray8, rgb888_to_rgb565_round,
-};
+use liuli::core::color::{Rgb888, rgb565_u16_to_rgb888, rgb888_to_gray8, rgb888_to_rgb565_round};
 use liuli::core::dither::{gray8_to_gray4_dithered, rgb888_to_rgb565_dithered};
 use liuli::core::geometry::rgb565_to_u16;
 
@@ -212,11 +210,7 @@ fn build_palette(words: &[u16], max_colors: usize, chroma_key: Option<u16>) -> V
                     bmax = bmax.max(it.rgb.b);
                     weight += it.count;
                 }
-                let span = usize::from(
-                    (rmax - rmin)
-                        .max(gmax - gmin)
-                        .max(bmax - bmin),
-                );
+                let span = usize::from((rmax - rmin).max(gmax - gmin).max(bmax - bmin));
                 (span, weight)
             })
             .map(|(i, _)| i);
@@ -421,7 +415,11 @@ fn encode_l565_rgba(
     let words = quantize_rgb565_words(width, height, rgba, opts.dither, opts.chroma_key);
 
     if matches!(opts.mode, ImageMode::Indexed4 | ImageMode::Indexed8) {
-        let max_colors = if opts.mode == ImageMode::Indexed4 { 16 } else { 256 };
+        let max_colors = if opts.mode == ImageMode::Indexed4 {
+            16
+        } else {
+            256
+        };
         let palette = build_palette(&words, max_colors, opts.chroma_key);
         for &p in &palette {
             asset.extend_from_slice(&p.to_le_bytes());
@@ -467,9 +465,8 @@ fn encode_l565_rgba(
         } else {
             None
         };
-        let px_eq = |i: usize, j: usize| -> bool {
-            row[i] == row[j] && row_a.is_none_or(|a| a[i] == a[j])
-        };
+        let px_eq =
+            |i: usize, j: usize| -> bool { row[i] == row[j] && row_a.is_none_or(|a| a[i] == a[j]) };
         let push_px = |dst: &mut Vec<u8>, idx: usize| {
             dst.extend_from_slice(&row[idx].to_le_bytes());
             if let Some(a) = row_a {
@@ -623,8 +620,8 @@ mod tests {
     #[test]
     fn encodes_png_alpha4_mask_indexed4_indexed8_and_dither_roundtrips() {
         let rgba = [
-            255, 0, 0, 255, 0, 255, 0, 128, 0, 0, 255, 0, 255, 255, 0, 255,
-            255, 0, 0, 255, 0, 255, 0, 128, 0, 0, 255, 64, 255, 255, 0, 200,
+            255, 0, 0, 255, 0, 255, 0, 128, 0, 0, 255, 0, 255, 255, 0, 255, 255, 0, 0, 255, 0, 255,
+            0, 128, 0, 0, 255, 64, 255, 255, 0, 200,
         ];
         let png = liuli_sim::image::encode_png_rgba8(4, 2, &rgba);
         let (w, h, dec) = liuli_sim::image::decode_image_rgba8(&png).unwrap();

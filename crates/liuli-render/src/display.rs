@@ -7,9 +7,7 @@ use liuli_core::color::PixelFormat;
 use liuli_core::dither::DitherMode;
 use liuli_core::geometry::{Point, Rect, Rotation, Size, rgb565_to_u16, u16_to_rgb565};
 
-use crate::wire::{
-    BufferTooSmall, ByteOrder, byte_order_to_pixel_format, encode_rgb565_row,
-};
+use crate::wire::{BufferTooSmall, ByteOrder, byte_order_to_pixel_format, encode_rgb565_row};
 
 /// Recommended byte staging chunk size for [`ByteWindowSink`].
 pub const RECOMMENDED_WIRE_CHUNK_BYTES: usize = 64;
