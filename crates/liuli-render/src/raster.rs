@@ -806,8 +806,34 @@ fn render_range<R: SceneResources + ?Sized, T: BandTextSource, A: crate::accel::
                 if area.is_empty() {
                     continue;
                 }
-                let raw_color = rgb565_to_u16(color);
                 let stride = target.width() as usize;
+                if !target.has_alpha()
+                    && alpha == 15
+                    && rect.w == u32::from(source.width())
+                    && rect.h == u32::from(source.height())
+                    && area.x >= rect.x
+                    && area.y >= rect.y
+                    && let Some(mask_bytes) = source.mask_a4_bytes()
+                {
+                    let src_w = usize::from(source.width());
+                    let sx0 = (area.x - rect.x) as usize;
+                    let width = area.w as usize;
+                    let dst_x0 = (area.x - band_rect.x) as usize;
+                    for py in 0..area.h {
+                        let y = area.y as i64 + i64::from(py);
+                        let sy = (y - i64::from(rect.y)) as usize;
+                        let row_start = (y - i64::from(band_rect.y)) as usize * stride + dst_x0;
+                        let mask_offset_px = sy * src_w + sx0;
+                        accel.blend_a4_mask_row(
+                            &mut target.words_mut()[row_start..row_start + width],
+                            mask_bytes,
+                            mask_offset_px,
+                            color,
+                        );
+                    }
+                    continue;
+                }
+                let raw_color = rgb565_to_u16(color);
                 for py in 0..area.h {
                     for px in 0..area.w {
                         let x = area.x as i64 + i64::from(px);

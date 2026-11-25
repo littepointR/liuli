@@ -11,6 +11,7 @@ pub mod display;
 pub mod dma;
 pub mod drivers;
 mod effects;
+pub mod pixel;
 pub mod raster;
 pub mod spi;
 pub mod sync;
@@ -33,6 +34,7 @@ pub use drivers::{
     Cst816Decoder, DisplayCmdBus, Ft3168Decoder, Gc9a01, Gt911Decoder, Ili9341, Ili9488,
     PanelConfig, Rm67162, St7789, Xpt2046Calibrator,
 };
+pub use pixel::{PixelArgb8888, PixelRgb565, SurfacePixel, TypedBandTarget};
 pub use raster::{draw_eg, render_band, render_band_with_accel, render_band_with_provider};
 pub use spi::{RECOMMENDED_SPI_CHUNK_BYTES, SpiWindowBus, SpiWindowTarget};
 pub use sync::{
@@ -297,5 +299,152 @@ mod tests {
         check(1, 0, 2);
         check(0, 1, 3);
         check(1, 1, 4);
+    }
+
+    #[test]
+    fn draw_accel_invokes_blend_a4_mask_row_and_converts_rows() {
+        use liuli_core::bitmap::{Bitmap, BitmapView};
+        use liuli_core::color::PixelFormat;
+        use liuli_core::dither::DitherMode;
+
+        const MASK_ASSET: [u8; 16] = [
+            b'L', b'5', b'6', b'5', 2, 0x08, 4, 0, 2, 0, 0, 0, 0xF4, 0x80, 0x5A, 0xF3,
+        ];
+        static MASK_BMP: Bitmap = match BitmapView::from_asset(&MASK_ASSET) {
+            Some(b) => b,
+            None => panic!("valid mask"),
+        };
+
+        let mut cmds = CommandList::new();
+        cmds.screen = Rect::new(0, 0, 8, 6);
+        cmds.root_bg = Rgb565::new(2, 4, 6);
+        // Clip left edge by 1 px to exercise odd `mask_offset_px` nibble alignment!
+        cmds.push(PaintCmd::AlphaMask {
+            color: Rgb565::new(31, 0, 0),
+            alpha: 15,
+            rect: Rect::new(1, 1, 4, 2),
+            clip: Rect::new(2, 1, 3, 2),
+            source: &MASK_BMP,
+        })
+        .unwrap();
+
+        struct MaskAccel(usize);
+        impl DrawAccel for MaskAccel {
+            fn blend_a4_mask_row(
+                &mut self,
+                dst: &mut [u16],
+                mask: &[u8],
+                mask_offset_px: usize,
+                color: Rgb565,
+            ) {
+                self.0 += 1;
+                let mut soft = crate::SoftAccel;
+                soft.blend_a4_mask_row(dst, mask, mask_offset_px, color);
+            }
+        }
+
+        let fonts =
+            liuli_text::FontSet::single(liuli_text::Lf4Font::from_bytes(SETTINGS_LF4).unwrap());
+        let mut accel_words = [0u16; 8 * 6];
+        let mut accel_target = BandTarget::new::<()>(&mut accel_words, cmds.screen).unwrap();
+        let mut accel = MaskAccel(0);
+        render_band_with_accel(
+            &mut accel_target,
+            &cmds,
+            &liuli_core::paint::SliceSceneResources::EMPTY,
+            &fonts,
+            &mut accel,
+        );
+        assert_eq!(accel.0, 2);
+
+        let mut ref_words = [0u16; 8 * 6];
+        let mut ref_target = BandTarget::new::<()>(&mut ref_words, cmds.screen).unwrap();
+        render_band(
+            &mut ref_target,
+            &cmds,
+            &liuli_core::paint::SliceSceneResources::EMPTY,
+            &fonts,
+        );
+        assert_eq!(accel_words, ref_words);
+
+        // Test DrawAccel::convert_row multi-format conversions
+        let mut soft = crate::SoftAccel;
+        let src565 = [0x00u8, 0xF8, 0xFF, 0xFF]; // red, white LE
+        let mut rgb666 = [0u8; 6];
+        let n = soft
+            .convert_row(
+                &src565,
+                PixelFormat::Rgb565Le,
+                &mut rgb666,
+                PixelFormat::Rgb666,
+                2,
+                DitherMode::None,
+                0,
+            )
+            .unwrap();
+        assert_eq!(n, 6);
+        assert_eq!(rgb666, [0xFC, 0x00, 0x00, 0xFC, 0xFC, 0xFC]);
+
+        let mut mono = [0u8; 1];
+        assert_eq!(
+            soft.convert_row(
+                &src565,
+                PixelFormat::Rgb565Le,
+                &mut mono,
+                PixelFormat::Mono1Msb,
+                2,
+                DitherMode::None,
+                0,
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(mono[0], 0b0100_0000); // red luma < 128 -> 0, white -> 1
+
+        let rgb888 = [255u8, 0, 0, 0, 255, 0, 0, 0, 255];
+        let mut dst565 = [0u8; 6];
+        assert_eq!(
+            soft.convert_row(
+                &rgb888,
+                PixelFormat::Rgb888,
+                &mut dst565,
+                PixelFormat::Rgb565Le,
+                3,
+                DitherMode::None,
+                0,
+            )
+            .unwrap(),
+            6
+        );
+        assert_eq!(dst565, [0x00, 0xF8, 0xE0, 0x07, 0x1F, 0x00]);
+
+        // ARGB8888 LE wire order [B, G, R, A] -> Rgb565Le
+        let argb = [0x00u8, 0xFF, 0x00, 0x80, 0xFF, 0x00, 0x00, 0xFF]; // green, blue
+        assert_eq!(
+            soft.convert_row(
+                &argb,
+                PixelFormat::Argb8888,
+                &mut dst565[..4],
+                PixelFormat::Rgb565Le,
+                2,
+                DitherMode::None,
+                0,
+            )
+            .unwrap(),
+            4
+        );
+        assert_eq!(&dst565[..4], &[0xE0, 0x07, 0x1F, 0x00]);
+        assert!(
+            soft.convert_row(
+                &argb,
+                PixelFormat::Argb8888,
+                &mut dst565[..3],
+                PixelFormat::Rgb565Le,
+                2,
+                DitherMode::None,
+                0,
+            )
+            .is_err()
+        );
     }
 }
