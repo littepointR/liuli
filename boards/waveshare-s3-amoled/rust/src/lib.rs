@@ -1,8 +1,5 @@
 #![no_std]
 use core::panic::PanicInfo;
-use embedded_graphics_core::{
-    Pixel, draw_target::DrawTarget, geometry::OriginDimensions, pixelcolor::IntoStorage,
-};
 use liuli::prelude::*;
 #[cfg(any(not(feature = "widget-demo"), feature = "benchmark"))]
 mod application;
@@ -57,49 +54,28 @@ struct Display<'a> {
     wire: [&'a mut [u16]; 2],
     slot: usize,
 }
-impl OriginDimensions for Display<'_> {
-    fn size(&self) -> Size {
-        Size::new(WIDTH, HEIGHT)
-    }
-}
-impl DrawTarget for Display<'_> {
-    type Color = Rgb565;
+impl DisplaySink for Display<'_> {
     type Error = ();
-    fn draw_iter<I: IntoIterator<Item = Pixel<Rgb565>>>(&mut self, it: I) -> Result<(), ()> {
-        for Pixel(pos, c) in it {
-            if Rect::new(0, 0, WIDTH, HEIGHT).contains_point(pos) {
-                self.fill_contiguous(&Rectangle::new(pos, Size::new(1, 1)), [c])?;
-            }
-        }
-        Ok(())
-    }
-    fn fill_contiguous<I: IntoIterator<Item = Rgb565>>(
-        &mut self,
-        rect: &Rectangle,
-        colors: I,
-    ) -> Result<(), ()> {
-        let count = rect.size.width as usize * rect.size.height as usize;
-        let dst = self.wire[self.slot].get_mut(..count).ok_or(())?;
-        let mut written = 0;
-        for (word, c) in dst.iter_mut().zip(colors) {
-            *word = c.into_storage().to_be();
-            written += 1;
-        }
-        if written != count {
+
+    fn flush_rect(&mut self, rect: Rect, pixels: &[u16]) -> Result<(), ()> {
+        let count = (rect.w as usize).saturating_mul(rect.h as usize);
+        if pixels.len() < count {
             return Err(());
         }
+        let dst = self.wire[self.slot].get_mut(..count).ok_or(())?;
+        encode_rgb565_words(&pixels[..count], dst, ByteOrder::BigEndian).map_err(|_| ())?;
         // `board_pixels` waits for any previous band DMA before reusing `self.wire[self.slot]`.
-        let res = unsafe {
-            board_pixels(
-                rect.top_left.x,
-                rect.top_left.y,
-                rect.size.width,
-                rect.size.height,
-                dst.as_ptr(),
-            )
-        };
+        let res = unsafe { board_pixels(rect.x, rect.y, rect.w, rect.h, dst.as_ptr()) };
         self.slot ^= 1;
         if res == 0 { Ok(()) } else { Err(()) }
+    }
+
+    fn finish_frame(&mut self) -> Result<(), ()> {
+        if unsafe { board_flush() } == 0 {
+            Ok(())
+        } else {
+            Err(())
+        }
     }
 }
 
@@ -115,11 +91,11 @@ impl Contact {
         Point::new(self.x, self.y)
     }
 }
-trait FrameGlyphs: liuli::text::storage::GlyphPixels {
+trait FrameGlyphs: GlyphPixels {
     fn start(&mut self) {}
     fn finish(&self) {}
 }
-impl FrameGlyphs for liuli::text::storage::InlinePixels {}
+impl FrameGlyphs for InlinePixels {}
 fn present(
     e: &mut Engine<'_, '_, BoardApp>,
     target: &mut Display<'_>,
@@ -130,12 +106,7 @@ fn present(
     e.align_damage(step, step).map_err(|_| ())?;
     glyphs.start();
     let result = e
-        .present_sync_with_pixels(
-            target,
-            scratch,
-            |_| unsafe { if board_flush() == 0 { Ok(()) } else { Err(()) } },
-            glyphs,
-        )
+        .present_with_pixels(target, scratch, glyphs)
         .map_err(|_| ());
     glyphs.finish();
     result
@@ -173,12 +144,15 @@ pub unsafe extern "C" fn liuli_run(ptr: *const u8, len: usize) -> i32 {
         return -6;
     };
     #[cfg(not(feature = "enhanced"))]
-    let mut glyphs = liuli::text::storage::InlinePixels;
+    let mut glyphs = InlinePixels;
     let initial = unsafe { board_now_us() };
     let now = InstantMs(initial as u64 / 1000);
-    let storage = unsafe { &mut *(&raw mut STORAGE) };
-    let scratch = unsafe { &mut *(&raw mut SCRATCH) };
-    let [w0, w1] = unsafe { &mut *(&raw mut WIRE) };
+    let storage_ptr = &raw mut STORAGE;
+    let scratch_ptr = &raw mut SCRATCH;
+    let wire_ptr = &raw mut WIRE;
+    let storage = unsafe { &mut *storage_ptr };
+    let scratch = unsafe { &mut *scratch_ptr };
+    let [w0, w1] = unsafe { &mut *wire_ptr };
     let mut display = Display {
         wire: [w0, w1],
         slot: 0,
@@ -201,7 +175,7 @@ pub unsafe extern "C" fn liuli_run(ptr: *const u8, len: usize) -> i32 {
     engine.set_band_height(BAND_HEIGHT);
     #[cfg(feature = "enhanced")]
     engine.set_sync_blend(|row, fg, a| unsafe {
-        board_blend(row.as_mut_ptr(), row.len(), fg.into_storage(), u32::from(a))
+        board_blend(row.as_mut_ptr(), row.len(), rgb565_to_u16(fg), u32::from(a))
     });
     #[cfg(feature = "sleep-benchmark")]
     let run_benchmark = unsafe { board_take_wake_report() } == 0;
@@ -215,8 +189,7 @@ pub unsafe extern "C" fn liuli_run(ptr: *const u8, len: usize) -> i32 {
     if effects_benchmark::run(&mut engine, &mut display, scratch, &mut glyphs, now).is_err() {
         return -8;
     }
-    let mut previous = [Contact::default(); 2];
-    let mut previous_count = 0;
+    let mut tracker = TouchTracker::<2>::new();
     #[cfg(feature = "input-trace")]
     let mut trace = input_trace::Recorder::start(now);
     loop {
@@ -225,46 +198,31 @@ pub unsafe extern "C" fn liuli_run(ptr: *const u8, len: usize) -> i32 {
         let mut points = [Contact::default(); 2];
         let status = unsafe { board_touch(points.as_mut_ptr()) };
         let count = status.clamp(0, 2) as usize;
-        if engine.try_advance(now, false).is_err() {
+        if engine.tick(now).is_err() {
             return -3;
         }
         #[cfg(feature = "input-trace")]
         trace.tick(now);
+        let mut contacts = [TouchPoint::new(0, Point::zero()); 2];
+        for (dst, src) in contacts.iter_mut().zip(&points[..count]) {
+            *dst = TouchPoint::new(src.id, src.pos());
+        }
         let mut dispatch = |input| {
-            let result = engine.try_dispatch(input, now, false);
+            let result = engine.handle_input(input, now);
             #[cfg(feature = "input-trace")]
             if result.is_ok() {
                 trace.input(now, input);
             }
-            result
+            result.map(|_| ()).map_err(|_| ())
         };
-        for old in &previous[..previous_count] {
-            if !points[..count].iter().any(|p| p.id == old.id) {
-                let id = PointerId(old.id);
-                let input = if status < 0 {
-                    RawInput::PointerCancel { id }
-                } else {
-                    RawInput::PointerUp { id, pos: old.pos() }
-                };
-                if dispatch(input).is_err() {
-                    return -4;
-                }
-            }
+        let diff_res = if status < 0 {
+            tracker.try_cancel_all(&mut dispatch)
+        } else {
+            tracker.try_update(&contacts[..count], &mut dispatch)
+        };
+        if diff_res.is_err() {
+            return -4;
         }
-        for p in &points[..count] {
-            let id = PointerId(p.id);
-            let pos = p.pos();
-            let input = match previous[..previous_count].iter().find(|old| old.id == p.id) {
-                None => RawInput::PointerDown { id, pos },
-                Some(old) if old.pos() != pos => RawInput::PointerMove { id, pos },
-                _ => continue,
-            };
-            if dispatch(input).is_err() {
-                return -4;
-            }
-        }
-        previous = points;
-        previous_count = count;
         match present(&mut engine, &mut display, scratch, &mut glyphs) {
             Ok(PresentStatus::Presented) => unsafe {
                 board_frame(engine.last_metrics().pixels_sent, board_now_us() - start)
@@ -273,7 +231,7 @@ pub unsafe extern "C" fn liuli_run(ptr: *const u8, len: usize) -> i32 {
             Err(_) => return -5,
         }
         let after = InstantMs(unsafe { board_now_us() } as u64 / 1000);
-        match engine.next_wakeup(after, false) {
+        match engine.wakeup(after) {
             NextWakeup::Now => {}
             NextWakeup::At(t) => {
                 let wait_ms = t.0.saturating_sub(after.0).clamp(1, 10) as u32;

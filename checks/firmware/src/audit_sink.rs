@@ -3,14 +3,14 @@ use core::hint::black_box;
 
 use liuli::prelude::*;
 
-pub struct AuditSpiBus {
+pub struct AuditByteBus {
     windows: u32,
     bytes: u32,
     flushes: u32,
     digest: u32,
 }
 
-impl AuditSpiBus {
+impl AuditByteBus {
     pub const fn new() -> Self {
         Self {
             windows: 0,
@@ -25,7 +25,7 @@ impl AuditSpiBus {
     }
 }
 
-impl SpiWindowBus for AuditSpiBus {
+impl ByteWindowBus for AuditByteBus {
     type Error = Infallible;
 
     fn set_window(&mut self, rect: Rect) -> Result<(), Self::Error> {

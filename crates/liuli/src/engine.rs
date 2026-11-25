@@ -21,7 +21,7 @@ use liuli_core::time::{
     REPEAT_PERIOD_MS,
 };
 use liuli_core::view::{App, Change, Key, NodeKind, ViewBuilder};
-use liuli_render::{DmaCoordinator, DmaSink};
+use liuli_render::{DisplaySink, DmaCoordinator, DmaSink};
 use liuli_text::{FontCacheStats, FontProvider, FontSet, Lf4Font};
 
 use crate::storage::Storage;
@@ -201,6 +201,42 @@ impl<'s, 'f, A: App> Engine<'s, 'f, A, FontSet<'f>> {
             &self.storage.trees[active_t_idx],
             &self.fonts,
             finish,
+            #[cfg(feature = "platform-blend")]
+            self.blend,
+            #[cfg(not(feature = "platform-blend"))]
+            liuli_render::raster::blend_solid,
+            glyphs,
+        )?;
+        self.record_present_metrics(status, &mut m);
+        Ok(status)
+    }
+
+    /// Presents dirty bands into a [`DisplaySink`] using a custom [`GlyphPixels`] source.
+    pub fn present_with_pixels<S, G>(
+        &mut self,
+        sink: &mut S,
+        scratch: &mut [u16],
+        glyphs: &mut G,
+    ) -> Result<PresentStatus, liuli_render::sync::FrameError<S::Error, G::Error>>
+    where
+        S: DisplaySink + ?Sized,
+        G: liuli_text::storage::GlyphPixels,
+    {
+        if self.is_dma_busy() {
+            return Err(PresentError::DmaBusy.into());
+        }
+        let active_t_idx = self.storage.active_tree_idx as usize;
+        let active_c_idx = self.storage.active_cmd_idx as usize;
+
+        let (status, mut m) = liuli_render::sync::present_sink_with_pixels(
+            sink,
+            scratch,
+            self.screen,
+            self.band_height,
+            &self.storage.cmds[active_c_idx],
+            &mut self.storage.damage,
+            &self.storage.trees[active_t_idx],
+            &self.fonts,
             #[cfg(feature = "platform-blend")]
             self.blend,
             #[cfg(not(feature = "platform-blend"))]
@@ -1495,6 +1531,66 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
             None => NextWakeup::OnEvent,
         };
         anim_wake.earlier(repeat_wake).earlier(app_wake)
+    }
+
+    /// Advances timers, key/pointer repeats, and built-in animations for the current frame.
+    #[inline]
+    pub fn tick(&mut self, now: InstantMs) -> Result<bool, TransactionError<()>> {
+        self.try_advance(now, false)
+    }
+
+    /// Dispatches a raw hardware input event under the active monotonic clock.
+    #[inline]
+    pub fn handle_input(
+        &mut self,
+        input: RawInput,
+        now: InstantMs,
+    ) -> Result<bool, TransactionError<RawInput>> {
+        self.try_dispatch(input, now, false)
+    }
+
+    /// Delivers a typed application message to `App::update`.
+    #[inline]
+    pub fn send(&mut self, msg: A::Msg, now: InstantMs) -> Result<(), TransactionError<A::Msg>> {
+        self.try_message(msg, now, false)
+    }
+
+    /// Computes when the platform event loop next needs to wake up.
+    #[inline]
+    pub fn wakeup(&self, now: InstantMs) -> NextWakeup {
+        self.next_wakeup(now, false)
+    }
+
+    /// Presents damaged bands into any bus-agnostic [`DisplaySink`].
+    ///
+    /// Works identically for XIP [`FontSet`], [`StreamingFont`], and [`HybridFontSet`].
+    pub fn present<S: DisplaySink + ?Sized>(
+        &mut self,
+        sink: &mut S,
+        scratch: &mut [u16],
+    ) -> Result<PresentStatus, liuli_render::sync::FrameError<S::Error, F::Error>> {
+        if self.is_dma_busy() {
+            return Err(PresentError::DmaBusy.into());
+        }
+        let active_t_idx = self.storage.active_tree_idx as usize;
+        let active_c_idx = self.storage.active_cmd_idx as usize;
+
+        let (status, mut m) = liuli_render::sync::present_sink_with_blend(
+            sink,
+            scratch,
+            self.screen,
+            self.band_height,
+            &self.storage.cmds[active_c_idx],
+            &mut self.storage.damage,
+            &self.storage.trees[active_t_idx],
+            &self.fonts,
+            #[cfg(feature = "platform-blend")]
+            self.blend,
+            #[cfg(not(feature = "platform-blend"))]
+            liuli_render::raster::blend_solid,
+        )?;
+        self.record_present_metrics(status, &mut m);
+        Ok(status)
     }
 
     pub fn present_sync_streaming<T: DrawTarget<Color = Rgb565>>(

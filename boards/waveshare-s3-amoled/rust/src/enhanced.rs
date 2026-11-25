@@ -1,5 +1,6 @@
 use core::alloc::{GlobalAlloc, Layout};
-use liuli::text::storage::{BlockCache, ReadAt, StoredFont};
+use liuli::prelude::*;
+use liuli::text::GlyphBitmap;
 extern crate alloc;
 unsafe extern "C" {
     fn board_alloc(size: usize, alignment: usize) -> *mut u8;
@@ -32,9 +33,6 @@ impl ReadAt for Partition {
         if result == 0 { Ok(n) } else { Err(result) }
     }
 }
-use liuli::prelude::{FontId, Rect};
-use liuli::text::GlyphBitmap;
-use liuli::text::storage::{GlyphPixels, IoMetrics, ReadError};
 pub struct Reader<'a> {
     font: StoredFont<BlockCache<'a, Partition, 8>>,
     scratch: [u8; 512],

@@ -75,6 +75,85 @@ impl Default for ClockTracker {
     }
 }
 
+/// Tracks a wrapping 32-bit hardware cycle/timer counter into a monotonic [`InstantMs`].
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub struct MonotonicClock32 {
+    last_raw: u32,
+    accum_ticks: u64,
+    ticks_per_ms: u32,
+    initialized: bool,
+}
+
+impl MonotonicClock32 {
+    /// Creates a clock converter given `ticks_per_ms` (values `< 1` clamp to `1`).
+    #[inline]
+    pub const fn new(ticks_per_ms: u32) -> Self {
+        Self {
+            last_raw: 0,
+            accum_ticks: 0,
+            ticks_per_ms: if ticks_per_ms == 0 { 1 } else { ticks_per_ms },
+            initialized: false,
+        }
+    }
+
+    /// Creates a clock converter from a counter frequency in Hz (minimum 1 tick/ms).
+    #[inline]
+    pub const fn from_hz(hz: u32) -> Self {
+        Self::new(hz / 1000)
+    }
+
+    /// Samples the raw 32-bit counter and returns the monotonic millisecond timestamp.
+    pub fn sample(&mut self, raw: u32) -> InstantMs {
+        if !self.initialized {
+            self.last_raw = raw;
+            self.initialized = true;
+            return InstantMs(0);
+        }
+        let delta = u64::from(raw.wrapping_sub(self.last_raw));
+        self.accum_ticks = self.accum_ticks.saturating_add(delta);
+        self.last_raw = raw;
+        self.now()
+    }
+
+    /// Returns the most recently sampled monotonic timestamp without reading hardware.
+    #[inline]
+    pub const fn now(&self) -> InstantMs {
+        InstantMs(self.accum_ticks / (self.ticks_per_ms as u64))
+    }
+
+    /// Resets the clock back to uninitialized `InstantMs(0)`.
+    #[inline]
+    pub fn reset(&mut self) {
+        self.last_raw = 0;
+        self.accum_ticks = 0;
+        self.initialized = false;
+    }
+}
+
+#[cfg(test)]
+mod monotonic_clock32_tests {
+    use super::*;
+
+    #[test]
+    fn handles_32bit_wraparound_subms_remainder_and_zero_hz() {
+        // 400 MHz => 400_000 ticks per ms
+        let mut clk = MonotonicClock32::from_hz(400_000_000);
+        assert_eq!(clk.sample(u32::MAX - 100_000), InstantMs(0));
+        // Wrap across u32::MAX with 300_000 ticks -> still < 1 ms (total 300_000)
+        assert_eq!(clk.sample(199_999), InstantMs(0));
+        // Advance another 100_000 ticks -> total 400_000 ticks => 1 ms without remainder loss
+        assert_eq!(clk.sample(299_999), InstantMs(1));
+        clk.reset();
+        assert_eq!(clk.now(), InstantMs(0));
+        assert_eq!(clk.sample(500), InstantMs(0));
+
+        // Zero ticks_per_ms / zero Hz does not panic on division
+        let mut fallback = MonotonicClock32::from_hz(0);
+        assert_eq!(fallback.sample(10), InstantMs(0));
+        assert_eq!(fallback.sample(25), InstantMs(15));
+    }
+}
+
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
 #[repr(u8)]
 pub enum AnimProp {

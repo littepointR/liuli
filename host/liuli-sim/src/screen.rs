@@ -146,6 +146,43 @@ impl OriginDimensions for MemoryScreen {
     }
 }
 
+impl liuli::render::DisplaySink for MemoryScreen {
+    type Error = Infallible;
+
+    fn flush_rect(&mut self, rect: Rect, pixels: &[u16]) -> Result<(), Self::Error> {
+        let inter = rect.intersect(Rect::new(0, 0, self.w, self.h));
+        if inter.is_empty() {
+            return Ok(());
+        }
+        let skip_x = (inter.x - rect.x) as usize;
+        let skip_y = (inter.y - rect.y) as usize;
+        let src_stride = rect.w as usize;
+        let dst_stride = self.w as usize;
+        let vis_w = inter.w as usize;
+        let vis_h = inter.h as usize;
+        let dst_x0 = inter.x as usize;
+        let dst_y0 = inter.y as usize;
+
+        for ry in 0..vis_h {
+            let src_off = (skip_y + ry) * src_stride + skip_x;
+            if src_off >= pixels.len() {
+                break;
+            }
+            let avail = (pixels.len() - src_off).min(vis_w);
+            let dst_off = (dst_y0 + ry) * dst_stride + dst_x0;
+            self.pixels[dst_off..dst_off + avail]
+                .copy_from_slice(&pixels[src_off..src_off + avail]);
+            if let Some(a) = &mut self.alpha {
+                a[dst_off..dst_off + avail].fill(15);
+            }
+            if avail < vis_w {
+                break;
+            }
+        }
+        Ok(())
+    }
+}
+
 impl DrawTarget for MemoryScreen {
     type Color = Rgb565;
     type Error = Infallible;

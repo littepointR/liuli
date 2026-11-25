@@ -9,31 +9,33 @@ struct Scene<'a> {
     compare: bool,
 }
 
-impl OriginDimensions for Scene<'_> {
-    fn size(&self) -> Size {
-        Size::new(WIDTH, HEIGHT)
-    }
-}
-
-impl DrawTarget for Scene<'_> {
-    type Color = Rgb565;
+impl DisplaySink for Scene<'_> {
     type Error = ();
 
-    fn draw_iter<I: IntoIterator<Item = Pixel<Rgb565>>>(&mut self, pixels: I) -> Result<(), ()> {
-        for Pixel(pos, color) in pixels {
-            let width = WIDTH as usize;
-            if pos != Point::new((self.next % width) as i32, (self.next / width) as i32) {
-                return Err(());
-            }
-            let word = self.frame.get_mut(self.next).ok_or(())?;
-            if self.compare {
-                if *word != color.into_storage() {
+    fn flush_rect(&mut self, rect: Rect, pixels: &[u16]) -> Result<(), ()> {
+        let width = WIDTH as usize;
+        let stride = rect.w as usize;
+        if pixels.len() < stride.saturating_mul(rect.h as usize) {
+            return Err(());
+        }
+        for ry in 0..rect.h as usize {
+            let y = rect.y as usize + ry;
+            for rx in 0..stride {
+                let x = rect.x as usize + rx;
+                if y * width + x != self.next {
                     return Err(());
                 }
-            } else {
-                *word = color.into_storage();
+                let word = self.frame.get_mut(self.next).ok_or(())?;
+                let px = pixels[ry * stride + rx];
+                if self.compare {
+                    if *word != px {
+                        return Err(());
+                    }
+                } else {
+                    *word = px;
+                }
+                self.next += 1;
             }
-            self.next += 1;
         }
         Ok(())
     }
@@ -48,7 +50,7 @@ pub(super) fn check(
     for compare in [false, true] {
         if compare {
             engine.set_sync_blend(|row, fg, a| unsafe {
-                board_blend(row.as_mut_ptr(), row.len(), fg.into_storage(), a.into())
+                board_blend(row.as_mut_ptr(), row.len(), rgb565_to_u16(fg), a.into())
             });
         } else {
             engine.set_sync_blend(liuli::render::raster::blend_solid);
@@ -61,7 +63,7 @@ pub(super) fn check(
         engine.invalidate_screen().map_err(|_| ())?;
         glyphs.start();
         engine
-            .present_sync_with_pixels(&mut target, scratch, |_| Ok(()), glyphs)
+            .present_with_pixels(&mut target, scratch, glyphs)
             .map_err(|_| ())?;
         glyphs.finish();
         if target.next != (WIDTH * HEIGHT) as usize {

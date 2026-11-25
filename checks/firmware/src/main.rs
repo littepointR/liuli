@@ -7,7 +7,7 @@ use core::arch::global_asm;
 use core::hint::black_box;
 use core::panic::PanicInfo;
 
-use audit_sink::{AuditSink, AuditSpiBus};
+use audit_sink::{AuditByteBus, AuditSink};
 use liuli::prelude::*;
 use liuli_settings::{PageId, TerminalApp, TerminalModel, TerminalMsg, app_fonts};
 
@@ -103,30 +103,25 @@ pub extern "C" fn firmware_main() -> ! {
     .expect("init");
     engine.set_focus_ring_visible(true);
 
-    // 1. Synchronous SPI window transport path (full initial Dashboard frame).
+    // 1. Synchronous byte-window transport path (full initial Dashboard frame).
     {
-        let mut spi_chunk = [0u8; RECOMMENDED_SPI_CHUNK_BYTES];
-        let mut spi_target = SpiWindowTarget::new(
-            AuditSpiBus::new(),
+        let mut wire_chunk = [0u8; RECOMMENDED_WIRE_CHUNK_BYTES];
+        let mut wire_sink = ByteWindowSink::new(
+            AuditByteBus::new(),
             screen,
             ByteOrder::BigEndian,
-            &mut spi_chunk,
+            &mut wire_chunk,
         )
-        .expect("spi chunk");
-        let sync_status =
-            engine.present_sync_with(&mut spi_target, band_a.as_mut_slice(), |t| t.flush());
-        let _ = black_box((sync_status, spi_target.bus().summary()));
+        .expect("wire chunk");
+        let sync_status = engine.present(&mut wire_sink, band_a.as_mut_slice());
+        let _ = black_box((sync_status, wire_sink.bus().summary()));
         let m = engine.last_metrics();
         let _ = engine.try_with_model(|model| model.record_completed_frame(m, InstantMs(0)));
     }
 
     // 2. Page switch + non-blocking double-buffered DMA pipeline path across both A & B slots.
-    let _ = black_box(engine.message(
-        TerminalMsg::SelectPage(PageId::Settings),
-        InstantMs(16),
-        false,
-    ));
-    let _ = black_box(engine.dispatch(RawInput::Nav(NavDir::Next), InstantMs(16), false));
+    let _ = black_box(engine.send(TerminalMsg::SelectPage(PageId::Settings), InstantMs(16)));
+    let _ = black_box(engine.handle_input(RawInput::Nav(NavDir::Next), InstantMs(16)));
     {
         let mut dma = DmaCoordinator::new(band_a.as_mut_slice(), band_b.as_mut_slice());
         let mut sink = AuditSink::new();
@@ -151,7 +146,7 @@ pub extern "C" fn firmware_main() -> ! {
     }
 
     loop {
-        black_box(engine.next_wakeup(InstantMs(16), false));
+        black_box(engine.wakeup(InstantMs(16)));
     }
 }
 

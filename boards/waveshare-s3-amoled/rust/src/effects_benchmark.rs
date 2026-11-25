@@ -12,7 +12,7 @@ fn tap(e: &mut Engine<'_, '_, BoardApp>, key: Key, now: InstantMs) -> Result<(),
         RawInput::PointerDown { id, pos },
         RawInput::PointerUp { id, pos },
     ] {
-        e.try_dispatch(input, now, false).map_err(|_| ())?;
+        e.handle_input(input, now).map_err(|_| ())?;
     }
     Ok(())
 }
@@ -35,7 +35,7 @@ pub(super) fn run(
         if kind == 6 {
             tap(e, Key(307), time)?;
             time = time.saturating_add(640);
-            e.try_advance(time, false).map_err(|_| ())?;
+            e.tick(time).map_err(|_| ())?;
             tap(e, Key(309), time)?;
             present(e, display, scratch, glyphs)?;
         }
@@ -46,7 +46,7 @@ pub(super) fn run(
                 board_begin_sample();
                 board_now_us()
             };
-            e.try_advance(time, false).map_err(|_| ())?;
+            e.tick(time).map_err(|_| ())?;
             if present(e, display, scratch, glyphs)? != PresentStatus::Presented {
                 return Err(());
             }

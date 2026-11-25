@@ -5,8 +5,6 @@ use embedded_graphics_core::draw_target::DrawTarget;
 use embedded_graphics_core::geometry::{OriginDimensions, Size};
 use embedded_graphics_core::pixelcolor::{IntoStorage, Rgb565};
 use liuli::prelude::*;
-use liuli::render::sync::FrameError;
-use liuli::text::storage::{ReadAt, ReadError};
 
 const SETTINGS_LF4: &[u8] = include_bytes!("../../../apps/liuli-settings/assets/settings.lf4");
 const SMALL12_LF4: &[u8] = include_bytes!("../../../apps/liuli-settings/assets/small12.lf4");
@@ -317,4 +315,143 @@ fn engine_reload_fonts_remeasures_and_redraws() {
         .unwrap();
     assert_ne!(target.pixels, before);
     assert_eq!(target.pixels, expected_target.pixels);
+}
+
+struct SliceSink {
+    w: u32,
+    h: u32,
+    pixels: Vec<u16>,
+    flushes: u32,
+}
+
+impl SliceSink {
+    fn new(w: u32, h: u32) -> Self {
+        Self {
+            w,
+            h,
+            pixels: vec![0; (w * h) as usize],
+            flushes: 0,
+        }
+    }
+}
+
+impl DisplaySink for SliceSink {
+    type Error = ();
+
+    fn flush_rect(&mut self, rect: Rect, pixels: &[u16]) -> Result<(), Self::Error> {
+        let inter = rect.intersect(Rect::new(0, 0, self.w, self.h));
+        if inter.is_empty() {
+            return Ok(());
+        }
+        let stride = rect.w as usize;
+        let vis_w = inter.w as usize;
+        let skip_x = (inter.x - rect.x) as usize;
+        let skip_y = (inter.y - rect.y) as usize;
+        for ry in 0..inter.h as usize {
+            let src = (skip_y + ry) * stride + skip_x;
+            let dst = ((inter.y as usize + ry) * self.w as usize) + inter.x as usize;
+            self.pixels[dst..dst + vis_w].copy_from_slice(&pixels[src..src + vis_w]);
+        }
+        Ok(())
+    }
+
+    fn finish_frame(&mut self) -> Result<(), Self::Error> {
+        self.flushes += 1;
+        Ok(())
+    }
+}
+
+#[test]
+fn engine_unified_present_works_for_xip_and_streaming_with_loop_helpers() {
+    let screen = Rect::new(0, 0, 160, 96);
+    let mut scratch = [0u16; 160 * 16];
+
+    let body_xip = Lf4Font::from_bytes(SETTINGS_LF4).unwrap();
+    let small_xip = Lf4Font::from_bytes(SMALL12_LF4).unwrap();
+    let mut xip_storage = Storage::new();
+    let mut xip_engine = Engine::<StreamApp>::new_in_place_with_fonts(
+        &mut xip_storage,
+        StreamModel { tick: 0 },
+        FontSet::new(body_xip, small_xip),
+        screen,
+        InstantMs(0),
+    )
+    .unwrap();
+    let mut xip_sink = SliceSink::new(160, 96);
+    assert_eq!(
+        xip_engine.present(&mut xip_sink, &mut scratch).unwrap(),
+        PresentStatus::Presented
+    );
+    assert_eq!(xip_sink.flushes, 1);
+
+    let fail_io = Cell::new(false);
+    let reads = Cell::new(0);
+    let mut b_blk = [0u8; 2048];
+    let mut b_pool = [0u8; 4096];
+    let mut b_scr = [0u8; 512];
+    let stream_body = StreamingFont::<_, 32, 64, 32, 4>::open(
+        FallibleFlash {
+            data: SETTINGS_LF4,
+            fail_io: &fail_io,
+            reads: &reads,
+        },
+        &mut b_blk,
+        &mut b_pool,
+        &mut b_scr,
+    )
+    .unwrap();
+    let mut s_blk = [0u8; 2048];
+    let mut s_pool = [0u8; 4096];
+    let mut s_scr = [0u8; 512];
+    let stream_small = StreamingFont::<_, 32, 64, 32, 4>::open(
+        FallibleFlash {
+            data: SMALL12_LF4,
+            fail_io: &fail_io,
+            reads: &reads,
+        },
+        &mut s_blk,
+        &mut s_pool,
+        &mut s_scr,
+    )
+    .unwrap();
+
+    let hybrid =
+        HybridFontSet::streaming(&stream_body).with_stream_slot(FontId::Small12, &stream_small);
+    let mut storage = Storage::new();
+    let mut engine = Engine::<StreamApp, _>::new_in_place_with_provider(
+        &mut storage,
+        StreamModel { tick: 0 },
+        hybrid,
+        screen,
+        InstantMs(0),
+    )
+    .unwrap();
+
+    let mut stream_sink = SliceSink::new(160, 96);
+    assert_eq!(
+        engine.present(&mut stream_sink, &mut scratch).unwrap(),
+        PresentStatus::Presented
+    );
+    assert_eq!(stream_sink.pixels, xip_sink.pixels);
+    assert_eq!(stream_sink.flushes, 1);
+
+    // Unified loop helpers: tick / send / handle_input / wakeup / present -> Idle when clean
+    assert!(!engine.tick(InstantMs(16)).unwrap());
+    engine.send((), InstantMs(32)).unwrap();
+    assert!(
+        !engine
+            .handle_input(
+                RawInput::PointerDown {
+                    id: PointerId(0),
+                    pos: Point::new(80, 48),
+                },
+                InstantMs(48),
+            )
+            .unwrap()
+    );
+    assert_eq!(engine.wakeup(InstantMs(48)), NextWakeup::OnEvent);
+    assert_eq!(
+        engine.present(&mut stream_sink, &mut scratch).unwrap(),
+        PresentStatus::Idle
+    );
 }

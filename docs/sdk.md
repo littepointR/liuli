@@ -138,7 +138,36 @@ cargo run --offline --manifest-path liuli-alarms/Cargo.toml --example editor --f
 
 ## 从 v0.2 迁移与恢复
 
-两个原有应用、LF4 v1 和旧 .events 回放保留原入口。新应用使用 AppSession::<YourApp>::new 设置模型、FontSet 和显示尺寸。设备使用 Engine::new_in_place_with_fonts，在单调毫秒时钟下依次调用 try_advance、try_dispatch 和 present。
+两个原有应用、LF4 v1 和旧 .events 回放保留原入口。新应用使用 AppSession::<YourApp>::new 设置模型、FontSet 和显示尺寸。设备使用 Engine::new_in_place_with_fonts，在单调毫秒时钟下依次调用 tick（或 try_advance）、handle_input（或 try_dispatch）和 present。
+
+## 硬件移植（统一接口）
+
+所有硬件胶水类型统一通过 `use liuli::prelude::*;` 导出，按能力解耦、与底层总线协议（SPI / QSPI / 8080 / RGB-LTDC）无关：
+
+| 抽象能力 | 核心接口 | 适用场景与说明 |
+|---|---|---|
+| 同步显示输出 | `DisplaySink`（`flush_rect(&mut self, rect, pixels: &[u16])` + `finish_frame()`） | 引擎直接递交整块连续 `&[u16]` 条带像素，无需经由 `DrawTarget` 逐像素迭代器转换；适用于 SPI、QSPI、8080 并口或 SDRAM/LTDC 双缓冲。已有 `DrawTarget<Color = Rgb565>` 可用 `EgDisplaySink` 包装，字节窗口总线可用 `ByteWindowBus` + `ByteWindowSink`（1.x 仍兼容 `SpiWindowBus`、`SpiWindowTarget` 与 `present_sync*`）。 |
+| 异步双缓冲 DMA | `DmaSink` + `DmaCoordinator` | 使用 `FreeBand -> ReadyBand -> InFlightBand` 编译期所有权流转；通过 `DmaCoordinator::with_wire_order(ByteOrder::BigEndian)` 或 `encode_rgb565_words` 完成字节序转换，`Engine::poll_dma`（或 `poll_dma_with_provider`）驱动零拷贝流水线。 |
+| 多指触摸追踪 | `TouchTracker<N>` + `TouchPoint` | 仅向 `tracker.update(&contacts[..count], \|ev\| ...)` 或 `cancel_all` 传入当前采样到的触点数组，框架自动差分生成顺序正确的 `PointerUp` / `PointerMove` / `PointerDown` / `PointerCancel`。 |
+| 32 位环形时钟 | `MonotonicClock32` | 通过 `MonotonicClock32::new(ticks_per_ms)` 或 `from_hz(hz)` 将 32 位溢出计数器转换为无回退的 `InstantMs`。 |
+| 非 XIP 外置字库 | `ReadAt` + `BlockCache` + `StreamingFont` / `HybridFontSet` | 与片内 `FontSet` 统一接入 `Engine::present` 与 `Engine::poll_dma_with_provider`，按需流式读取 Flash/SD 字体。 |
+
+设备主循环典型写法（同步输出路径）：
+
+```rust
+let mut tracker = TouchTracker::<5>::new();
+let mut clock = MonotonicClock32::from_hz(CPU_HZ);
+loop {
+    let now = clock.sample(read_hw_counter());
+    engine.tick(now)?;
+    match touch.poll_contacts(&mut points) {
+        Ok(n) => tracker.try_update(&points[..n], |ev| engine.handle_input(ev, now).map(|_| ()))?,
+        Err(_) => tracker.try_cancel_all(|ev| engine.handle_input(ev, now).map(|_| ()))?,
+    }
+    engine.present(&mut display_sink, &mut scratch)?;
+    sleep_until(engine.wakeup(clock.now()));
+}
+```
 
 try_message、try_dispatch 和 try_advance 提供事务结果。Busy 会交还尚待处理的消息或输入，在 DMA 完成后重试。WentBackwards 要求宿主修正时间。Build 表示提交失败，活动树和之前完成的帧仍可使用；模型可能已更新。读取 build_failure，按其中的页面、可用的控件键和资源类别修正模型，再调用 commit_view。重复业务消息可能重复执行它的副作用。AppSession::recover 可在桌面执行同样的修复和像素校验。
 

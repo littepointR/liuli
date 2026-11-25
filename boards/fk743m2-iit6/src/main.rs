@@ -51,9 +51,7 @@ fn present(
     frames: &mut u32,
 ) -> Result<(), u32> {
     let start = hw::cycles();
-    let status = ui
-        .present_sync_with(screen, band, |s| s.submit())
-        .map_err(|_| 20u32)?;
+    let status = ui.present(screen, band).map_err(|_| 20u32)?;
     if status == PresentStatus::Presented {
         *frames = frames.wrapping_add(1);
         report(2, *frames);
@@ -101,23 +99,22 @@ async fn run() -> Result<(), u32> {
     present(&mut ui, &mut screen, band, &mut frames)?;
     report(1, 4);
     #[cfg(feature = "st-hal")]
-    let (mut prev, mut total) = (hw::cycles(), 0u64);
+    let mut clock = {
+        let mut c = MonotonicClock32::new(hw::CPU_MHZ * 1000);
+        c.sample(hw::cycles());
+        c
+    };
     #[cfg(feature = "embassy")]
     let start = embassy_time::Instant::now();
     let mut io_errors = 0u32;
     let mut retry_at = 1000;
     loop {
         #[cfg(feature = "st-hal")]
-        let now = {
-            let cur = hw::cycles();
-            total += u64::from(cur.wrapping_sub(prev));
-            prev = cur;
-            InstantMs(total / (u64::from(hw::CPU_MHZ) * 1000))
-        };
+        let now = clock.sample(hw::cycles());
         // TIM5 continues while the executor sleeps between polls.
         #[cfg(feature = "embassy")]
         let now = InstantMs(start.elapsed().as_millis());
-        ui.try_advance(now, false).map_err(|_| 18u32)?;
+        ui.tick(now).map_err(|_| 18u32)?;
         if touch.is_none() && now.0 >= retry_at {
             touch = touch::Touch::detect().ok();
             report(6, touch.as_ref().map_or(0, |t| t.product));
@@ -126,7 +123,7 @@ async fn run() -> Result<(), u32> {
         if let Some(t) = touch.as_mut() {
             let mut dispatch_ok = true;
             if !t.poll(|ev| {
-                dispatch_ok &= ui.try_dispatch(ev, now, false).is_ok();
+                dispatch_ok &= ui.handle_input(ev, now).is_ok();
             }) {
                 io_errors = io_errors.saturating_add(1);
                 report(7, io_errors);
@@ -152,12 +149,12 @@ async fn run() -> Result<(), u32> {
                 // A complete short tap is timed on the board. USB round trips must
                 // never turn a regression tap into a long press.
                 5 => {
-                    ui.try_dispatch(RawInput::PointerDown { id, pos: point }, now, false)
+                    ui.handle_input(RawInput::PointerDown { id, pos: point }, now)
                         .map_err(|_| 19u32)?;
                     present(&mut ui, &mut screen, band, &mut frames)?;
                     hw::delay(16_000);
                     event_time = InstantMs(now.0 + 16);
-                    ui.try_advance(event_time, false).map_err(|_| 18u32)?;
+                    ui.tick(event_time).map_err(|_| 18u32)?;
                     RawInput::PointerUp { id, pos: point }
                 }
                 1 => RawInput::PointerDown { id, pos: point },
@@ -166,7 +163,7 @@ async fn run() -> Result<(), u32> {
                 4 => RawInput::PointerCancel { id },
                 _ => return Err(21),
             };
-            ui.try_dispatch(ev, event_time, false).map_err(|_| 19u32)?;
+            ui.handle_input(ev, event_time).map_err(|_| 19u32)?;
         }
         present(&mut ui, &mut screen, band, &mut frames)?;
         report(8, ui.model().page as u32);
@@ -175,11 +172,8 @@ async fn run() -> Result<(), u32> {
         }
         #[cfg(feature = "st-hal")]
         {
-            let cur = hw::cycles();
-            total += u64::from(cur.wrapping_sub(prev));
-            prev = cur;
-            let after = InstantMs(total / (u64::from(hw::CPU_MHZ) * 1000));
-            match ui.next_wakeup(after, false) {
+            let after = clock.sample(hw::cycles());
+            match ui.wakeup(after) {
                 NextWakeup::Now => {}
                 NextWakeup::At(t) => {
                     let ms = t.0.saturating_sub(after.0).min(4) as u32;

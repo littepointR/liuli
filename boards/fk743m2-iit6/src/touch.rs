@@ -1,6 +1,6 @@
 //! Goodix status 0x814e; track ID at 0x814f, X at 0x8150 on RGB050M1.
 use crate::hardware::{Pin, delay};
-use liuli::prelude::{Point, PointerId, RawInput};
+use liuli::prelude::{Point, RawInput, TouchPoint, TouchTracker};
 
 const SCL: Pin = Pin::Scl;
 const SDA: Pin = Pin::Sda;
@@ -84,7 +84,7 @@ pub struct Touch {
     pub product: u32,
     width: u16,
     height: u16,
-    previous: [Option<Point>; 16],
+    tracker: TouchTracker<16>,
 }
 impl Touch {
     pub fn detect() -> Result<Self, ()> {
@@ -129,70 +129,60 @@ impl Touch {
                 product: u32::from_le_bytes(id[..4].try_into().unwrap()),
                 width,
                 height,
-                previous: [None; 16],
+                tracker: TouchTracker::new(),
             });
         }
         Err(())
     }
-    fn sample(&self) -> Result<Option<[Option<Point>; 16]>, ()> {
+    fn sample(&self) -> Result<Option<([TouchPoint; 16], usize)>, ()> {
         let mut status = [0];
         access(self.addr, 0x814e, &mut status)?;
         if status[0] & 0x80 == 0 {
             return Ok(None);
         }
         let count = usize::from(status[0] & 15);
-        let mut points = [None; 16];
+        let mut points = [TouchPoint::new(0, Point::zero()); 16];
+        let mut out_len = 0usize;
         let result = (|| {
             let mut bytes = [0; 8 * 10];
             let data = bytes.get_mut(..8 * count).ok_or(())?;
             if count > 0 {
                 access(self.addr, 0x814f, data)?;
             }
+            let mut seen_ids = 0u16;
             for b in data.as_chunks::<8>().0 {
                 let id = usize::from(b[0] & 15);
                 let x = u16::from_le_bytes([b[1], b[2]]);
                 let y = u16::from_le_bytes([b[3], b[4]]);
-                if points[id].is_some() || x >= self.width || y >= self.height {
+                if (seen_ids & (1u16 << id)) != 0 || x >= self.width || y >= self.height {
                     return Err(());
                 }
-                points[id] = Some(Point::new(
-                    i32::from(x) * 800 / i32::from(self.width),
-                    i32::from(y) * 480 / i32::from(self.height),
-                ));
+                seen_ids |= 1u16 << id;
+                points[out_len] = TouchPoint::new(
+                    id as u8,
+                    Point::new(
+                        i32::from(x) * 800 / i32::from(self.width),
+                        i32::from(y) * 480 / i32::from(self.height),
+                    ),
+                );
+                out_len += 1;
             }
             Ok(())
         })();
         let ack = access(self.addr, 0x814e, &mut []);
-        result.and(ack).map(|()| Some(points))
+        result.and(ack).map(|()| Some((points, out_len)))
     }
-    pub fn poll(&mut self, mut input: impl FnMut(RawInput)) -> bool {
-        let report = self.sample();
-        let points = match report {
-            Ok(None) => return true,
-            Ok(Some(p)) => p,
-            Err(()) => [None; 16],
-        };
-        for (i, old) in self.previous.iter().enumerate() {
-            let id = PointerId(i as u8);
-            if let (Some(pos), None) = (*old, points[i]) {
-                input(if report.is_err() {
-                    RawInput::PointerCancel { id }
-                } else {
-                    RawInput::PointerUp { id, pos }
-                });
+    pub fn poll(&mut self, input: impl FnMut(RawInput)) -> bool {
+        match self.sample() {
+            Ok(None) => true,
+            Ok(Some((points, count))) => {
+                self.tracker.update(&points[..count], input);
+                true
+            }
+            Err(()) => {
+                self.tracker.cancel_all(input);
+                false
             }
         }
-        for (i, &point) in points.iter().enumerate() {
-            let id = PointerId(i as u8);
-            if let Some(pos) = point {
-                if self.previous[i].is_none() {
-                    input(RawInput::PointerDown { id, pos });
-                } else if self.previous[i] != point {
-                    input(RawInput::PointerMove { id, pos });
-                }
-            }
-        }
-        self.previous = points;
-        report.is_ok()
     }
 }

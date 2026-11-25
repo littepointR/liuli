@@ -6,6 +6,7 @@ use liuli_core::time::InstantMs;
 use liuli_text::FontSet;
 
 use crate::band::BandTarget;
+use crate::wire::{ByteOrder, encode_rgb565_in_place};
 
 pub const CACHE_LINE_BYTES: usize = 32;
 
@@ -447,6 +448,7 @@ pub struct DmaCoordinator<'a> {
     in_flight: Option<(u32, u32, BandSlot)>,
     faulted: bool,
     active_frame: bool,
+    wire_order: Option<ByteOrder>,
     session_token: u32,
     frame_id: u32,
     next_seq: u32,
@@ -470,6 +472,7 @@ impl<'a> DmaCoordinator<'a> {
             in_flight: None,
             faulted: false,
             active_frame: false,
+            wire_order: None,
             session_token: 0,
             frame_id: 0,
             next_seq: 0,
@@ -481,6 +484,25 @@ impl<'a> DmaCoordinator<'a> {
             screen: Rect::ZERO,
             metrics: FrameMetrics::default(),
         }
+    }
+
+    /// Configures automatic wire byte-order conversion on sealed DMA bands.
+    #[inline]
+    pub fn with_wire_order(mut self, order: ByteOrder) -> Self {
+        self.wire_order = Some(order);
+        self
+    }
+
+    /// Sets or clears automatic wire byte-order conversion before `ReadyBand` sealing.
+    #[inline]
+    pub fn set_wire_order(&mut self, order: Option<ByteOrder>) {
+        self.wire_order = order;
+    }
+
+    /// Returns the configured wire byte order, or `None` for native endianness.
+    #[inline]
+    pub const fn wire_order(&self) -> Option<ByteOrder> {
+        self.wire_order
     }
 
     #[inline]
@@ -737,6 +759,9 @@ impl<'a> DmaCoordinator<'a> {
                         return Err(e.into());
                     }
                 };
+                if self.next_seq == 0 {
+                    fonts.begin_frame();
+                }
                 match crate::raster::render_band_with_provider(
                     &mut target,
                     cmds,
@@ -753,6 +778,9 @@ impl<'a> DmaCoordinator<'a> {
                         self.abort_keep_damage(live_damage);
                         return Err(crate::sync::FrameError::Font(err));
                     }
+                }
+                if let Some(order) = self.wire_order {
+                    encode_rgb565_in_place(target.words_mut(), order);
                 }
             }
             let seq = self.next_seq;

@@ -15,19 +15,19 @@ pub(super) fn run(
 ) -> Result<(), ()> {
     let time = || InstantMs(unsafe { board_now_us() } as u64 / 1000);
     present(e, target, scratch, glyphs)?;
-    e.try_message(Msg::Open(0), time(), false).map_err(|_| ())?;
-    e.try_message(Msg::Edit, time(), false).map_err(|_| ())?;
+    e.send(Msg::Open(0), time()).map_err(|_| ())?;
+    e.send(Msg::Edit, time()).map_err(|_| ())?;
     present(e, target, scratch, glyphs)?;
-    e.try_message(Msg::Ask, time(), false).map_err(|_| ())?;
+    e.send(Msg::Ask, time()).map_err(|_| ())?;
     scene::check(e, scratch, glyphs)?;
-    e.try_message(Msg::Back, time(), false).map_err(|_| ())?;
+    e.send(Msg::Back, time()).map_err(|_| ())?;
     present(e, target, scratch, glyphs)?;
     for backend in 0..2 {
         if backend == 0 {
             e.set_sync_blend(liuli::render::raster::blend_solid);
         } else {
             e.set_sync_blend(|row, fg, a| unsafe {
-                board_blend(row.as_mut_ptr(), row.len(), fg.into_storage(), a.into())
+                board_blend(row.as_mut_ptr(), row.len(), rgb565_to_u16(fg), a.into())
             });
         }
         for i in 0..32 {
@@ -35,19 +35,19 @@ pub(super) fn run(
                 board_begin_sample();
                 board_now_us()
             };
-            e.try_message(Msg::Ask, time(), false).map_err(|_| ())?;
+            e.send(Msg::Ask, time()).map_err(|_| ())?;
             present(e, target, scratch, glyphs)?;
             let elapsed = unsafe { board_now_us() } - start;
             unsafe {
                 board_sample(backend, i, elapsed, e.last_metrics().pixels_sent);
                 board_wait();
             }
-            e.try_message(Msg::Back, time(), false).map_err(|_| ())?;
+            e.send(Msg::Back, time()).map_err(|_| ())?;
             present(e, target, scratch, glyphs)?;
         }
     }
-    e.try_message(Msg::Back, time(), false).map_err(|_| ())?;
-    e.try_message(Msg::Back, time(), false).map_err(|_| ())?;
+    e.send(Msg::Back, time()).map_err(|_| ())?;
+    e.send(Msg::Back, time()).map_err(|_| ())?;
     present(e, target, scratch, glyphs)?;
     for i in 0..32 {
         let id = PointerId(0);
@@ -61,7 +61,7 @@ pub(super) fn run(
                 board_begin_sample();
                 board_now_us()
             };
-            e.try_dispatch(input, time(), false).map_err(|_| ())?;
+            e.handle_input(input, time()).map_err(|_| ())?;
             present(e, target, scratch, glyphs)?;
             if !down {
                 unsafe {
@@ -70,13 +70,12 @@ pub(super) fn run(
                 }
             }
         }
-        e.try_dispatch(
+        e.handle_input(
             RawInput::PointerUp {
                 id,
                 pos: Point::new(100, 78),
             },
             time(),
-            false,
         )
         .map_err(|_| ())?;
     }
@@ -164,15 +163,10 @@ fn complex_text(target: &mut Display<'_>) -> Result<(), ()> {
         if failed {
             return Err(());
         }
-        for (i, band) in pixels.chunks_exact(240 * 8).enumerate() {
-            target.fill_contiguous(
-                &Rectangle::new(Point::new(0, (i * 8) as i32), Size::new(240, 8)),
-                band.iter().copied().map(u16_to_rgb565),
-            )?;
+        for (i, band) in pixels.as_chunks::<{ 240 * 8 }>().0.iter().enumerate() {
+            target.flush_rect(Rect::new(0, (i * 8) as i32, 240, 8), band)?;
         }
-        if unsafe { board_flush() } != 0 {
-            return Err(());
-        }
+        target.finish_frame()?;
         unsafe {
             board_sample(3, i, board_now_us() - start, 240 * 48);
             board_wait();

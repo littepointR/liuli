@@ -1,7 +1,4 @@
 use crate::hardware as hw;
-use embedded_graphics_core::{
-    Pixel, draw_target::DrawTarget, geometry::OriginDimensions, pixelcolor::IntoStorage,
-};
 use liuli::prelude::*;
 
 pub const WIDTH: u32 = 800;
@@ -106,67 +103,37 @@ impl Display {
         Ok(())
     }
 }
-impl OriginDimensions for Display {
-    fn size(&self) -> Size {
-        Size::new(WIDTH, HEIGHT)
-    }
-}
-impl DrawTarget for Display {
-    type Color = Rgb565;
+impl DisplaySink for Display {
     type Error = u32;
-    fn draw_iter<I: IntoIterator<Item = Pixel<Rgb565>>>(&mut self, pixels: I) -> Result<(), u32> {
-        for Pixel(p, color) in pixels {
-            if Rect::new(0, 0, WIDTH, HEIGHT).contains_point(p) {
-                self.fill_contiguous(&Rectangle::new(p, Size::new(1, 1)), [color])?;
-            }
-        }
-        Ok(())
-    }
-    fn fill_contiguous<I: IntoIterator<Item = Rgb565>>(
-        &mut self,
-        rect: &Rectangle,
-        colors: I,
-    ) -> Result<(), u32> {
-        let r = Rect::new(
-            rect.top_left.x,
-            rect.top_left.y,
-            rect.size.width,
-            rect.size.height,
-        );
-        if r.is_empty() {
+
+    fn flush_rect(&mut self, rect: Rect, pixels: &[u16]) -> Result<(), Self::Error> {
+        if rect.is_empty() {
             return Ok(());
         }
-        if r.intersect(Rect::new(0, 0, WIDTH, HEIGHT)) != r {
+        if rect.intersect(Rect::new(0, 0, WIDTH, HEIGHT)) != rect {
+            return Err(9);
+        }
+        let stride = rect.w as usize;
+        let needed = stride.saturating_mul(rect.h as usize);
+        if pixels.len() < needed {
             return Err(9);
         }
         self.wait_repair();
-        let mut colors = colors.into_iter();
-        for y in r.y as usize..r.bottom64() as usize {
-            let start = (y * WIDTH as usize + r.x as usize) * 2 + self.back;
-            let row = unsafe { core::slice::from_raw_parts_mut(start as *mut u16, r.w as usize) };
-            let mut i = 0;
-            let len = row.len();
-            if (start & 2) != 0 && i < len {
-                row[i] = colors.next().ok_or(9u32)?.into_storage();
-                i += 1;
-            }
-            while i + 1 < len {
-                let lo = u32::from(colors.next().ok_or(9u32)?.into_storage());
-                let hi = u32::from(colors.next().ok_or(9u32)?.into_storage());
-                unsafe {
-                    (row.as_mut_ptr().add(i) as *mut u32).write(lo | (hi << 16));
-                }
-                i += 2;
-            }
-            if i < len {
-                row[i] = colors.next().ok_or(9u32)?.into_storage();
-            }
+        for ry in 0..rect.h as usize {
+            let y = rect.y as usize + ry;
+            let start = (y * WIDTH as usize + rect.x as usize) * 2 + self.back;
+            let row = unsafe { core::slice::from_raw_parts_mut(start as *mut u16, stride) };
+            row.copy_from_slice(&pixels[ry * stride..(ry + 1) * stride]);
         }
         self.dirty = if self.dirty.is_empty() {
-            r
+            rect
         } else {
-            self.dirty.union(r)
+            self.dirty.union(rect)
         };
         Ok(())
+    }
+
+    fn finish_frame(&mut self) -> Result<(), Self::Error> {
+        self.submit()
     }
 }

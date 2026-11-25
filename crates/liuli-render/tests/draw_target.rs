@@ -10,8 +10,10 @@ use liuli_core::damage::DamageSet;
 use liuli_core::geometry::{Rect, rgb565_to_u16, u16_to_rgb565};
 use liuli_core::paint::{CommandList, PaintCmd, SliceSceneResources};
 use liuli_render::{
-    BandTarget, BufferTooSmall, ByteOrder, RECOMMENDED_SPI_CHUNK_BYTES, SpiWindowBus,
-    SpiWindowTarget, encode_rgb565, present_sync, present_sync_with,
+    BandTarget, BufferTooSmall, ByteOrder, ByteWindowBus, ByteWindowSink, DisplaySink,
+    EgDisplaySink, FrameError, RECOMMENDED_SPI_CHUNK_BYTES, RECOMMENDED_WIRE_CHUNK_BYTES,
+    SpiWindowBus, SpiWindowTarget, encode_rgb565, encode_rgb565_in_place, encode_rgb565_words,
+    present_sink, present_sync, present_sync_with,
 };
 use liuli_text::{FontSet, Lf4Font};
 
@@ -650,4 +652,139 @@ fn spi_window_target_chunks_stride_flush_idle_and_error_recovery() {
         assert!(dmg.is_empty());
         assert_eq!(spi.bus().fb, ref_target.fb);
     }
+}
+
+#[test]
+fn display_sink_byte_window_and_eg_adapter_work_uniformly_without_losing_compat() {
+    // 1. Verify encode_rgb565_words and encode_rgb565_in_place match BE wire bytes.
+    let logical = [0xF800u16, 0x07E0, 0x001F, 0x1234];
+    let mut words_be = [0u16; 4];
+    assert_eq!(
+        encode_rgb565_words(&logical, &mut words_be, ByteOrder::BigEndian),
+        Ok(4)
+    );
+    let mut in_place_be = logical;
+    encode_rgb565_in_place(&mut in_place_be, ByteOrder::BigEndian);
+    assert_eq!(words_be, in_place_be);
+    let mut bytes_be = [0u8; 8];
+    encode_rgb565(&logical, &mut bytes_be, ByteOrder::BigEndian).unwrap();
+    for (w, &[b0, b1]) in words_be.iter().zip(bytes_be.as_chunks::<2>().0) {
+        assert_eq!(w.to_ne_bytes(), [b0, b1]);
+    }
+    let mut tiny = [0u16; 2];
+    assert_eq!(
+        encode_rgb565_words(&logical, &mut tiny, ByteOrder::LittleEndian),
+        Err(BufferTooSmall)
+    );
+
+    // 2. Verify SpiWindowBus/SpiWindowTarget are exact 1.x aliases of ByteWindowBus/ByteWindowSink.
+    fn assert_same_bus_trait<B: SpiWindowBus + ByteWindowBus>() {}
+    fn assert_is_display_sink<S: DisplaySink>() {}
+    assert_same_bus_trait::<MockSpiBus>();
+    assert_is_display_sink::<ByteWindowSink<'_, MockSpiBus>>();
+
+    let lf4 = dummy_lf4();
+    let font = FontSet::single(Lf4Font::from_bytes(&lf4).unwrap());
+    let screen = Rect::new(0, 0, 20, 14);
+    let mut cmds = CommandList::new();
+    cmds.root_bg = u16_to_rgb565(0x001F);
+    cmds.screen = screen;
+    cmds.push(PaintCmd::FillRect {
+        rect: Rect::new(3, 2, 11, 9),
+        clip: screen,
+        color: u16_to_rgb565(0xF800),
+    })
+    .unwrap();
+
+    let mut scratch = [0u16; 20 * 4];
+    let mut dmg = DamageSet::new();
+    dmg.mark_full_screen(screen);
+
+    let mut iter_sink = EgDisplaySink::new(DrawIterOnlyScreen {
+        origin: Point::new(0, 0),
+        w: 20,
+        h: 14,
+        fb: vec![0; 20 * 14],
+        draw_calls: 0,
+    });
+    let (st_iter, _) = present_sink(
+        &mut iter_sink,
+        &mut scratch,
+        screen,
+        4,
+        &cmds,
+        &mut dmg,
+        &SliceSceneResources::EMPTY,
+        &font,
+    )
+    .unwrap();
+    assert_eq!(st_iter, PresentStatus::Presented);
+    assert!(iter_sink.inner().draw_calls > 0);
+
+    dmg.mark_full_screen(screen);
+    let mut eg_sink = EgDisplaySink::new(SubOriginRecordingTarget {
+        origin: Point::new(4, 6),
+        w: 20,
+        h: 14,
+        fb: vec![0; 20 * 14],
+        contiguous_calls: Vec::new(),
+        fail_on_call: None,
+    });
+    let (st, metrics) = present_sink(
+        &mut eg_sink,
+        &mut scratch,
+        screen,
+        4,
+        &cmds,
+        &mut dmg,
+        &SliceSceneResources::EMPTY,
+        &font,
+    )
+    .unwrap();
+    assert_eq!(st, PresentStatus::Presented);
+    assert_eq!(metrics.bands, 4);
+    assert!(dmg.is_empty());
+    assert_eq!(iter_sink.inner().fb, eg_sink.inner().fb);
+
+    // 3. ByteWindowSink implements DisplaySink directly (no DrawTarget/iterator round-trip).
+    let mut chunk = [0u8; RECOMMENDED_WIRE_CHUNK_BYTES];
+    let mut wire_sink = ByteWindowSink::new(
+        MockSpiBus::new(Point::new(0, 0), 20, 14, ByteOrder::BigEndian),
+        screen,
+        ByteOrder::BigEndian,
+        &mut chunk,
+    )
+    .unwrap();
+    dmg.mark_full_screen(screen);
+    let (st, _) = present_sink(
+        &mut wire_sink,
+        &mut scratch,
+        screen,
+        4,
+        &cmds,
+        &mut dmg,
+        &SliceSceneResources::EMPTY,
+        &font,
+    )
+    .unwrap();
+    assert_eq!(st, PresentStatus::Presented);
+    assert_eq!(wire_sink.bus().flush_count, 1);
+    assert_eq!(wire_sink.bus().fb, eg_sink.inner().fb);
+
+    // 4. Error recovery through DisplaySink restores full-screen damage.
+    wire_sink.bus_mut().fail_flush = true;
+    dmg.add(Rect::new(0, 0, 8, 4), screen);
+    let err = present_sink(
+        &mut wire_sink,
+        &mut scratch,
+        screen,
+        4,
+        &cmds,
+        &mut dmg,
+        &SliceSceneResources::EMPTY,
+        &font,
+    )
+    .unwrap_err();
+    assert!(matches!(err, FrameError::Display(PresentError::Target(_))));
+    assert!(dmg.is_full_screen());
 }

@@ -5,8 +5,9 @@ use liuli_core::geometry::Rect;
 use liuli_core::paint::{CommandList, PaintCmd, SliceSceneResources};
 use liuli_core::time::InstantMs;
 use liuli_render::{
-    AlignedBand, BandSlot, DmaCacheOps, DmaCoordinator, DmaSink, FreeBand, InFlightBand,
-    PollOutcome, ReadyBand, StartOutcome, TeError, TeGate, TeMode, TeWait, present_sync,
+    AlignedBand, BandSlot, ByteOrder, DmaCacheOps, DmaCoordinator, DmaSink, FreeBand, InFlightBand,
+    PollOutcome, ReadyBand, StartOutcome, TeError, TeGate, TeMode, TeWait, encode_rgb565_words,
+    present_sync,
 };
 use liuli_text::{FontSet, Lf4Font};
 
@@ -893,4 +894,70 @@ impl embedded_graphics::draw_target::DrawTarget for SlicePanel<'_> {
         }
         Ok(())
     }
+}
+
+#[test]
+fn dma_coordinator_wire_order_encodes_in_place_before_seal() {
+    let font = FontSet::single(Lf4Font::from_bytes(SETTINGS_LF4).unwrap());
+    let screen = Rect::new(0, 0, 32, 16);
+    let mut cmds = CommandList::new();
+    cmds.screen = screen;
+    cmds.root_bg = liuli_core::geometry::u16_to_rgb565(0x1234);
+    cmds.push(PaintCmd::FillRect {
+        rect: Rect::new(4, 2, 12, 8),
+        clip: screen,
+        color: liuli_core::geometry::u16_to_rgb565(0xABCD),
+    })
+    .unwrap();
+
+    let mut native_words = vec![0u16; 32 * 16];
+    let mut native_scratch = [0u16; 32 * 4];
+    let mut dmg = DamageSet::new();
+    dmg.mark_full_screen(screen);
+    present_sync(
+        &mut SlicePanel {
+            w: 32,
+            fb: &mut native_words,
+        },
+        &mut native_scratch,
+        screen,
+        4,
+        &cmds,
+        &mut dmg,
+        &SliceSceneResources::EMPTY,
+        &font,
+    )
+    .unwrap();
+
+    let mut expected_be = vec![0u16; 32 * 16];
+    encode_rgb565_words(&native_words, &mut expected_be, ByteOrder::BigEndian).unwrap();
+
+    let mut a = AlignedBand::<{ 32 * 4 }>::zeroed();
+    let mut b = AlignedBand::<{ 32 * 4 }>::zeroed();
+    let mut coord = DmaCoordinator::new(a.as_mut_slice(), b.as_mut_slice())
+        .with_wire_order(ByteOrder::BigEndian);
+    assert_eq!(coord.wire_order(), Some(ByteOrder::BigEndian));
+
+    let mut drv = FakeDmaDriver::new(32, 16, TeMode::Immediate);
+    dmg.mark_full_screen(screen);
+    coord
+        .begin_frame::<TeError<&'static str>>(&dmg, screen, 4)
+        .unwrap();
+    loop {
+        let (st, _) = coord
+            .step(
+                &mut drv,
+                &cmds,
+                &mut dmg,
+                &SliceSceneResources::EMPTY,
+                &font,
+            )
+            .unwrap();
+        if st == PresentStatus::Presented {
+            break;
+        }
+        drv.complete_current();
+    }
+    assert!(dmg.is_empty());
+    assert_eq!(drv.fb, expected_be);
 }

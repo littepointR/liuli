@@ -120,3 +120,263 @@ pub enum TextInput<'a> {
     Left,
     Right,
 }
+
+/// Active touch contact reported by a board touch controller.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub struct TouchPoint {
+    pub id: PointerId,
+    pub pos: Point,
+}
+
+impl TouchPoint {
+    /// Creates a tracked touch contact from a controller-assigned `id` and logical coordinates.
+    #[inline]
+    pub const fn new(id: u8, pos: Point) -> Self {
+        Self {
+            id: PointerId(id),
+            pos,
+        }
+    }
+}
+
+/// Zero-allocation diff tracker turning raw controller contact snapshots into [`RawInput`] events.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub struct TouchTracker<const MAX_CONTACTS: usize = 5> {
+    active: [Option<TouchPoint>; MAX_CONTACTS],
+}
+
+impl<const MAX_CONTACTS: usize> TouchTracker<MAX_CONTACTS> {
+    /// Creates an empty contact tracker.
+    pub const fn new() -> Self {
+        Self {
+            active: [None; MAX_CONTACTS],
+        }
+    }
+
+    /// Returns the number of currently active contacts.
+    #[inline]
+    pub fn active_count(&self) -> usize {
+        self.active.iter().filter(|s| s.is_some()).count()
+    }
+
+    /// Returns `true` when no contacts are currently pressed.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.active.iter().all(Option::is_none)
+    }
+
+    /// Clears tracked state without emitting cancel or release events.
+    #[inline]
+    pub fn reset(&mut self) {
+        self.active = [None; MAX_CONTACTS];
+    }
+
+    /// Diffs `contacts` against the previous poll, emitting releases before moves and presses.
+    ///
+    /// Slot state updates only after `emit` returns `Ok(())`, keeping state consistent if `emit`
+    /// aborts early (for example, when DMA locks dispatch).
+    pub fn try_update<E>(
+        &mut self,
+        contacts: &[TouchPoint],
+        mut emit: impl FnMut(RawInput) -> Result<(), E>,
+    ) -> Result<(), E> {
+        for slot in &mut self.active {
+            if let Some(old) = *slot
+                && !contacts.iter().any(|c| c.id == old.id)
+            {
+                emit(RawInput::PointerUp {
+                    id: old.id,
+                    pos: old.pos,
+                })?;
+                *slot = None;
+            }
+        }
+
+        for (idx, &pt) in contacts.iter().enumerate() {
+            if contacts[..idx].iter().any(|p| p.id == pt.id) {
+                continue;
+            }
+            if let Some(slot) = self
+                .active
+                .iter_mut()
+                .find(|s| s.is_some_and(|cur| cur.id == pt.id))
+            {
+                if let Some(cur) = *slot
+                    && cur.pos != pt.pos
+                {
+                    emit(RawInput::PointerMove {
+                        id: pt.id,
+                        pos: pt.pos,
+                    })?;
+                    *slot = Some(pt);
+                }
+            } else if let Some(empty) = self.active.iter_mut().find(|s| s.is_none()) {
+                emit(RawInput::PointerDown {
+                    id: pt.id,
+                    pos: pt.pos,
+                })?;
+                *empty = Some(pt);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Diffs `contacts` against the previous poll using an infallible callback.
+    pub fn update(&mut self, contacts: &[TouchPoint], mut emit: impl FnMut(RawInput)) {
+        let _ = self.try_update::<core::convert::Infallible>(contacts, |ev| {
+            emit(ev);
+            Ok(())
+        });
+    }
+
+    /// Cancels every currently active contact (for example, on touch bus read failure).
+    pub fn try_cancel_all<E>(
+        &mut self,
+        mut emit: impl FnMut(RawInput) -> Result<(), E>,
+    ) -> Result<(), E> {
+        for slot in &mut self.active {
+            if let Some(old) = *slot {
+                emit(RawInput::PointerCancel { id: old.id })?;
+                *slot = None;
+            }
+        }
+        Ok(())
+    }
+
+    /// Cancels every currently active contact using an infallible callback.
+    pub fn cancel_all(&mut self, mut emit: impl FnMut(RawInput)) {
+        let _ = self.try_cancel_all::<core::convert::Infallible>(|ev| {
+            emit(ev);
+            Ok(())
+        });
+    }
+}
+
+impl<const MAX_CONTACTS: usize> Default for TouchTracker<MAX_CONTACTS> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate alloc;
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    use super::*;
+
+    #[test]
+    fn tracker_emits_up_before_down_moves_dedups_and_cancels() {
+        let mut tracker = TouchTracker::<2>::new();
+        assert!(tracker.is_empty());
+
+        let mut events = Vec::new();
+        tracker.update(
+            &[
+                TouchPoint::new(0, Point::new(10, 20)),
+                TouchPoint::new(0, Point::new(99, 99)), // duplicate ID ignored
+                TouchPoint::new(1, Point::new(30, 40)),
+                TouchPoint::new(2, Point::new(50, 60)), // exceeds MAX_CONTACTS = 2
+            ],
+            |ev| events.push(ev),
+        );
+        assert_eq!(tracker.active_count(), 2);
+        assert_eq!(
+            events,
+            vec![
+                RawInput::PointerDown {
+                    id: PointerId(0),
+                    pos: Point::new(10, 20),
+                },
+                RawInput::PointerDown {
+                    id: PointerId(1),
+                    pos: Point::new(30, 40),
+                },
+            ]
+        );
+
+        // Stationary poll emits nothing.
+        events.clear();
+        tracker.update(
+            &[
+                TouchPoint::new(1, Point::new(30, 40)),
+                TouchPoint::new(0, Point::new(10, 20)),
+            ],
+            |ev| events.push(ev),
+        );
+        assert!(events.is_empty());
+
+        // Swap contact 1 out for contact 2 and move contact 0 -> Up comes before Move/Down.
+        tracker.update(
+            &[
+                TouchPoint::new(0, Point::new(15, 25)),
+                TouchPoint::new(2, Point::new(70, 80)),
+            ],
+            |ev| events.push(ev),
+        );
+        assert_eq!(
+            events,
+            vec![
+                RawInput::PointerUp {
+                    id: PointerId(1),
+                    pos: Point::new(30, 40),
+                },
+                RawInput::PointerMove {
+                    id: PointerId(0),
+                    pos: Point::new(15, 25),
+                },
+                RawInput::PointerDown {
+                    id: PointerId(2),
+                    pos: Point::new(70, 80),
+                },
+            ]
+        );
+
+        events.clear();
+        tracker.cancel_all(|ev| events.push(ev));
+        assert!(tracker.is_empty());
+        assert_eq!(
+            events,
+            vec![
+                RawInput::PointerCancel { id: PointerId(0) },
+                RawInput::PointerCancel { id: PointerId(2) },
+            ]
+        );
+    }
+
+    #[test]
+    fn tracker_preserves_remaining_state_on_mid_poll_error() {
+        let mut tracker = TouchTracker::<2>::new();
+        tracker.update(
+            &[
+                TouchPoint::new(0, Point::new(1, 2)),
+                TouchPoint::new(1, Point::new(3, 4)),
+            ],
+            |_| {},
+        );
+
+        let mut count = 0usize;
+        let err = tracker
+            .try_cancel_all(|ev| {
+                count += 1;
+                if count == 2 {
+                    return Err("busy");
+                }
+                assert_eq!(ev, RawInput::PointerCancel { id: PointerId(0) });
+                Ok(())
+            })
+            .unwrap_err();
+        assert_eq!(err, "busy");
+        assert_eq!(tracker.active_count(), 1);
+
+        let mut remaining = Vec::new();
+        tracker.cancel_all(|ev| remaining.push(ev));
+        assert!(tracker.is_empty());
+        assert_eq!(
+            remaining,
+            vec![RawInput::PointerCancel { id: PointerId(1) }]
+        );
+    }
+}
