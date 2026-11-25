@@ -28,6 +28,15 @@ pub mod prelude {
         MAX_SPARKLINE_SAMPLES, MAX_SPARKLINES, MAX_TEXT_BYTES, NodeMask, PresentError,
         PresentStatus, TimeError, TransactionError,
     };
+    pub use liuli_core::color::{
+        Gray8, Hsl, Hsv, PixelFormat, Rgb888, Rgba8888, contrast_ratio_x10, darken_rgb565,
+        gray8_to_rgb565, hsl_to_rgb565, hsl_to_rgb888, hsv_to_rgb565, hsv_to_rgb888,
+        invert_rgb565, lighten_rgb565, mix_rgb565, parse_hex_str, relative_luminance_scaled,
+        rgb565_from_hex, rgb565_swap_rb, rgb565_to_gray8, rgb565_to_rgb888, rgb565_u16_to_abgr8888,
+        rgb565_u16_to_argb8888, rgb565_u16_to_rgb666_bytes, rgb565_u16_to_rgb888, rgb888_from_hex,
+        rgb888_to_gray8, rgb888_to_hsl, rgb888_to_hsv, rgb888_to_rgb565_round,
+        rgb888_to_rgb565_trunc,
+    };
     pub use liuli_core::damage::DamageSet;
     pub use liuli_core::effects::{Layer, PressDepth, Projection, Shadow, SurfaceStyle};
     pub use liuli_core::geometry::{Rect, Rotation, rgb565_to_u16, u16_to_rgb565};

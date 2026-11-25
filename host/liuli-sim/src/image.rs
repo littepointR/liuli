@@ -1,13 +1,7 @@
 /// Converts an RGB565 word into RGB888 using standard bit replication.
 #[inline]
 pub fn rgb565_to_rgb8(word: u16) -> [u8; 3] {
-    let r5 = ((word >> 11) & 0x1F) as u8;
-    let g6 = ((word >> 5) & 0x3F) as u8;
-    let b5 = (word & 0x1F) as u8;
-    let r8 = (r5 << 3) | (r5 >> 2);
-    let g8 = (g6 << 2) | (g6 >> 4);
-    let b8 = (b5 << 3) | (b5 >> 2);
-    [r8, g8, b8]
+    liuli::core::color::rgb565_u16_to_rgb888(word).to_bytes()
 }
 
 pub fn encode_ppm(width: u32, height: u32, rgb8: &[u8]) -> Vec<u8> {

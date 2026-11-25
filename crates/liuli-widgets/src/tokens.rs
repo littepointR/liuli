@@ -1,63 +1,11 @@
 use liuli::prelude::*;
 
+pub use liuli::core::color::{contrast_ratio_x10, relative_luminance_scaled};
+
 /// Convert 8-bit per-channel sRGB components to `Rgb565`.
 #[inline]
 pub const fn rgb8(r: u8, g: u8, b: u8) -> Rgb565 {
-    Rgb565::new(r >> 3, g >> 2, b >> 3)
-}
-
-/// Exact integer sRGB->linearized 33-entry lookup table scaled to `0..=10_000`.
-const SRGB_LIN_LUT: [u16; 33] = [
-    0, 24, 52, 87, 134, 195, 272, 366, 478, 608, 759, 930, 1122, 1337, 1574, 1835, 2120, 2430,
-    2766, 3128, 3516, 3932, 4376, 4848, 5349, 5880, 6440, 7031, 7653, 8306, 8991, 9708, 10000,
-];
-
-#[inline]
-const fn channel_lin_5bit(v5: u8) -> u32 {
-    let idx = if v5 > 31 { 31 } else { v5 } as usize;
-    let pos = (idx * 32) / 31;
-    let rem = (idx * 32) % 31;
-    let a = SRGB_LIN_LUT[pos] as u32;
-    if rem == 0 {
-        a
-    } else {
-        let b = SRGB_LIN_LUT[pos + 1] as u32;
-        a + ((b - a) * rem as u32) / 31
-    }
-}
-
-#[inline]
-const fn channel_lin_6bit(v6: u8) -> u32 {
-    let idx = if v6 > 63 { 63 } else { v6 } as usize;
-    let pos = (idx * 32) / 63;
-    let rem = (idx * 32) % 63;
-    let a = SRGB_LIN_LUT[pos] as u32;
-    if rem == 0 {
-        a
-    } else {
-        let b = SRGB_LIN_LUT[pos + 1] as u32;
-        a + ((b - a) * rem as u32) / 63
-    }
-}
-
-/// Relative luminance scaled to `0..=100_000_000`.
-#[inline]
-pub fn relative_luminance_scaled(color: Rgb565) -> u32 {
-    let raw = liuli::core::geometry::rgb565_to_u16(color);
-    let r = channel_lin_5bit((raw >> 11) as u8);
-    let g = channel_lin_6bit(((raw >> 5) & 0x3F) as u8);
-    let b = channel_lin_5bit((raw & 0x1F) as u8);
-    2126 * r + 7152 * g + 722 * b
-}
-
-/// WCAG relative contrast ratio between two `Rgb565` colors in tenths (e.g. `45` = 4.5:1, `210` = 21.0:1).
-pub fn contrast_ratio_x10(a: Rgb565, b: Rgb565) -> u16 {
-    let la = relative_luminance_scaled(a);
-    let lb = relative_luminance_scaled(b);
-    let (hi, lo) = if la >= lb { (la, lb) } else { (lb, la) };
-    let num = (hi + 5_000_000) as u64 * 10;
-    let den = (lo + 5_000_000) as u64;
-    ((num + den / 2) / den) as u16
+    liuli::core::color::rgb888_to_rgb565_trunc(r, g, b)
 }
 
 /// Semantic color palette with tonal elevation and interactive feedback roles.
