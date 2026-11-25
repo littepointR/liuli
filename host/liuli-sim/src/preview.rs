@@ -552,6 +552,18 @@ fn handle_connection(
             while let Some(slot) = current {
                 let node = &tree.nodes[slot as usize];
                 chain.push(format!("key={} {:?} width={:?} height={:?} measured={:?} layout={:?} clip={:?} visible={:?} font={:?} fg={:?} bg={:?}",node.key.0,node.kind,node.props.width,node.props.height,node.measured_size,node.layout_rect,node.clip_rect,node.visible_rect,node.props.font(),node.props.fg,node.props.bg()));
+                if let Some(tab) = node.active_tab() {
+                    chain.push(format!("  active_tab={}", tab.0));
+                } else if node.kind == liuli::prelude::NodeKind::Tab {
+                    let style = tree.part_style(node.key);
+                    chain.push(format!(
+                        "  selected={} title={:?} indicator={:?} motion={:?} indicator_color={:?} inset={} radius={} divider_height={}",
+                        node.props.checked(),
+                        tree.text_str(node.props.text()), style.indicator_layout(), style.indicator_transition,
+                        style.indicator_color().unwrap_or(node.props.accent), style.indicator_inset().unwrap_or(0),
+                        style.indicator_radius().unwrap_or(0), style.track_thickness().unwrap_or(1)
+                    ));
+                }
                 let effect = tree.effects.get(node.key);
                 if effect != liuli::prelude::SurfaceStyle::FLAT {
                     chain.push(format!(

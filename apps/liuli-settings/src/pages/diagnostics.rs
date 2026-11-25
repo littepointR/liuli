@@ -110,7 +110,7 @@ pub fn build_diagnostics(
         act.gap = 8;
         act.align_cross = Align::Center;
         ui.row(tk::DIAG_ACT_ROW, act, |ui| {
-            let mut ref_p = NodeProps::new();
+            let mut ref_p = t.control();
             ref_p.width = Length::Fill(1);
             ref_p.height = Length::Px(28);
             ref_p.padding = EdgeInsets::symmetric(10, 3);
@@ -118,14 +118,13 @@ pub fn build_diagnostics(
             ref_p.radius = 6;
             ref_p.fg = t.on_accent;
             ref_p.accent = t.accent;
-            ref_p.focus_color = t.focus;
             ref_p.icon = IconKind::Diagnostics;
             ref_p.text = TextRef::Static("刷新");
             ref_p.max_lines = 1;
             ref_p.focusable = true;
             ui.button(tk::DIAG_BTN_REFRESH, ref_p)?;
 
-            let mut mon_p = NodeProps::new();
+            let mut mon_p = t.control();
             mon_p.width = Length::Fill(1);
             mon_p.height = Length::Px(28);
             mon_p.padding = EdgeInsets::symmetric(10, 3);
@@ -135,7 +134,6 @@ pub fn build_diagnostics(
             mon_p.radius = 6;
             mon_p.fg = t.text;
             mon_p.accent = t.surface_alt;
-            mon_p.focus_color = t.focus;
             mon_p.icon = IconKind::Waveform;
             mon_p.text = TextRef::Static(if model.settings.live_monitoring {
                 "暂停监测"

@@ -67,10 +67,7 @@ impl PressDepth {
             return Self::OFF;
         }
         let clamped = if scale > 30 { 30 } else { scale };
-        let mode = match easing {
-            Easing::Linear => 2,
-            Easing::EaseOutCubic => 3,
-        };
+        let mode = 2 + easing as u8;
         Self {
             duration_ms,
             scale: clamped,
@@ -104,8 +101,8 @@ impl PressDepth {
     #[inline]
     pub const fn easing(self) -> Easing {
         match self.mode {
-            2 => Easing::Linear,
-            _ => Easing::EaseOutCubic,
+            0 | 1 => Easing::EaseOutCubic,
+            n => Easing::from_id(n - 2),
         }
     }
 }
@@ -407,6 +404,34 @@ impl Effects {
         *entry = (key, style);
         self.len += 1;
         Ok(())
+    }
+    #[cfg(feature = "layers")]
+    pub(crate) fn animate_layer(
+        &mut self,
+        key: Key,
+        opacity: u8,
+        turn: u8,
+    ) -> Result<(), BuildError> {
+        if opacity > 15 {
+            return Err(BuildError::InvalidRange);
+        }
+        if opacity == 15 && turn == 0 {
+            return Ok(());
+        }
+        let mut style = self.get(key);
+        let mut layer = style.layer.unwrap_or(Layer::OPAQUE);
+        layer.opacity = ((u16::from(layer.opacity) * u16::from(opacity) + 7) / 15) as u8;
+        layer.projection.0 = layer.projection.0.wrapping_add(turn);
+        style.layer = Some(layer);
+        if let Some(entry) = self.items[..usize::from(self.len)]
+            .iter_mut()
+            .find(|e| e.0 == key)
+        {
+            entry.1 = style;
+            Ok(())
+        } else {
+            self.add(key, style)
+        }
     }
 }
 impl RetainedTree {

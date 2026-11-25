@@ -1,12 +1,14 @@
+mod selection;
 use crate::capacity::{BuildError, MAX_COMMANDS, MAX_DEPTH, MAX_NODES};
 use crate::geometry::{Point, Rect, Rgb565};
 use crate::node::{RetainedNode, RetainedTree};
-use crate::part_style::{IconPosition, WidgetPartStyle};
+use crate::part_style::{IconPosition, VisualState, WidgetPartStyle};
 use crate::time::{ANIM_SCALE, AnimPool, AnimProp};
 use crate::view::{
     Align, BUTTON_ICON_GAP, BUTTON_ICON_SIZE, FontId, IconKind, Key, NodeKind, PaintMode, SlotLink,
     StoredProps, TextAlign, TextStyleFlags,
 };
+use selection::{paint_selection, paint_sliding_indicator, paint_tab, selection_progress};
 
 #[repr(transparent)]
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Default)]
@@ -83,6 +85,13 @@ pub enum PaintCmd {
         letter_spacing: i8,
         line_spacing: i8,
     } = 4,
+    RoundedOverlay {
+        rect: Rect,
+        clip: Rect,
+        color: Rgb565,
+        alpha: u8,
+        radius: u8,
+    } = 30,
     Overlay {
         rect: Rect,
         clip: Rect,
@@ -276,6 +285,7 @@ impl PaintCmd {
             | Self::StrokeRect { rect, clip, .. }
             | Self::StrokeRoundedRect { rect, clip, .. }
             | Self::FillRoundedRect { rect, clip, .. }
+            | Self::RoundedOverlay { rect, clip, .. }
             | Self::Overlay { rect, clip, .. }
             | Self::Icon { rect, clip, .. }
             | Self::Sparkline { rect, clip, .. }
@@ -538,6 +548,7 @@ pub struct PaintState {
     pub editing: bool,
     pub checked: bool,
     pub enabled: bool,
+    /// Current normalized state transition, or the legacy custom channel when unbound.
     pub anim_progress: i32,
 }
 
@@ -558,9 +569,10 @@ struct BuiltinPaintCtx<'a> {
     anims: &'a AnimPool,
     focus: PaintFocusInfo,
     screen: Rect,
-    part: WidgetPartStyle,
+    part: &'a WidgetPartStyle,
     slot: u16,
     root_bg: Rgb565,
+    in_tab_bar: bool,
 }
 
 const MAX_CLIP_DEPTH: usize = 4;
@@ -574,13 +586,53 @@ pub struct WidgetCanvas<'a> {
     pub pressed: bool,
     pub state: PaintState,
     slot: u16,
-    builtin: Option<BuiltinPaintCtx<'a>>,
+    ctx: BuiltinPaintCtx<'a>,
 }
 
 impl WidgetCanvas<'_> {
     #[inline]
     pub fn size(&self) -> crate::geometry::Size {
         self.bounds.size()
+    }
+
+    /// The same merged part styles and state colors used by built-in painting.
+    pub fn parts(&self) -> &WidgetPartStyle {
+        self.ctx.part
+    }
+
+    pub fn foreground(&self) -> Rgb565 {
+        resolve_state_fg(self.ctx.node, self.ctx.part)
+    }
+
+    pub fn background(&self) -> Option<Rgb565> {
+        resolve_state_bg(self.ctx.node, self.ctx.part, self.ctx.root_bg)
+    }
+
+    /// Draw the themed selection part in widget-local coordinates. A composite widget
+    /// animating one shared marker can supply its interpolated anchor as `control`.
+    pub fn selection_indicator(&mut self, control: Rect, content: Rect) -> Result<(), BuildError> {
+        let control = self.to_global(control);
+        let content = self.to_global(content);
+        let clip = self.current_clip();
+        paint_selection(
+            self.commands,
+            self.ctx.part,
+            control,
+            content,
+            clip,
+            self.ctx.node.props.accent,
+            self.state.checked,
+            selection_progress(self.ctx.node, self.ctx.anims),
+        )
+    }
+
+    /// Local x coordinates of the thumb center at the minimum and maximum values.
+    pub fn slider_track_span(&self) -> (i32, i32) {
+        let size = self.size();
+        let part = self.parts();
+        let (w, _) = part.slider_knob_size(size);
+        let left = (w / 2) as i32;
+        (left, left + (size.width - w) as i32)
     }
 
     #[inline]
@@ -999,66 +1051,56 @@ impl WidgetCanvas<'_> {
 
     /// Paint the full default appearance of the current built-in node (valid inside `paint_override`).
     pub fn paint_default(&mut self) -> Result<(), BuildError> {
-        if let Some(ctx) = self.builtin {
-            paint_builtin_node(ctx, self.commands)?;
-        }
-        Ok(())
+        paint_builtin_node(self.ctx, self.commands)
     }
 
     pub fn paint_box_bg(&mut self) -> Result<(), BuildError> {
-        if let Some(ctx) = self.builtin {
-            emit_box_bg_and_border(
-                ctx.node,
-                ctx.part,
-                ctx.node.layout_rect,
-                ctx.node.clip_rect,
-                ctx.root_bg,
-                self.commands,
-            )?;
-        }
-        Ok(())
+        let ctx = self.ctx;
+        emit_box_bg_and_border(
+            ctx.node,
+            ctx.part,
+            ctx.node.layout_rect,
+            ctx.node.clip_rect,
+            ctx.root_bg,
+            self.commands,
+        )
     }
 
     pub fn paint_slider_track(&mut self) -> Result<(), BuildError> {
-        if let Some(ctx) = self.builtin
-            && ctx.node.kind == NodeKind::Slider
-        {
+        let ctx = self.ctx;
+        if ctx.node.kind == NodeKind::Slider {
             paint_slider_parts(ctx, true, false, self.commands)?;
         }
         Ok(())
     }
 
     pub fn paint_slider_knob(&mut self) -> Result<(), BuildError> {
-        if let Some(ctx) = self.builtin
-            && ctx.node.kind == NodeKind::Slider
-        {
+        let ctx = self.ctx;
+        if ctx.node.kind == NodeKind::Slider {
             paint_slider_parts(ctx, false, true, self.commands)?;
         }
         Ok(())
     }
 
     pub fn paint_toggle_track(&mut self) -> Result<(), BuildError> {
-        if let Some(ctx) = self.builtin
-            && ctx.node.kind == NodeKind::Toggle
-        {
+        let ctx = self.ctx;
+        if ctx.node.kind == NodeKind::Toggle {
             paint_toggle_parts(ctx, true, false, self.commands)?;
         }
         Ok(())
     }
 
     pub fn paint_toggle_knob(&mut self) -> Result<(), BuildError> {
-        if let Some(ctx) = self.builtin
-            && ctx.node.kind == NodeKind::Toggle
-        {
+        let ctx = self.ctx;
+        if ctx.node.kind == NodeKind::Toggle {
             paint_toggle_parts(ctx, false, true, self.commands)?;
         }
         Ok(())
     }
 
     pub fn paint_progress_bar(&mut self) -> Result<(), BuildError> {
-        if let Some(ctx) = self.builtin
-            && ctx.node.kind == NodeKind::ProgressBar
-        {
+        let ctx = self.ctx;
+        if ctx.node.kind == NodeKind::ProgressBar {
             paint_progress_bar_node(ctx, self.commands)?;
         }
         Ok(())
@@ -1190,9 +1232,14 @@ pub fn emit_commands_with_override(
                 }
             }
             if visible || node.kind == NodeKind::Modal {
-                let part = tree.part_styles.get(node.key);
+                let part = tree.part_styles.get(usize::from(frame.slot));
                 let is_focused = focus.focused_slot == Some(frame.slot);
-                let anim_progress = if node.kind == NodeKind::Toggle {
+                let anim_progress = if node.motion.state() != crate::view::MotionState::None {
+                    anims
+                        .cached_value(node.key, AnimProp::Style)
+                        .unwrap_or_else(|| node.motion_target(is_focused && focus.ring_visible))
+                        .clamp(0, ANIM_SCALE)
+                } else if node.kind == NodeKind::Toggle {
                     anims
                         .cached_value(node.key, AnimProp::ToggleKnob)
                         .unwrap_or(if node.props.checked() { ANIM_SCALE } else { 0 })
@@ -1211,7 +1258,21 @@ pub fn emit_commands_with_override(
                 let root_bg = out.root_bg;
                 let init_clip = clip.intersect(rect);
                 let clip_stack = [init_clip, Rect::ZERO, Rect::ZERO, Rect::ZERO];
-                if node.kind == NodeKind::Custom {
+                let ctx = BuiltinPaintCtx {
+                    node,
+                    anims,
+                    focus,
+                    screen,
+                    part,
+                    slot: frame.slot,
+                    root_bg,
+                    in_tab_bar: node.kind == NodeKind::Tab
+                        && node
+                            .parent
+                            .get()
+                            .is_some_and(|i| tree.nodes[i].kind == NodeKind::TabBar),
+                };
+                if node.kind == NodeKind::Custom || node.props.paint_mode() == PaintMode::Override {
                     let mut canvas = WidgetCanvas {
                         bounds: rect,
                         clip_stack,
@@ -1220,37 +1281,20 @@ pub fn emit_commands_with_override(
                         pressed: node.pressed,
                         state,
                         slot: frame.slot,
-                        builtin: None,
+                        ctx,
                     };
-                    custom(node.key, &node.props, &mut canvas)?;
-                } else {
-                    let ctx = BuiltinPaintCtx {
-                        node,
-                        anims,
-                        focus,
-                        screen,
-                        part,
-                        slot: frame.slot,
-                        root_bg,
-                    };
-                    let mode = if node.props.paint_mode() == PaintMode::Override {
-                        let mut canvas = WidgetCanvas {
-                            bounds: rect,
-                            clip_stack,
-                            clip_depth: 1,
-                            commands: out,
-                            pressed: node.pressed,
-                            state,
-                            slot: frame.slot,
-                            builtin: Some(ctx),
-                        };
-                        override_cb(node.key, node.kind, &node.props, state, &mut canvas)?
-                    } else {
-                        PaintOverride::Default
-                    };
-                    if mode == PaintOverride::Default {
+                    if node.kind == NodeKind::Custom {
+                        custom(node.key, &node.props, &mut canvas)?;
+                    } else if override_cb(node.key, node.kind, &node.props, state, &mut canvas)?
+                        == PaintOverride::Default
+                    {
                         paint_builtin_node(ctx, out)?;
                     }
+                } else {
+                    paint_builtin_node(ctx, out)?;
+                }
+                if node.kind == NodeKind::TabBar {
+                    paint_sliding_indicator(tree, node, anims, root_bg, out)?;
                 }
             }
 
@@ -1288,7 +1332,7 @@ pub fn emit_commands_with_override(
             let rect = node.layout_rect;
 
             if matches!(node.kind, NodeKind::ScrollY | NodeKind::ScrollX) {
-                let sb_part = tree.part_styles.get(node.key);
+                let sb_part = tree.part_styles.get(usize::from(frame.slot));
                 if !sb_part.scrollbar_hidden() {
                     let is_x = node.kind == NodeKind::ScrollX;
                     let vp_extent = if is_x { rect.w } else { rect.h };
@@ -1364,7 +1408,7 @@ pub fn emit_commands_with_override(
                 && let Some(slot) = focus.focused_slot
             {
                 let focused = &tree.nodes[usize::from(slot)];
-                let part = tree.part_styles.get(focused.key);
+                let part = tree.part_styles.get(usize::from(slot));
                 emit_focus_outline(focused, part, screen, focus.editing, out)?;
                 outline_layer = None;
             }
@@ -1385,46 +1429,40 @@ pub fn emit_commands_with_override(
     Ok(())
 }
 
-fn resolve_state_fg(node: &RetainedNode, part: WidgetPartStyle) -> Rgb565 {
-    if !node.props.enabled()
-        && let Some(c) = part.disabled_fg()
-    {
-        return c;
-    }
-    if node.pressed
-        && let Some(c) = part.pressed_fg()
-    {
-        return c;
-    }
-    if node.props.checked()
-        && let Some(c) = part.checked_fg()
-    {
-        return c;
-    }
-    node.props.fg
+fn color_state(node: &RetainedNode, pressed: bool) -> VisualState {
+    VisualState(
+        (u8::from(!node.props.enabled()) * VisualState::DISABLED.0)
+            | (u8::from(pressed) * VisualState::PRESSED.0)
+            | (u8::from(node.props.checked()) * VisualState::CHECKED.0),
+    )
 }
 
-fn resolve_state_bg(node: &RetainedNode, part: WidgetPartStyle, root_bg: Rgb565) -> Option<Rgb565> {
-    if !node.props.enabled()
-        && let Some(c) = part.disabled_bg()
-    {
+fn resolve_state_fg(node: &RetainedNode, part: &WidgetPartStyle) -> Rgb565 {
+    part.foreground(color_state(node, node.pressed), node.props.fg)
+}
+
+fn resolve_state_bg(
+    node: &RetainedNode,
+    part: &WidgetPartStyle,
+    root_bg: Rgb565,
+) -> Option<Rgb565> {
+    state_background(node, part, root_bg, node.pressed)
+}
+
+fn state_background(
+    node: &RetainedNode,
+    part: &WidgetPartStyle,
+    root_bg: Rgb565,
+    pressed: bool,
+) -> Option<Rgb565> {
+    if let Some(c) = part.background(color_state(node, pressed)) {
         return Some(c);
     }
-    if node.pressed
-        && let Some(c) = part.pressed_bg()
-    {
-        return Some(c);
-    }
-    if node.props.checked()
-        && let Some(c) = part.checked_bg()
-    {
-        return Some(c);
-    }
-    if node.pressed {
+    if pressed {
         match (node.props.bg(), node.props.press_feedback()) {
             (Some(c), fb) => Some(apply_press_feedback(c, node.props.accent, fb)),
             (None, crate::view::PressFeedback::None) => None,
-            (None, fb) if node.kind == NodeKind::Button => {
+            (None, fb) if matches!(node.kind, NodeKind::Button | NodeKind::Tab) => {
                 Some(apply_press_feedback(root_bg, node.props.accent, fb))
             }
             (None, _) => None,
@@ -1456,6 +1494,8 @@ fn paint_builtin_node(ctx: BuiltinPaintCtx<'_>, out: &mut CommandList) -> Result
         | NodeKind::ScrollY
         | NodeKind::ScrollX
         | NodeKind::Grid
+        | NodeKind::TabPanel
+        | NodeKind::TabBar
         | NodeKind::Wrap
         | NodeKind::CustomContainer => {
             emit_box_bg_and_border(node, ctx.part, rect, clip, ctx.root_bg, out)
@@ -1525,6 +1565,7 @@ fn paint_builtin_node(ctx: BuiltinPaintCtx<'_>, out: &mut CommandList) -> Result
             }
             Ok(())
         }
+        NodeKind::Tab => paint_tab(ctx, out),
         NodeKind::Button => paint_button_node(ctx, out),
         NodeKind::Toggle => paint_toggle_parts(ctx, true, true, out),
         NodeKind::Slider => paint_slider_parts(ctx, true, true, out),
@@ -1559,16 +1600,43 @@ fn paint_button_node(ctx: BuiltinPaintCtx<'_>, out: &mut CommandList) -> Result<
     let rect = node.layout_rect;
     let clip = node.clip_rect;
     let part = ctx.part;
-    emit_box_bg_and_border(node, part, rect, clip, ctx.root_bg, out)?;
+    let mut bg = resolve_state_bg(node, part, ctx.root_bg);
+    if node.motion.state() == crate::view::MotionState::Pressed
+        && let Some(p) = ctx.anims.cached_value(node.key, AnimProp::Style)
+    {
+        let off = state_background(node, part, ctx.root_bg, false);
+        let on = state_background(node, part, ctx.root_bg, true);
+        bg = match p {
+            ..=0 => off,
+            ANIM_SCALE.. => on,
+            _ => {
+                on.map(|color| blend_rgb565_scale(off.unwrap_or(ctx.root_bg), color, p, ANIM_SCALE))
+            }
+        };
+    }
+    emit_box_fill(node, rect, clip, bg, out)?;
 
+    paint_control_content(ctx, out)
+}
+
+#[derive(Copy, Clone)]
+struct ControlContent {
+    inner: Rect,
+    text: Point,
+    wrap_w: u32,
+    align: TextAlign,
+    icon: Option<Rect>,
+    bounds: Rect,
+}
+
+fn control_content(node: &RetainedNode, part: &WidgetPartStyle) -> ControlContent {
+    let rect = node.layout_rect;
     let inner = rect.inset(
         node.props.padding.left as u32,
         node.props.padding.top as u32,
         node.props.padding.right as u32,
         node.props.padding.bottom as u32,
     );
-    let fg_col = resolve_state_fg(node, part);
-    let icon_col = part.icon_color().unwrap_or(fg_col);
     let has_icon = node.props.icon != IconKind::None;
     let icon_sz = if has_icon {
         u32::from(part.icon_size().unwrap_or(BUTTON_ICON_SIZE as u8))
@@ -1593,7 +1661,6 @@ fn paint_button_node(ctx: BuiltinPaintCtx<'_>, out: &mut CommandList) -> Result<
         16
     };
     let align = node.props.text_align();
-    let font = node.props.font();
 
     let (text_x, text_y, wrap_w, cmd_align, icon_pt) = match icon_pos {
         IconPosition::Left | IconPosition::Right => {
@@ -1663,12 +1730,54 @@ fn paint_button_node(ctx: BuiltinPaintCtx<'_>, out: &mut CommandList) -> Result<
         }
     };
 
-    if let Some(ip) = icon_pt {
+    let icon = icon_pt.map(|ip| Rect::new(ip.x, ip.y, icon_sz, icon_sz));
+    let spare = wrap_w.saturating_sub(text_w);
+    let label_x = text_x
+        + match cmd_align {
+            TextAlign::Start => 0,
+            TextAlign::Center => spare / 2,
+            TextAlign::End => spare,
+        } as i32;
+    let label = Rect::new(label_x, text_y, text_w.min(wrap_w), text_h);
+    let bounds = icon.map_or(label, |r| r.union(label)).intersect(inner);
+    ControlContent {
+        inner,
+        text: Point::new(text_x, text_y),
+        wrap_w,
+        align: cmd_align,
+        icon,
+        bounds,
+    }
+}
+
+fn paint_control_content(
+    ctx: BuiltinPaintCtx<'_>,
+    out: &mut CommandList,
+) -> Result<(), BuildError> {
+    draw_control_content(ctx, control_content(ctx.node, ctx.part), out)
+}
+
+fn draw_control_content(
+    ctx: BuiltinPaintCtx<'_>,
+    content: ControlContent,
+    out: &mut CommandList,
+) -> Result<(), BuildError> {
+    let node = ctx.node;
+    let clip = node.clip_rect.intersect(content.inner);
+    let fg_col = resolve_state_fg(node, ctx.part);
+    let Point {
+        x: text_x,
+        y: text_y,
+    } = content.text;
+    let wrap_w = content.wrap_w;
+    let cmd_align = content.align;
+    let font = node.props.font();
+    if let Some(rect) = content.icon {
         out.push(PaintCmd::Icon {
-            rect: Rect::new(ip.x, ip.y, icon_sz, icon_sz),
+            rect,
             clip,
             kind: node.props.icon,
-            color: icon_col,
+            color: ctx.part.icon_color().unwrap_or(fg_col),
         })?;
     }
     let text_style = node.props.text_style();
@@ -1733,7 +1842,14 @@ fn paint_toggle_parts(
     let default_progress = if node.props.checked() { ANIM_SCALE } else { 0 };
     let progress = ctx
         .anims
-        .cached_value(node.key, AnimProp::ToggleKnob)
+        .cached_value(
+            node.key,
+            if node.motion.state() == crate::view::MotionState::Checked {
+                AnimProp::Style
+            } else {
+                AnimProp::ToggleKnob
+            },
+        )
         .unwrap_or(default_progress)
         .clamp(0, ANIM_SCALE);
 
@@ -1803,6 +1919,17 @@ fn paint_toggle_parts(
     Ok(())
 }
 
+fn animated_width(ctx: BuiltinPaintCtx<'_>, width: u32, final_width: u32) -> u32 {
+    let node = ctx.node;
+    if node.motion.state() == crate::view::MotionState::Value
+        && let Some(p) = ctx.anims.cached_value(node.key, AnimProp::Style)
+        && p != node.motion_target(false)
+    {
+        return (u64::from(width) * p.clamp(0, ANIM_SCALE) as u64 / ANIM_SCALE as u64) as u32;
+    }
+    final_width
+}
+
 fn paint_slider_parts(
     ctx: BuiltinPaintCtx<'_>,
     draw_track: bool,
@@ -1820,15 +1947,7 @@ fn paint_slider_parts(
         .track_thickness()
         .map(|t| rect.h.min(u32::from(t.max(1))))
         .unwrap_or_else(|| rect.h.clamp(1, 6));
-    let (knob_w, knob_h) = part
-        .knob_size()
-        .map(|(w, h)| {
-            (
-                rect.w.min(u32::from(w.max(2))),
-                rect.h.min(u32::from(h.max(2))),
-            )
-        })
-        .unwrap_or((rect.w.min(12), rect.h.min(20)));
+    let (knob_w, knob_h) = part.slider_knob_size(rect.size());
     let pad_x = (knob_w / 2) as i32;
     let usable_w = rect.w.saturating_sub(knob_w);
     let track_x = rect.x + pad_x;
@@ -1843,7 +1962,8 @@ fn paint_slider_parts(
     let span = (max - min).max(1);
     let clamped = (node.props.value as i64).clamp(min, max.max(min));
     let rel = (clamped - min).max(0);
-    let fill_w = ((usable_w as i64 * rel) / span) as u32;
+    let exact_width = ((usable_w as i64 * rel) / span) as u32;
+    let fill_w = animated_width(ctx, usable_w, exact_width);
 
     if draw_track && usable_w > 0 {
         let track_rect = Rect::new(track_x, track_y, usable_w, track_h);
@@ -1948,6 +2068,7 @@ fn paint_progress_bar_node(
             let span = max - min;
             (((inner.w as i64) * (clamped - min) + span / 2) / span).clamp(0, inner.w as i64) as u32
         };
+        let fill_w = animated_width(ctx, inner.w, fill_w);
         if fill_w > 0 {
             let fill_rect = Rect::new(inner.x, inner.y, fill_w, inner.h);
             let fill_r = part
@@ -1970,7 +2091,7 @@ fn paint_progress_bar_node(
 
 fn emit_focus_outline(
     node: &RetainedNode,
-    part: WidgetPartStyle,
+    part: &WidgetPartStyle,
     screen: Rect,
     editing: bool,
     out: &mut CommandList,
@@ -1982,15 +2103,10 @@ fn emit_focus_outline(
     let rect = node.layout_rect;
     let ring_clip = node.clip_rect.intersect(screen);
     if !rect.intersect(ring_clip).is_empty() {
-        // Fit the outward stroke on sides that reach a container edge. Keeping
-        // the widget's full bounds avoids inventing a border at a scroll cut.
-        let offset = u32::from(ring.offset);
         let width = ring.width.clamp(1, 3);
-        let ring_rect = rect.union(rect.expand(offset).intersect(ring_clip));
-        let use_rounded = ring.rounded && node.props.radius > 0;
-        let ring_radius = node.props.radius.saturating_add(ring.offset);
+        let (ring_rect, ring_radius) = ring.outline_geometry(rect, ring_clip, node.props.radius);
         let ring_col = part.focused_border().unwrap_or(node.props.focus_color);
-        if use_rounded {
+        if ring_radius != 0 {
             out.push(PaintCmd::StrokeRoundedRect {
                 rect: ring_rect,
                 clip: ring_clip,
@@ -2008,7 +2124,7 @@ fn emit_focus_outline(
         }
         if editing {
             let inner_rect = ring_rect.inset(1, 1, 1, 1);
-            if use_rounded {
+            if ring_radius != 0 {
                 out.push(PaintCmd::StrokeRoundedRect {
                     rect: inner_rect,
                     clip: ring_clip,
@@ -2031,7 +2147,7 @@ fn emit_focus_outline(
 
 fn emit_box_bg_and_border(
     node: &RetainedNode,
-    part: WidgetPartStyle,
+    part: &WidgetPartStyle,
     rect: Rect,
     clip: Rect,
     root_bg: Rgb565,
@@ -2040,7 +2156,16 @@ fn emit_box_bg_and_border(
     if rect.intersect(clip).is_empty() {
         return Ok(());
     }
-    let bg = resolve_state_bg(node, part, root_bg);
+    emit_box_fill(node, rect, clip, resolve_state_bg(node, part, root_bg), out)
+}
+
+fn emit_box_fill(
+    node: &RetainedNode,
+    rect: Rect,
+    clip: Rect,
+    bg: Option<Rgb565>,
+    out: &mut CommandList,
+) -> Result<(), BuildError> {
     if let Some(color) = bg {
         if node.props.radius > 0
             || (node.props.border_color().is_some()

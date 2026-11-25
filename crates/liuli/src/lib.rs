@@ -18,6 +18,9 @@ pub mod prelude {
     pub use embedded_graphics_core::pixelcolor::{PixelColor, Rgb565};
     pub use embedded_graphics_core::primitives::Rectangle;
 
+    pub use liuli_core::animation::{
+        Animation, CubicBezier, Curve, Keyframe, Keyframes, Playback, Repeat, StyleCurve, Timing,
+    };
     pub use liuli_core::bitmap::{
         Bitmap, BitmapView, L565_FLAG_ALPHA4, L565_FLAG_CHROMA_KEY, L565_FLAG_INDEXED4,
         L565_FLAG_INDEXED8, L565_FLAG_MASK_A4, L565_FLAG_RLE,
@@ -31,9 +34,9 @@ pub mod prelude {
     };
     pub use liuli_core::color::{
         Gray8, Hsl, Hsv, PixelFormat, Rgb888, Rgba8888, contrast_ratio_x10, darken_rgb565,
-        gray8_to_rgb565, hsl_to_rgb565, hsl_to_rgb888, hsv_to_rgb565, hsv_to_rgb888,
-        invert_rgb565, lighten_rgb565, mix_rgb565, parse_hex_str, relative_luminance_scaled,
-        rgb565_from_hex, rgb565_swap_rb, rgb565_to_gray8, rgb565_to_rgb888, rgb565_u16_to_abgr8888,
+        gray8_to_rgb565, hsl_to_rgb565, hsl_to_rgb888, hsv_to_rgb565, hsv_to_rgb888, invert_rgb565,
+        lighten_rgb565, mix_rgb565, parse_hex_str, relative_luminance_scaled, rgb565_from_hex,
+        rgb565_swap_rb, rgb565_to_gray8, rgb565_to_rgb888, rgb565_u16_to_abgr8888,
         rgb565_u16_to_argb8888, rgb565_u16_to_rgb666_bytes, rgb565_u16_to_rgb888, rgb888_from_hex,
         rgb888_to_gray8, rgb888_to_hsl, rgb888_to_hsv, rgb888_to_rgb565_round,
         rgb888_to_rgb565_trunc,
@@ -59,17 +62,18 @@ pub mod prelude {
         SceneResources, SliceSceneResources, TextId, WidgetCanvas,
     };
     pub use liuli_core::part_style::{
-        IconPosition, LayoutExtra, VisualState, WidgetPart, WidgetPartStyle,
+        IconPosition, IndicatorLayout, IndicatorMotion, IndicatorShape, IndicatorSpan, LayoutExtra,
+        LayoutMotion, PartMetrics, VisualState, WidgetPart, WidgetPartStyle,
     };
     pub use liuli_core::time::{
         AnimProp, ClockTracker, Easing, InstantMs, MAX_REPEAT_STEPS_PER_ADVANCE, MonotonicClock32,
         NextWakeup, REPEAT_DELAY_MS, REPEAT_PERIOD_MS, ScrollPhysics, Tween,
     };
-    pub use liuli_core::view::StoredProps;
     pub use liuli_core::view::{
         Align, App, Change, Children, EdgeInsets, FocusRingStyle, FontId, IconKind, Justify, Key,
-        Length, NodeKind, NodeProps, PageRestore, PaintMode, PressFeedback, SampleRing, StackAlign,
-        SubpixelOrder, TextAlign, TextGamma, TextRef, TextStyleFlags, ViewBuilder, WrapMode,
+        Length, MotionState, NodeKind, NodeProps, PageRestore, PaintMode, PressFeedback,
+        SampleRing, StackAlign, StateMotion, StoredProps, SubpixelOrder, TextAlign, TextGamma,
+        TextRef, TextStyleFlags, ViewBuilder, WrapMode,
     };
     pub use liuli_render::{
         AlignedBand, BandMeta, BandSlot, BufferTooSmall, ByteOrder, ByteWindowBus, ByteWindowSink,

@@ -717,7 +717,7 @@ impl App for TerminalApp {
                             btn_row.gap = 10;
                             btn_row.align_cross = Align::Stretch;
                             ui.row(tk::MODAL_BTNS, btn_row, |ui| {
-                                let mut cancel_p = NodeProps::new();
+                                let mut cancel_p = t.control();
                                 cancel_p.width = Length::Fill(1);
                                 cancel_p.height = Length::Px(32);
                                 cancel_p.padding = EdgeInsets::symmetric(8, 4);
@@ -727,13 +727,12 @@ impl App for TerminalApp {
                                 cancel_p.radius = 6;
                                 cancel_p.fg = t.text;
                                 cancel_p.accent = t.surface_alt;
-                                cancel_p.focus_color = t.focus;
                                 cancel_p.text = TextRef::Static("取消");
                                 cancel_p.max_lines = 1;
                                 cancel_p.focusable = true;
                                 ui.button(tk::BTN_CANCEL, cancel_p)?;
 
-                                let mut confirm_p = NodeProps::new();
+                                let mut confirm_p = t.control();
                                 confirm_p.width = Length::Fill(1);
                                 confirm_p.height = Length::Px(32);
                                 confirm_p.padding = EdgeInsets::symmetric(8, 4);
@@ -741,7 +740,6 @@ impl App for TerminalApp {
                                 confirm_p.radius = 6;
                                 confirm_p.fg = t.on_accent;
                                 confirm_p.accent = t.danger;
-                                confirm_p.focus_color = t.focus;
                                 confirm_p.text = TextRef::Static("恢复");
                                 confirm_p.max_lines = 1;
                                 confirm_p.focusable = true;
@@ -765,7 +763,7 @@ fn build_tab_btn(
     active: bool,
     t: &Theme,
 ) -> Result<(), BuildError> {
-    let mut bp = NodeProps::new();
+    let mut bp = t.control();
     bp.width = Length::Fill(1);
     bp.height = Length::Px(26);
     bp.padding = EdgeInsets::symmetric(6, 3);
@@ -775,7 +773,6 @@ fn build_tab_btn(
     bp.radius = 6;
     bp.fg = if active { t.on_accent } else { t.text };
     bp.accent = if active { t.accent } else { t.surface_alt };
-    bp.focus_color = t.focus;
     bp.icon = icon;
     bp.text = TextRef::Static(label);
     bp.max_lines = 1;

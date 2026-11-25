@@ -301,6 +301,23 @@ impl<const MAX_CONTACTS: usize> Default for TouchTracker<MAX_CONTACTS> {
     }
 }
 
+/// Nearest selectable value on a step grid anchored at `min`. Both endpoints are stops.
+pub fn snap_stepped_value(min: i16, max: i16, step: i16, value: i16) -> i16 {
+    if min >= max {
+        return min;
+    }
+    let step = i32::from(step.max(1));
+    let value = i32::from(value.clamp(min, max));
+    let min = i32::from(min);
+    let lower = min + (value - min) / step * step;
+    let upper = (lower + step).min(i32::from(max));
+    if value - lower < upper - value {
+        lower as i16
+    } else {
+        upper as i16
+    }
+}
+
 #[cfg(test)]
 mod tests {
     extern crate alloc;

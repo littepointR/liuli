@@ -224,13 +224,12 @@ impl App for SettingsApp {
                             let bright_txt =
                                 ui.text_fmt(format_args!("{:>3}%", model.brightness))?;
                             add_value_label(ui, keys::VAL_BRIGHTNESS, bright_txt, 48, t)?;
-                            let mut sl_p = NodeProps::new();
+                            let mut sl_p = t.control();
                             sl_p.width = Length::Px(96);
                             sl_p.height = Length::Px(24);
                             sl_p.bg = Some(t.track_off);
                             sl_p.accent = t.accent;
                             sl_p.fg = t.knob;
-                            sl_p.focus_color = t.focus;
                             sl_p.value = model.brightness;
                             sl_p.min = 0;
                             sl_p.max = 100;
@@ -301,7 +300,7 @@ impl App for SettingsApp {
                         // Row 5: 恢复默认
                         setting_row(ui, keys::ROW_RESET, t, true, |ui| {
                             add_row_label(ui, keys::LBL_RESET, "恢复默认", t)?;
-                            let mut reset_btn = NodeProps::new();
+                            let mut reset_btn = t.control();
                             reset_btn.width = Length::Px(76);
                             reset_btn.height = Length::Px(26);
                             reset_btn.padding = EdgeInsets::symmetric(8, 3);
@@ -311,7 +310,6 @@ impl App for SettingsApp {
                             reset_btn.radius = 6;
                             reset_btn.fg = t.danger_text;
                             reset_btn.accent = t.surface_alt;
-                            reset_btn.focus_color = t.focus;
                             reset_btn.text = TextRef::Static("重设");
                             reset_btn.max_lines = 1;
                             reset_btn.focusable = true;
@@ -381,7 +379,7 @@ impl App for SettingsApp {
                             btn_row.gap = 10;
                             btn_row.align_cross = Align::Stretch;
                             ui.row(keys::MODAL_BTNS, btn_row, |ui| {
-                                let mut cancel_p = NodeProps::new();
+                                let mut cancel_p = t.control();
                                 cancel_p.width = Length::Fill(1);
                                 cancel_p.height = Length::Px(32);
                                 cancel_p.padding = EdgeInsets::symmetric(8, 4);
@@ -391,13 +389,12 @@ impl App for SettingsApp {
                                 cancel_p.radius = 6;
                                 cancel_p.fg = t.text;
                                 cancel_p.accent = t.surface_alt;
-                                cancel_p.focus_color = t.focus;
                                 cancel_p.text = TextRef::Static("取消");
                                 cancel_p.max_lines = 1;
                                 cancel_p.focusable = true;
                                 ui.button(keys::BTN_CANCEL, cancel_p)?;
 
-                                let mut confirm_p = NodeProps::new();
+                                let mut confirm_p = t.control();
                                 confirm_p.width = Length::Fill(1);
                                 confirm_p.height = Length::Px(32);
                                 confirm_p.padding = EdgeInsets::symmetric(8, 4);
@@ -405,7 +402,6 @@ impl App for SettingsApp {
                                 confirm_p.radius = 6;
                                 confirm_p.fg = t.on_accent;
                                 confirm_p.accent = t.danger;
-                                confirm_p.focus_color = t.focus;
                                 confirm_p.text = TextRef::Static("恢复");
                                 confirm_p.max_lines = 1;
                                 confirm_p.focusable = true;
@@ -482,13 +478,12 @@ fn add_toggle(
     checked: bool,
     t: &Theme,
 ) -> Result<(), BuildError> {
-    let mut p = NodeProps::new();
+    let mut p = t.control();
     p.width = Length::Px(40);
     p.height = Length::Px(24);
     p.bg = Some(t.track_off);
     p.accent = t.accent;
     p.fg = t.knob;
-    p.focus_color = t.focus;
     p.checked = checked;
     p.focusable = true;
     ui.toggle(key, p)

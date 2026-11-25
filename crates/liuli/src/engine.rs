@@ -34,6 +34,15 @@ impl<A: App, F: TextMeasurer> TextMeasurer for AppMeasure<'_, A, F> {
     fn custom_size(&self, key: Key, font: FontId, available: Size) -> Size {
         A::measure_custom(key, font, available)
     }
+    fn custom_size_styled(
+        &self,
+        key: Key,
+        font: FontId,
+        available: Size,
+        metrics: liuli_core::part_style::PartMetrics,
+    ) -> Size {
+        A::measure_custom_styled(key, font, available, metrics)
+    }
     fn layout_custom(
         &self,
         key: Key,
@@ -101,6 +110,7 @@ pub struct Engine<'s, 'f, A: App, F: FontProvider + TextMeasurer = FontSet<'f>> 
     blend: fn(&mut [u16], Rgb565, u8),
     view_pending: bool,
     timer_pending_after_dma: bool,
+    animation_wake: NextWakeup,
     last_build_error: Option<BuildError>,
     build_key: Option<Key>,
     last_metrics: FrameMetrics,
@@ -298,6 +308,7 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
             #[cfg(feature = "enhanced")]
             pair: Default::default(),
             has_committed_once: false,
+            animation_wake: NextWakeup::OnEvent,
             active_page,
             last_content_focus: None,
             _font_lt: core::marker::PhantomData,
@@ -605,8 +616,36 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
                 self.commit_view_once(now)?;
             }
         }
+        self.sync_animations(now, false);
         Ok(())
     }
+
+    fn sync_animations(&mut self, now: InstantMs, advance: bool) -> bool {
+        let tree = self.storage.active_tree();
+        let mut changed = false;
+        let mut wake = NextWakeup::OnEvent;
+        A::animations(&mut self.model, &mut |key, animation| {
+            let due = animation.next_wakeup(now);
+            if due == NextWakeup::OnEvent {
+                return;
+            }
+            if tree.node_by_key(key).is_some() {
+                let ready = due == NextWakeup::Now || matches!(due, NextWakeup::At(t) if t <= now);
+                let next = if advance && ready {
+                    changed |= animation.advance(now);
+                    animation.next_wakeup(now)
+                } else {
+                    due
+                };
+                wake = wake.earlier(next);
+            } else if !advance {
+                animation.cancel(now);
+            }
+        });
+        self.animation_wake = wake;
+        changed
+    }
+
     fn commit_view_once(&mut self, now: InstantMs) -> Result<(), BuildError> {
         self.build_key = None;
         let old_page = self.active_page;
@@ -626,16 +665,21 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
                 .focused_key()
                 .filter(|&k| old_tree.modal.is_none() && !A::is_tab_key(k))
                 .or(self.last_content_focus);
-            let mut s_key = None;
-            let mut s_y = 0i32;
-            for n in &old_tree.nodes {
-                if n.occupied && matches!(n.kind, NodeKind::ScrollY | NodeKind::ScrollX) {
-                    s_key = Some(n.key);
-                    s_y = n.scroll_y;
-                    break;
-                }
-            }
-            (f_key, s_key, s_y)
+            let scroll = A::page_restore(&self.model, old_page)
+                .scroll_key
+                .and_then(|key| old_tree.node_by_key(key))
+                .filter(|n| n.scroll_limit().is_some())
+                .or_else(|| {
+                    old_tree
+                        .nodes
+                        .iter()
+                        .find(|n| n.occupied && n.scroll_limit().is_some())
+                });
+            (
+                f_key,
+                scroll.map(|n| n.key),
+                scroll.map_or(0, |n| n.scroll_y),
+            )
         } else {
             (None, None, 0)
         };
@@ -657,6 +701,7 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
 
         self.storage.cand_anims.copy_from(&self.storage.anims);
         let mut cand_focus = self.storage.focus;
+        cand_focus.remember_panel_focus(&self.storage.trees[active_t_idx]);
         let mut cand_pointer = self.storage.pointer;
         let mut cand_repeat = self.storage.repeat;
         self.storage.cand_damage.clear();
@@ -699,6 +744,23 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
         if outcome.capture_target_invalidated {
             cand_pointer.set_active_id(None);
             cand_pointer.capture = CaptureKind::None;
+        }
+
+        // Apply animated offsets to the candidate viewport so paint, hit testing and the
+        // next drag all see the same origin. Publish its bounds only after a successful commit.
+        for idx in 0..MAX_NODES {
+            let node = &cand_tree.nodes[idx];
+            if node.occupied
+                && let Some(limit) = node.scroll_limit()
+                && let Some(controller) = A::scroll_controller(&mut self.model, node.key)
+            {
+                let offset = controller.offset().clamp(0, limit);
+                if offset != node.scroll_y {
+                    self.storage.cand_damage.add(node.visible_rect, self.screen);
+                    cand_tree.nodes[idx].scroll_y = offset;
+                    relayout_scroll_subtree(cand_tree, idx as u16, self.screen);
+                }
+            }
         }
 
         let was_modal = active_tree.modal.is_some();
@@ -777,6 +839,12 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
             editing: cand_focus.editing,
         };
 
+        cand_tree.sync_style_motion(
+            &mut self.storage.cand_anims,
+            now,
+            focus_info.focused_slot.filter(|_| focus_info.ring_visible),
+            cand_pointer.capture,
+        );
         cand_tree.sync_press_depth(&mut self.storage.cand_anims, now);
         if let Err(err) = emit_commands_with_override(
             cand_tree,
@@ -799,6 +867,7 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
         if let Some(i) = self.storage.draft.inspection.as_mut() {
             i.commit();
         }
+        cand_tree.accept_style_targets(focus_info.focused_slot.filter(|_| focus_info.ring_visible));
         active_tree.expand_effect_damage(&mut self.storage.cand_damage, self.screen);
         cand_tree.expand_effect_damage(&mut self.storage.cand_damage, self.screen);
         #[cfg(feature = "enhanced")]
@@ -815,6 +884,17 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
         self.storage.focus = cand_focus;
         self.storage.pointer = cand_pointer;
         self.storage.repeat = cand_repeat;
+        for node in &cand_tree.nodes {
+            if node.occupied
+                && let Some(limit) = node.scroll_limit()
+                && let Some(controller) = A::scroll_controller(&mut self.model, node.key)
+            {
+                controller.set_bounds(0, limit);
+                if controller.offset() != node.scroll_y || controller.is_overscrolled() {
+                    controller.set_offset(node.scroll_y);
+                }
+            }
+        }
         for &r in self.storage.cand_damage.as_slice() {
             self.storage.damage.add(r, self.screen);
         }
@@ -871,6 +951,12 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
             editing: self.storage.focus.editing,
         };
         self.storage.cand_anims.copy_from(&self.storage.anims);
+        tree.sync_style_motion(
+            &mut self.storage.cand_anims,
+            self.storage.clock.last().unwrap_or_default(),
+            focus_info.focused_slot.filter(|_| focus_info.ring_visible),
+            self.storage.pointer.capture,
+        );
         tree.sync_press_depth(
             &mut self.storage.cand_anims,
             self.storage.clock.last().unwrap_or_default(),
@@ -893,6 +979,8 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
         #[cfg(feature = "enhanced")]
         liuli_core::layers::reuse_groups(&mut self.storage.cmds, active_c_idx, tree, tree);
         self.storage.anims.copy_from(&self.storage.cand_anims);
+        self.storage.trees[active_t_idx]
+            .accept_style_targets(focus_info.focused_slot.filter(|_| focus_info.ring_visible));
         self.storage.active_cmd_idx = cand_c_idx as u8;
         self.scene_version = self.scene_version.wrapping_add(1);
         if !self.view_pending {
@@ -942,7 +1030,12 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
                 tree.nodes[idx].pressed = saved_pressed_mask.get(idx);
                 if tree.nodes[idx].scroll_y != prev_scroll {
                     tree.nodes[idx].scroll_y = prev_scroll;
-                    if matches!(tree.nodes[idx].kind, NodeKind::ScrollY | NodeKind::ScrollX) {
+                    if let Some(controller) =
+                        A::scroll_controller(&mut self.model, tree.nodes[idx].key)
+                    {
+                        controller.set_offset(prev_scroll);
+                    }
+                    if tree.nodes[idx].kind.is_scroll_view() {
                         scroll_changed_mask.set(idx);
                     }
                 }
@@ -978,10 +1071,12 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
         let Some(key) = self.text_target() else {
             return Ok(false);
         };
-        if let Some(msg) = A::on_text(&self.model, key, input)
-            && (A::update(&mut self.model, msg, now) == Change::View || self.view_pending)
-        {
-            self.commit_view_inner(now)?;
+        if let Some(change) = A::update_text(&mut self.model, key, input, now) {
+            if change == Change::View || self.view_pending {
+                self.commit_view_inner(now)?;
+            } else {
+                self.sync_animations(now, false);
+            }
         }
         Ok(true)
     }
@@ -1034,10 +1129,12 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
                         self.storage.repeat.clear();
                         self.reemit_commands_inner()?;
                     }
-                    if let Some(msg) = A::on_transform(&self.model, key, gesture)
-                        && A::update(&mut self.model, msg, now) == Change::View
-                    {
-                        self.commit_view_inner(now)?;
+                    if let Some(msg) = A::on_transform(&self.model, key, gesture) {
+                        if A::update(&mut self.model, msg, now) == Change::View {
+                            self.commit_view_inner(now)?;
+                        } else {
+                            self.sync_animations(now, false);
+                        }
                     }
                     return Ok(true);
                 }
@@ -1075,6 +1172,22 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
         );
 
         let cur_tree = &self.storage.trees[active_t_idx];
+        let touched_scroll = match (input, self.storage.pointer.capture) {
+            (RawInput::PointerDown { id, .. }, CaptureKind::ScrollCandidate { scroll, .. })
+                if self.storage.pointer.active_id() == Some(id) =>
+            {
+                Some(scroll.slot() as usize)
+            }
+            _ => None,
+        };
+        for (idx, node) in cur_tree.nodes.iter().enumerate() {
+            if node.occupied
+                && (saved_scroll_y[idx] != node.scroll_y || touched_scroll == Some(idx))
+                && let Some(controller) = A::scroll_controller(&mut self.model, node.key)
+            {
+                controller.set_offset(node.scroll_y);
+            }
+        }
         match input {
             RawInput::PointerDown { id, .. } => {
                 if self.storage.pointer.active_id() == Some(id) {
@@ -1199,22 +1312,22 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
 
         let message = effective_action
             .and_then(|act| A::on_action(&self.model, act))
-            .or_else(|| pointer_ev.and_then(|(k, ev)| A::on_pointer(&self.model, k, ev)))
-            .or_else(|| {
-                cur_tree.nodes.iter().enumerate().find_map(|(index, node)| {
-                    if node.occupied
-                        && matches!(node.kind, NodeKind::ScrollY | NodeKind::ScrollX)
-                        && saved_scroll_y[index] != node.scroll_y
-                    {
-                        A::on_scroll(&self.model, node.key, node.scroll_y)
-                    } else {
-                        None
-                    }
-                })
-            });
-        if let Some(msg) = message
-            && A::update(&mut self.model, msg, now) == Change::View
-        {
+            .or_else(|| pointer_ev.and_then(|(k, ev)| A::on_pointer(&self.model, k, ev)));
+        // Focus may reveal more than one nested viewport in a single input transaction.
+        let mut rebuild = false;
+        for (index, node) in cur_tree.nodes.iter().enumerate() {
+            if node.occupied
+                && saved_scroll_y[index] != node.scroll_y
+                && node.scroll_limit().is_some()
+                && let Some(msg) = A::on_scroll(&self.model, node.key, node.scroll_y)
+            {
+                rebuild |= A::update(&mut self.model, msg, now) == Change::View;
+            }
+        }
+        if let Some(msg) = message {
+            rebuild |= A::update(&mut self.model, msg, now) == Change::View;
+        }
+        if rebuild {
             self.sync_toggle_anim_rects(active_t_idx);
             self.flush_cand_damage();
             if let Err(err) = self.commit_view_inner(now) {
@@ -1275,6 +1388,7 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
             self.flush_cand_damage();
         }
 
+        self.sync_animations(now, false);
         Ok(consumed)
     }
 
@@ -1306,6 +1420,8 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
         }
         if A::update(&mut self.model, msg, now) == Change::View || self.view_pending {
             self.commit_view_inner(now)?;
+        } else {
+            self.sync_animations(now, false);
         }
         Ok(())
     }
@@ -1338,7 +1454,9 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
 
         let mut any_change = false;
         let mut build_err: Option<BuildError> = None;
-        if A::on_timer(&mut self.model, now) == Change::View {
+        let timer_changed = A::on_timer(&mut self.model, now) == Change::View;
+        let animation_changed = self.sync_animations(now, true);
+        if timer_changed || animation_changed {
             match self.commit_view_inner(now) {
                 Ok(()) => any_change = true,
                 Err(err) => build_err = Some(err),
@@ -1461,6 +1579,9 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
                     }
                 }
             }
+            if !self.view_pending {
+                self.sync_animations(now, false);
+            }
         }
 
         self.storage.cand_anims.copy_from(&self.storage.anims);
@@ -1501,6 +1622,9 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
             self.storage.anims.copy_from(&self.storage.cand_anims);
             self.flush_cand_damage();
             any_change = true;
+        } else if self.storage.anims.has_active() {
+            // Quantized and stepped curves may sample the same value for many frames.
+            self.storage.anims.copy_from(&self.storage.cand_anims);
         }
 
         if let Some(err) = build_err {
@@ -1533,7 +1657,14 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
             Some(t) => NextWakeup::At(t),
             None => NextWakeup::OnEvent,
         };
-        anim_wake.earlier(repeat_wake).earlier(app_wake)
+        let managed = match self.animation_wake {
+            NextWakeup::At(due) if due <= now => NextWakeup::Now,
+            wake => wake,
+        };
+        anim_wake
+            .earlier(repeat_wake)
+            .earlier(app_wake)
+            .earlier(managed)
     }
 
     /// Advances timers, key/pointer repeats, and built-in animations for the current frame.

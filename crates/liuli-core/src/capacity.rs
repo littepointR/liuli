@@ -142,6 +142,8 @@ pub enum BuildError {
     InvalidKind,
     InvalidRange,
     Sparklines,
+    MotionCurves,
+    PartStyles,
     Effects,
     LayerPixels,
     Layout(LayoutError),

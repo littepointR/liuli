@@ -155,7 +155,7 @@ pub fn build_dashboard(
         act.gap = 6;
         act.align_cross = Align::Center;
         ui.row(tk::DASH_ACT_ROW, act, |ui| {
-            let mut pause_p = NodeProps::new();
+            let mut pause_p = t.control();
             pause_p.width = Length::Px(108);
             pause_p.height = Length::Px(28);
             pause_p.padding = EdgeInsets::symmetric(8, 3);
@@ -165,7 +165,6 @@ pub fn build_dashboard(
             pause_p.radius = 6;
             pause_p.fg = t.text;
             pause_p.accent = t.surface_alt;
-            pause_p.focus_color = t.focus;
             pause_p.icon = IconKind::Waveform;
             pause_p.text = TextRef::Static(if model.settings.live_monitoring {
                 "暂停采样"
@@ -176,7 +175,7 @@ pub fn build_dashboard(
             pause_p.focusable = true;
             ui.button(tk::DASH_BTN_PAUSE, pause_p)?;
 
-            let mut adj_p = NodeProps::new();
+            let mut adj_p = t.control();
             adj_p.width = Length::Px(34);
             adj_p.height = Length::Px(28);
             adj_p.padding = EdgeInsets::symmetric(6, 3);
@@ -186,7 +185,6 @@ pub fn build_dashboard(
             adj_p.radius = 6;
             adj_p.fg = t.text;
             adj_p.accent = t.surface_alt;
-            adj_p.focus_color = t.focus;
             adj_p.text_align = TextAlign::Center;
             adj_p.max_lines = 1;
             adj_p.focusable = true;

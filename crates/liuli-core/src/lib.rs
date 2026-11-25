@@ -3,6 +3,7 @@
 
 #[cfg(any(feature = "owned-images", feature = "inspector"))]
 extern crate alloc;
+pub mod animation;
 pub mod bitmap;
 pub mod capacity;
 pub mod color;
@@ -1953,6 +1954,157 @@ mod tests {
         assert_eq!(r(24), Rect::new(35, 28, 30, 16));
         // Grid measured height = 24 + 4 + 16 = 44
         assert_eq!(r(2).h, 44);
+    }
+
+    #[test]
+    fn slider_touch_style_and_rotary_share_stops() {
+        let screen = Rect::new(0, 0, 200, 40);
+        let mut draft = ViewDraft::new();
+        let mut vb = ViewBuilder::new(&mut draft);
+        vb.root(Key(1), NodeProps::new(), |ui| {
+            ui.slider(
+                Key(2),
+                NodeProps {
+                    width: Length::Px(200),
+                    height: Length::Px(40),
+                    min: -5,
+                    max: 8,
+                    step: 4,
+                    value: 3,
+                    focusable: true,
+                    ..NodeProps::new()
+                },
+            )?;
+            ui.style_parts(
+                Key(2),
+                crate::part_style::WidgetPartStyle::ZERO.with_knob_size(80, 20),
+            )
+        })
+        .unwrap();
+        vb.finish().unwrap();
+        let mut tree = reconcile_fresh(&draft, screen);
+        let mut focus = FocusState::new();
+        let mut pointer = PointerState::new();
+        let mut damage = DamageSet::new();
+        let id = PointerId(1);
+        for (x, expected) in [(40, -5), (160, 8)] {
+            let pos = Point::new(x, 20);
+            let (_, action) = dispatch_input(
+                &mut tree,
+                &mut focus,
+                &mut pointer,
+                RawInput::PointerDown { id, pos },
+                screen,
+                &mut damage,
+            );
+            assert_eq!(action.unwrap().kind, ActionKind::SetValue(expected));
+            dispatch_input(
+                &mut tree,
+                &mut focus,
+                &mut pointer,
+                RawInput::PointerUp { id, pos },
+                screen,
+                &mut damage,
+            );
+        }
+        let slot = tree.find_slot_by_key(Key(2)).unwrap();
+        tree.nodes[slot as usize].props.value = 8;
+        focus.set_focused_key(Some(Key(2)));
+        focus.editing = true;
+        let (_, action) = dispatch_input(
+            &mut tree,
+            &mut focus,
+            &mut pointer,
+            RawInput::Adjust(-1),
+            screen,
+            &mut damage,
+        );
+        assert_eq!(action.unwrap().kind, ActionKind::SetValue(7));
+    }
+
+    #[test]
+    fn nested_scroll_routes_drag_and_focus_to_the_required_axes() {
+        let screen = Rect::new(0, 0, 120, 60);
+        let mut draft = ViewDraft::new();
+        let mut vb = ViewBuilder::new(&mut draft);
+        vb.root(Key(1), NodeProps::new(), |ui| {
+            ui.scroll_y(
+                Key(2),
+                NodeProps::new()
+                    .width(Length::Fill(1))
+                    .height(Length::Fill(1)),
+                |outer| {
+                    outer.label(Key(3), NodeProps::new().height(Length::Px(40)))?;
+                    outer.scroll_x(
+                        Key(4),
+                        NodeProps::new()
+                            .width(Length::Fill(1))
+                            .height(Length::Px(40)),
+                        |inner| {
+                            for k in 5..8 {
+                                inner.button(
+                                    Key(k),
+                                    NodeProps::new()
+                                        .width(Length::Px(80))
+                                        .height(Length::Px(34))
+                                        .focusable(true),
+                                )?;
+                            }
+                            Ok(())
+                        },
+                    )?;
+                    outer.label(Key(8), NodeProps::new().height(Length::Px(60)))
+                },
+            )
+        })
+        .unwrap();
+        vb.finish().unwrap();
+        let mut tree = reconcile_fresh(&draft, screen);
+        let mut focus = FocusState::new();
+        let mut pointer = PointerState::new();
+        let mut damage = DamageSet::new();
+        let id = PointerId(1);
+        for input in [
+            RawInput::PointerDown {
+                id,
+                pos: Point::new(40, 53),
+            },
+            RawInput::PointerMove {
+                id,
+                pos: Point::new(39, 18),
+            },
+            RawInput::PointerUp {
+                id,
+                pos: Point::new(39, 18),
+            },
+        ] {
+            dispatch_input(
+                &mut tree,
+                &mut focus,
+                &mut pointer,
+                input,
+                screen,
+                &mut damage,
+            );
+        }
+        assert_eq!(tree.node_by_key(Key(2)).unwrap().scroll_y, 35);
+        assert_eq!(tree.node_by_key(Key(4)).unwrap().scroll_y, 0);
+        let mut tree = reconcile_fresh(&draft, screen);
+        focus.set_focused_key(Some(Key(6)));
+        dispatch_input(
+            &mut tree,
+            &mut focus,
+            &mut pointer,
+            RawInput::Nav(NavDir::Next),
+            screen,
+            &mut damage,
+        );
+        let target = tree.node_by_key(Key(7)).unwrap();
+        assert_eq!(focus.focused_key(), Some(Key(7)));
+        assert_eq!(
+            target.layout_rect.intersect(target.clip_rect),
+            target.layout_rect
+        );
     }
 
     #[test]

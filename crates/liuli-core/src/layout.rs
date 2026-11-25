@@ -1,3 +1,5 @@
+mod tabs;
+
 use crate::capacity::MAX_DEPTH;
 use crate::geometry::{Point, Rect, Size};
 use crate::node::{RetainedNode, RetainedTree, TextCache};
@@ -59,6 +61,16 @@ pub struct TextMeasureOut {
 pub trait TextMeasurer {
     fn custom_size(&self, _key: crate::view::Key, _font: FontId, _available: Size) -> Size {
         Size::zero()
+    }
+
+    fn custom_size_styled(
+        &self,
+        key: crate::view::Key,
+        font: FontId,
+        available: Size,
+        _metrics: crate::part_style::PartMetrics,
+    ) -> Size {
+        self.custom_size(key, font, available)
     }
 
     fn layout_custom(
@@ -207,6 +219,7 @@ fn measure_leaf(
     let letter_spacing = n.props.letter_spacing;
     let line_spacing = n.props.line_spacing;
     let icon = n.props.icon;
+    let min_width = n.props.min.max(0) as u32;
 
     match kind {
         NodeKind::Label => {
@@ -240,24 +253,13 @@ fn measure_leaf(
             let h = resolve_axis_size(height_prop, tm.size.height.saturating_add(pad_h), c.max_h);
             c.clamp_size(Size::new(w, h))
         }
-        NodeKind::Button => {
-            let part = tree.part_styles.get_ref(n.key);
+        NodeKind::Button | NodeKind::Tab => {
+            let part = tree.part_styles.get(usize::from(slot));
             let avail_w = resolve_axis_max(width_prop, c.max_w);
             let (icon_w, icon_gap, icon_pos) = if icon != IconKind::None {
-                let sz = u32::from(
-                    part.and_then(|p| p.icon_size())
-                        .unwrap_or(BUTTON_ICON_SIZE as u8),
-                );
-                let gp = u32::from(
-                    part.and_then(|p| p.icon_gap())
-                        .unwrap_or(BUTTON_ICON_GAP as u8),
-                );
-                (
-                    sz,
-                    gp,
-                    part.and_then(|p| p.icon_pos())
-                        .unwrap_or(IconPosition::Left),
-                )
+                let sz = u32::from(part.icon_size().unwrap_or(BUTTON_ICON_SIZE as u8));
+                let gp = u32::from(part.icon_gap().unwrap_or(BUTTON_ICON_GAP as u8));
+                (sz, gp, part.icon_pos().unwrap_or(IconPosition::Left))
             } else {
                 (0, 0, IconPosition::Left)
             };
@@ -292,18 +294,29 @@ fn measure_leaf(
                 ellipsis,
             };
 
-            let content_w = if vert_icon {
+            let mut content_w = if vert_icon {
                 tm.size.width.max(icon_w).saturating_add(pad_w)
             } else {
                 tm.size.width.saturating_add(pad_w + icon_space)
             };
+            if kind == NodeKind::Tab {
+                content_w = content_w.max(min_width);
+            }
             let content_h = if vert_icon {
                 tm.size.height.saturating_add(icon_w + icon_gap + pad_h)
             } else {
                 tm.size.height.max(icon_w.max(14)).saturating_add(pad_h)
             };
             let w = resolve_axis_size(width_prop, content_w, c.max_w);
-            let h = resolve_axis_size(height_prop, content_h, c.max_h);
+            let h = resolve_axis_size(
+                height_prop,
+                if kind == NodeKind::Tab {
+                    content_h.max(min_width)
+                } else {
+                    content_h
+                },
+                c.max_h,
+            );
             c.clamp_size(Size::new(w, h))
         }
         NodeKind::Toggle => {
@@ -317,10 +330,11 @@ fn measure_leaf(
             c.clamp_size(Size::new(w, h))
         }
         NodeKind::Custom => {
-            let content = measurer.custom_size(
+            let content = measurer.custom_size_styled(
                 n.key,
                 font,
                 Size::new(c.max_w.saturating_sub(pad_w), c.max_h.saturating_sub(pad_h)),
+                tree.part_styles.get(usize::from(slot)).metrics(),
             );
             let w = resolve_axis_size(width_prop, content.width.saturating_add(pad_w), c.max_w);
             let h = resolve_axis_size(height_prop, content.height.saturating_add(pad_h), c.max_h);
@@ -397,7 +411,7 @@ fn measure_iterative(
         let top = sp - 1;
         let slot = stack[top].slot;
         let c = stack[top].constraints;
-        let n_kind = tree.nodes[slot as usize].kind;
+        let n_kind = tree.nodes[slot as usize].kind.layout_kind();
         let n_occupied = tree.nodes[slot as usize].occupied;
         let n_visible = tree.nodes[slot as usize].props.visible();
 
@@ -586,6 +600,7 @@ fn measure_iterative(
                 | NodeKind::Stack
                 | NodeKind::Modal
                 | NodeKind::Wrap
+                | NodeKind::TabBar
                 | NodeKind::CustomContainer => {
                     if let Some(first) = first_visible_child(tree, first_child) {
                         stack[top].phase = 2;
@@ -825,10 +840,7 @@ fn measure_iterative(
                         let clamped = c.clamp_size(Size::new(w, h));
                         tree.nodes[slot as usize].content_height = content_main;
                         tree.nodes[slot as usize].measured_size = clamped;
-                        let vp = if is_x { clamped.width } else { clamped.height };
-                        let max_scroll = content_main.saturating_sub(vp) as i32;
-                        tree.nodes[slot as usize].scroll_y =
-                            tree.nodes[slot as usize].scroll_y.clamp(0, max_scroll);
+                        // Arrangement clamps against the final allocated viewport.
                         sp -= 1;
                     }
                 }
@@ -860,6 +872,7 @@ fn measure_iterative(
                 | NodeKind::Stack
                 | NodeKind::Modal
                 | NodeKind::Wrap
+                | NodeKind::TabBar
                 | NodeKind::CustomContainer => {
                     stack[top].non_fill_used = stack[top].non_fill_used.max(prev_sz.width);
                     stack[top].cross_max = stack[top].cross_max.max(prev_sz.height);
@@ -880,6 +893,23 @@ fn measure_iterative(
                         sp += 1;
                     } else {
                         match n_kind {
+                            NodeKind::TabBar => {
+                                let plan =
+                                    tabs::BarLayout::measure(tree, slot, stack[top].inner_max_w);
+                                let node = &mut tree.nodes[slot as usize];
+                                node.measured_size = c.clamp_size(Size::new(
+                                    resolve_axis_size(
+                                        node.props.width,
+                                        plan.width + node.props.padding.horizontal(),
+                                        c.max_w,
+                                    ),
+                                    resolve_axis_size(
+                                        node.props.height,
+                                        plan.height + node.props.padding.vertical(),
+                                        c.max_h,
+                                    ),
+                                ));
+                            }
                             NodeKind::Wrap => {
                                 finalize_wrap_measure(tree, slot, c, stack[top].inner_max_w);
                             }
@@ -1475,7 +1505,7 @@ fn arrange_iterative(
                 continue;
             }
 
-            let kind = tree.nodes[slot as usize].kind;
+            let kind = tree.nodes[slot as usize].kind.layout_kind();
             let prev_rect = tree.nodes[slot as usize].layout_rect;
             let rect = frame.rect_or_content;
             let own_clip = match kind {
@@ -1484,40 +1514,16 @@ fn arrange_iterative(
                 _ => frame.clip,
             };
 
-            let mut ink = rect;
             let padding = tree.nodes[slot as usize].props.padding;
-            let align_cross = tree.nodes[slot as usize].props.align_cross;
-            let focusable = tree.nodes[slot as usize].props.focusable();
             let border_width = tree.nodes[slot as usize].props.border_width as u32;
-            let text_cache = tree.nodes[slot as usize].text_cache;
             let first_child = tree.nodes[slot as usize].first_child;
             let gap = tree.nodes[slot as usize].props.gap;
-
-            if kind == NodeKind::Label && text_cache.valid {
-                let inner = rect.inset(
-                    padding.left as u32,
-                    padding.top as u32,
-                    padding.right as u32,
-                    padding.bottom as u32,
-                );
-                let mut text_y = inner.y;
-                if align_cross == Align::Center && inner.h > text_cache.size.height {
-                    text_y += ((inner.h - text_cache.size.height) / 2) as i32;
-                } else if align_cross == Align::End && inner.h > text_cache.size.height {
-                    text_y += (inner.h - text_cache.size.height) as i32;
-                }
-                ink = ink.union(text_cache.rel_ink.translate(inner.x, text_y));
-            }
-            if focusable {
-                ink = ink.expand(2);
-            }
 
             {
                 let n = &mut tree.nodes[slot as usize];
                 n.layout_rect = rect;
-                n.ink_rect = ink;
                 n.clip_rect = own_clip;
-                n.visible_rect = ink.intersect(own_clip);
+                refresh_node_ink_rect(n);
             }
 
             if !kind.is_container() {
@@ -1655,8 +1661,7 @@ fn arrange_iterative(
                     total_main = total_main
                         .saturating_add((vis_count.saturating_sub(1) as u32) * (gap as u32));
                     tree.nodes[slot as usize].content_height = total_main;
-                    let vp_extent = if is_x { rect.w } else { rect.h };
-                    let max_scroll = total_main.saturating_sub(vp_extent) as i32;
+                    let max_scroll = tree.nodes[slot as usize].scroll_limit().unwrap_or(0);
                     let scroll_off = tree.nodes[slot as usize].scroll_y.clamp(0, max_scroll);
                     tree.nodes[slot as usize].scroll_y = scroll_off;
 
@@ -1701,6 +1706,16 @@ fn arrange_iterative(
                     stack[top].remaining = 0;
                     stack[top].w_total = 0;
                 }
+                NodeKind::TabBar => {
+                    let plan = tabs::BarLayout::measure(tree, slot, content.w);
+                    plan.arrange(tree, slot, content, child_clip, prev_rect.w != rect.w);
+                    stack[top].phase = 1;
+                    stack[top].next_child = first_visible_child(tree, first_child)
+                        .and_then(SlotLink::from_slot_u16)
+                        .unwrap_or(SlotLink::NONE);
+                    stack[top].rect_or_content = content;
+                    stack[top].clip = child_clip;
+                }
                 NodeKind::CustomContainer => {
                     arrange_custom_children(tree, slot, prev_rect, content, measurer);
                     stack[top].phase = 1;
@@ -1723,7 +1738,7 @@ fn arrange_iterative(
                 .and_then(SlotLink::from_slot_u16)
                 .unwrap_or(SlotLink::NONE);
 
-            let kind = tree.nodes[slot as usize].kind;
+            let kind = tree.nodes[slot as usize].kind.layout_kind();
             let align_cross = tree.nodes[slot as usize].props.align_cross;
             let gap = tree.nodes[slot as usize].props.gap as i64;
             let content = frame.rect_or_content;
@@ -1969,7 +1984,7 @@ fn arrange_iterative(
                     stack[top].w_total = rh.max(outer_h);
                     rect
                 }
-                NodeKind::CustomContainer => tree.nodes[ch as usize].ink_rect,
+                NodeKind::CustomContainer | NodeKind::TabBar => tree.nodes[ch as usize].ink_rect,
                 _ => {
                     let cn = &tree.nodes[ch as usize];
                     let m = tree.layout_extras.get(cn.key).margin;
@@ -2003,23 +2018,30 @@ fn arrange_iterative(
             };
 
             let child_extra = tree.layout_extras.get(tree.nodes[ch as usize].key);
-            let child_rect =
-                if !child_rect.is_empty() && (child_extra.offset_x != 0 || child_extra.offset_y != 0)
-                {
-                    child_rect.translate(
-                        i32::from(child_extra.offset_x),
-                        i32::from(child_extra.offset_y),
-                    )
-                } else {
-                    child_rect
-                };
+            let child_rect = child_extra
+                .motion
+                .arrange(child_extra.fit_slot(child_rect), content);
+            let child_rect = if !child_rect.is_empty()
+                && (child_extra.offset_x != 0 || child_extra.offset_y != 0)
+            {
+                child_rect.translate(
+                    i32::from(child_extra.offset_x),
+                    i32::from(child_extra.offset_y),
+                )
+            } else {
+                child_rect
+            };
 
             if sp < stack.len() {
                 stack[sp] = ArrangeDepthFrame {
                     slot: ch,
                     phase: 0,
                     rect_or_content: child_rect,
-                    clip: child_clip,
+                    clip: if kind == NodeKind::TabBar {
+                        tree.nodes[ch as usize].clip_rect
+                    } else {
+                        child_clip
+                    },
                     ..ArrangeDepthFrame::EMPTY
                 };
                 sp += 1;
@@ -2033,29 +2055,52 @@ pub fn ensure_visible(tree: &mut RetainedTree, target_slot: u16, screen: Rect) -
         return None;
     }
 
-    let mut anc = tree.nodes[target_slot as usize].parent;
-    let mut scroll_slot: Option<u16> = None;
-    while let Some(anc_idx) = anc.get_u16() {
-        if matches!(
-            tree.nodes[anc_idx as usize].kind,
-            NodeKind::ScrollY | NodeKind::ScrollX
-        ) {
-            scroll_slot = Some(anc_idx);
+    let mut ancestor = tree.nodes[target_slot as usize].parent;
+    let mut target = tree.nodes[target_slot as usize].ink_rect;
+    let mut outermost_changed = None;
+    while let Some(slot) = ancestor.get_u16() {
+        let sv = &tree.nodes[slot as usize];
+        ancestor = sv.parent;
+        let Some(limit) = sv.scroll_limit() else {
+            continue;
+        };
+        let viewport = sv.layout_rect;
+        let is_x = sv.kind.scrolls_x();
+        let offset = sv.scroll_y;
+        let next = offset
+            .saturating_add(if sv.kind == NodeKind::TabBar {
+                tabs::reveal_offset(tree.nodes[target_slot as usize].clip_rect, target)
+            } else {
+                reveal_delta(sv, target)
+            })
+            .clamp(0, limit);
+        if next != offset {
+            tree.nodes[slot as usize].scroll_y = next;
+            relayout_scroll_subtree(tree, slot, screen);
+            let movement = offset - next;
+            target = if is_x {
+                target.translate(movement, 0)
+            } else {
+                target.translate(0, movement)
+            };
+            outermost_changed = Some(slot);
+        }
+        target = target.intersect(viewport);
+        if target.is_empty() {
             break;
         }
-        anc = tree.nodes[anc_idx as usize].parent;
     }
-    let scroll_idx = scroll_slot?;
+    outermost_changed
+}
 
-    let sv = &tree.nodes[scroll_idx as usize];
-    let is_x = sv.kind == NodeKind::ScrollX;
+fn reveal_delta(sv: &crate::node::RetainedNode, target_rect: Rect) -> i32 {
+    let is_x = sv.kind.scrolls_x();
     let vp = sv.layout_rect.inset(
         sv.props.padding.left as u32,
         sv.props.padding.top as u32,
         sv.props.padding.right as u32,
         sv.props.padding.bottom as u32,
     );
-    let target_rect = tree.nodes[target_slot as usize].ink_rect;
     let mut delta = 0i32;
 
     if is_x {
@@ -2072,25 +2117,7 @@ pub fn ensure_visible(tree: &mut RetainedTree, target_slot: u16, screen: Rect) -
         delta = (target_rect.bottom64() - vp.bottom64()) as i32;
     }
 
-    if delta == 0 {
-        return None;
-    }
-
-    let vp_extent = if is_x {
-        sv.layout_rect.w
-    } else {
-        sv.layout_rect.h
-    };
-    let max_scroll = sv.content_height.saturating_sub(vp_extent) as i32;
-    let old_scroll = sv.scroll_y;
-    let new_scroll = old_scroll.saturating_add(delta).clamp(0, max_scroll);
-    if new_scroll == old_scroll {
-        return None;
-    }
-
-    tree.nodes[scroll_idx as usize].scroll_y = new_scroll;
-    relayout_scroll_subtree(tree, scroll_idx, screen);
-    Some(scroll_idx)
+    delta
 }
 
 pub fn compute_text_origin(node: &RetainedNode) -> Point {
@@ -2120,7 +2147,10 @@ pub fn refresh_node_ink_rect(node: &mut RetainedNode) {
         ink = ink.union(node.text_cache.rel_ink.translate(origin.x, origin.y));
     }
     if node.props.focusable() {
-        ink = ink.expand(2);
+        let ring = node.props.focus_ring();
+        if ring.enabled {
+            ink = ink.expand(u32::from(ring.offset));
+        }
     }
     node.ink_rect = ink;
     node.visible_rect = ink.intersect(node.clip_rect);

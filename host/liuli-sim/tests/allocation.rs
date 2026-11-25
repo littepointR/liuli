@@ -186,6 +186,30 @@ fn runtime_loop_performs_zero_heap_allocations() {
         let _ = engine
             .present_sync(&mut screen, &mut scratch)
             .map_err(|_| ())?;
+        // Also count the model-owned clock, curve, geometry and final damage transaction.
+        let mut motion = Engine::<MovingLabel>::new_in_place(
+            &mut storage,
+            Tween::at(0),
+            font,
+            rect,
+            InstantMs(0),
+        )
+        .map_err(|_| ())?;
+        motion
+            .present_sync(&mut screen, &mut scratch)
+            .map_err(|_| ())?;
+        motion.send((), InstantMs(2)).map_err(|_| ())?;
+        if motion.wakeup(InstantMs(2)) != NextWakeup::At(InstantMs(18)) {
+            return Err(());
+        }
+        motion.try_advance(InstantMs(18), true).map_err(|_| ())?;
+        motion.tick(InstantMs(37)).map_err(|_| ())?;
+        motion
+            .present_sync(&mut screen, &mut scratch)
+            .map_err(|_| ())?;
+        if motion.model().current() != 1000 || motion.wakeup(InstantMs(37)) != NextWakeup::OnEvent {
+            return Err(());
+        }
         Ok(())
     })();
 
@@ -205,6 +229,39 @@ fn runtime_loop_performs_zero_heap_allocations() {
         reallocs, 0,
         "unexpected realloc calls in hot loop: {reallocs}"
     );
+}
+
+struct MovingLabel;
+impl App for MovingLabel {
+    type Model = Tween;
+    type Msg = ();
+    fn animations(model: &mut Tween, bind: &mut dyn FnMut(Key, &mut dyn Animation)) {
+        bind(Key(2), model);
+    }
+    fn update(model: &mut Tween, (): (), now: InstantMs) -> Change {
+        model.animate_to(
+            now,
+            1000,
+            30,
+            Curve::Bezier(CubicBezier::new(250, 100, 250, 1000).unwrap()),
+        );
+        Change::Unchanged // The first visual change is due in 16 ms.
+    }
+    fn view(model: &Tween, ui: &mut ViewBuilder<'_>) -> Result<(), BuildError> {
+        ui.root(Key(1), NodeProps::new(), |r| {
+            r.label(Key(2), NodeProps::new().text(TextRef::Static("A")))?;
+            r.set_layout_motion(
+                Key(2),
+                LayoutMotion {
+                    x: (model.current() / 2) as i16,
+                    ..LayoutMotion::IDENTITY
+                },
+            )
+        })
+    }
+    fn on_action(_: &Tween, _: UiAction) -> Option<()> {
+        None
+    }
 }
 
 struct CountingSpiBus {

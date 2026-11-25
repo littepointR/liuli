@@ -343,7 +343,7 @@ pub fn spinner(
     now: InstantMs,
     theme: Theme,
 ) -> Result<(), BuildError> {
-    let phase = ((now.0 / 16) % 360) as u32 + 1;
+    let phase = (u32::from(spinner_start_deg(now)) << 8) | spinner_sweep_deg(now) as u32;
     ui.custom(
         key,
         NodeProps::new()
@@ -363,6 +363,10 @@ pub fn spinner_sweep_deg(now: InstantMs) -> i16 {
     60 + tri
 }
 
+fn spinner_start_deg(now: InstantMs) -> u16 {
+    ((now.0 % 1000) * 360 / 1000) as u16
+}
+
 /// Paint an animated indeterminate circular comet arc driven purely by `now`.
 pub fn paint_spinner(
     now: InstantMs,
@@ -379,7 +383,7 @@ pub fn paint_spinner(
     let stroke_w = (min_dim / 8).clamp(2, 6) as u8;
     let rad = ((min_dim / 2).saturating_sub(u32::from(stroke_w) / 2 + 1)).max(2) as u16;
     let track = props.bg().unwrap_or(Rgb565::new(6, 12, 6));
-    let start_deg = ((now.0 * 360) / 1000) % 360;
+    let start_deg = spinner_start_deg(now);
     let sweep = spinner_sweep_deg(now);
 
     canvas.arc(Point::new(cx, cy), rad, 0, 360, stroke_w, false, track)?;

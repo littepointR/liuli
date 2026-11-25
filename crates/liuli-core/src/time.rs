@@ -164,6 +164,7 @@ pub enum AnimProp {
     Custom1 = 3,
     Custom2 = 4,
     Custom3 = 5,
+    Style = 6,
 }
 
 impl AnimProp {
@@ -184,10 +185,41 @@ pub enum Easing {
     #[default]
     Linear = 0,
     EaseOutCubic = 1,
+    EaseInQuad,
+    EaseOutQuad,
+    EaseInOutQuad,
+    EaseInCubic,
+    EaseInOutCubic,
+    SmoothStep,
+    SmootherStep,
+    EaseOutBack,
+    EaseOutBounce,
+    StepEnd,
 }
 
 impl Easing {
-    /// Fixed-point `[0..=1000]` easing curve evaluated strictly in `i64`.
+    pub const ALL: [Self; 12] = [
+        Self::Linear,
+        Self::EaseOutCubic,
+        Self::EaseInQuad,
+        Self::EaseOutQuad,
+        Self::EaseInOutQuad,
+        Self::EaseInCubic,
+        Self::EaseInOutCubic,
+        Self::SmoothStep,
+        Self::SmootherStep,
+        Self::EaseOutBack,
+        Self::EaseOutBounce,
+        Self::StepEnd,
+    ];
+    pub(crate) const fn from_id(id: u8) -> Self {
+        if (id as usize) < Self::ALL.len() {
+            Self::ALL[id as usize]
+        } else {
+            Self::Linear
+        }
+    }
+    /// Fixed-point time in thousandths. EaseOutBack intentionally overshoots.
     #[inline]
     pub const fn apply(self, q: i64) -> i64 {
         let clamped = if q < 0 {
@@ -203,47 +235,92 @@ impl Easing {
                 let inv = 1000 - clamped;
                 1000 - (inv * inv * inv) / 1_000_000
             }
+            Self::EaseInQuad => clamped * clamped / 1000,
+            Self::EaseOutQuad => 1000 - (1000 - clamped).pow(2) / 1000,
+            Self::EaseInOutQuad if clamped < 500 => 2 * clamped.pow(2) / 1000,
+            Self::EaseInOutQuad => 1000 - 2 * (1000 - clamped).pow(2) / 1000,
+            Self::EaseInCubic => clamped.pow(3) / 1_000_000,
+            Self::EaseInOutCubic if clamped < 500 => 4 * clamped.pow(3) / 1_000_000,
+            Self::EaseInOutCubic => 1000 - 4 * (1000 - clamped).pow(3) / 1_000_000,
+            Self::SmoothStep => clamped.pow(2) * (3000 - 2 * clamped) / 1_000_000,
+            Self::SmootherStep => {
+                clamped.pow(3) * (6 * clamped.pow(2) - 15000 * clamped + 10_000_000)
+                    / 1_000_000_000_000
+            }
+            Self::EaseOutBack => {
+                let u = clamped - 1000;
+                1000 + u * u * (2702 * u + 1_702_000) / 1_000_000_000
+            }
+            Self::EaseOutBounce => {
+                // Successive parabolas rebound to 1/4, 1/16 and 1/64 of the initial height.
+                let t = 11 * clamped;
+                let (d, floor) = if t < 4000 {
+                    (t, 0)
+                } else if t < 8000 {
+                    (t - 6000, 750)
+                } else if t < 10000 {
+                    (t - 9000, 938)
+                } else {
+                    (t - 10500, 985)
+                };
+                let value = floor + d * d / 16000;
+                if value > 1000 { 1000 } else { value }
+            }
+            Self::StepEnd => {
+                if clamped == 1000 {
+                    1000
+                } else {
+                    0
+                }
+            }
         }
     }
 }
 
 /// A scalar animation owned by an application or component. Its units are set by the caller.
-/// Sample in App::on_timer and expose the next deadline through App::next_deadline.
+/// Register with `App::animations` and read `current()` in the view.
 #[derive(Debug, Clone, Copy)]
 pub struct Tween {
     from: i32,
     to: i32,
-    start: InstantMs,
-    duration_ms: u32,
-    easing: Easing,
+    clock: crate::animation::Playback,
+    easing: crate::animation::Curve,
 }
 impl Tween {
     pub const fn at(value: i32) -> Self {
         Self {
             from: value,
             to: value,
-            start: InstantMs(0),
-            duration_ms: 0,
-            easing: Easing::Linear,
+            clock: crate::animation::Playback::IDLE,
+            easing: crate::animation::Curve::Builtin(Easing::Linear),
         }
     }
     pub fn value(&self, now: InstantMs) -> i32 {
-        let elapsed = now.saturating_sub(self.start);
-        if elapsed >= u64::from(self.duration_ms) {
-            return self.to;
-        }
-        let progress = (elapsed * 1000 / u64::from(self.duration_ms)) as i64;
-        let delta = i64::from(self.to) - i64::from(self.from);
-        (i64::from(self.from) + delta * self.easing.apply(progress) / 1000) as i32
+        self.sample(self.clock.progress_at(now))
     }
-    pub fn animate_to(&mut self, now: InstantMs, target: i32, duration_ms: u32, easing: Easing) {
-        *self = Self {
-            from: self.value(now),
-            to: target,
-            start: now,
-            duration_ms,
-            easing,
-        };
+    fn sample(&self, progress: u16) -> i32 {
+        crate::animation::interpolate(self.from, self.to, self.easing.sample(progress))
+    }
+    pub fn current(&self) -> i32 {
+        self.sample(self.clock.progress())
+    }
+    pub const fn running(&self) -> bool {
+        self.clock.running()
+    }
+    pub fn animate_to(
+        &mut self,
+        now: InstantMs,
+        target: i32,
+        duration_ms: u32,
+        easing: impl Into<crate::animation::Curve>,
+    ) {
+        self.from = self.value(now);
+        self.to = target;
+        self.easing = easing.into();
+        self.clock.play(
+            now,
+            crate::animation::Timing::once(if self.from == target { 0 } else { duration_ms }),
+        );
     }
     pub fn cancel(&mut self, now: InstantMs) {
         *self = Self::at(self.value(now));
@@ -253,9 +330,20 @@ impl Tween {
         now: InstantMs,
         frame_ms: core::num::NonZeroU32,
     ) -> Option<InstantMs> {
-        let end = self.start.saturating_add(self.duration_ms.into());
-        (self.from != self.to && now < end)
+        let end = self.clock.end_once();
+        (self.clock.running() && now < end)
             .then(|| end.min(now.saturating_add(frame_ms.get().into())))
+    }
+}
+impl crate::animation::Animation for Tween {
+    fn advance(&mut self, now: InstantMs) -> bool {
+        self.clock.advance(now)
+    }
+    fn next_wakeup(&self, now: InstantMs) -> NextWakeup {
+        self.clock.next_wakeup(now)
+    }
+    fn cancel(&mut self, now: InstantMs) {
+        Tween::cancel(self, now);
     }
 }
 #[cfg(test)]
@@ -306,27 +394,27 @@ impl AnimTrack {
     };
 
     pub fn evaluate_at(&self, now: InstantMs) -> i32 {
-        if self.duration_ms == 0 {
+        if self.is_finished_at(now) {
             return self.end_val;
         }
         let elapsed = now.saturating_sub(self.start_ms);
-        if elapsed >= self.duration_ms as u64 {
-            return self.end_val;
-        }
         let delta = self.end_val as i64 - self.start_val as i64;
         let dur = self.duration_ms as i64;
         match self.easing {
-            Easing::Linear => (self.start_val as i64 + (delta * (elapsed as i64)) / dur) as i32,
-            Easing::EaseOutCubic => {
+            Easing::Linear => {
+                let step = delta.unsigned_abs() * elapsed / u64::from(self.duration_ms);
+                (i64::from(self.start_val) + delta.signum() * step as i64) as i32
+            }
+            _ => {
                 let q = ((elapsed as i64) * 1000) / dur;
                 let eased = self.easing.apply(q);
-                (self.start_val as i64 + (delta * eased) / 1000) as i32
+                crate::animation::interpolate(self.start_val, self.end_val, eased as i16)
             }
         }
     }
 
     pub fn is_finished_at(&self, now: InstantMs) -> bool {
-        self.duration_ms == 0 || now.saturating_sub(self.start_ms) >= self.duration_ms as u64
+        self.duration_ms == 0 || now >= self.start_ms.saturating_add(self.duration_ms.into())
     }
 }
 
@@ -357,13 +445,18 @@ pub const MAX_REPEAT_STEPS_PER_ADVANCE: u16 = 8;
 #[derive(Clone, Debug)]
 pub struct AnimPool {
     tracks: [AnimTrack; MAX_ANIMATIONS],
-    overrides: [AnimOverride; MAX_ANIMATIONS],
+    curves: [Option<&'static crate::animation::StyleCurve>; MAX_ANIMATIONS],
+    // Keep the zero-initialized pool in .bss. Tags are zero for empty or 1 + AnimProp.
+    overrides: [(Key, i32); MAX_ANIMATIONS],
+    override_props: [u8; MAX_ANIMATIONS],
 }
 
 impl AnimPool {
     pub const ZERO: Self = Self {
         tracks: [AnimTrack::ZERO; MAX_ANIMATIONS],
-        overrides: [AnimOverride::ZERO; MAX_ANIMATIONS],
+        curves: [None; MAX_ANIMATIONS],
+        overrides: [(Key(0), 0); MAX_ANIMATIONS],
+        override_props: [0; MAX_ANIMATIONS],
     };
 
     pub const fn new() -> Self {
@@ -372,13 +465,15 @@ impl AnimPool {
 
     pub fn reset(&mut self) {
         self.tracks = [AnimTrack::ZERO; MAX_ANIMATIONS];
-        self.overrides = [AnimOverride::ZERO; MAX_ANIMATIONS];
+        self.override_props = [0; MAX_ANIMATIONS];
     }
 
     #[inline]
     pub fn copy_from(&mut self, other: &Self) {
         self.tracks = other.tracks;
+        self.curves = other.curves;
         self.overrides = other.overrides;
+        self.override_props = other.override_props;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -416,6 +511,32 @@ impl AnimPool {
         dirty_rect: Rect,
         easing: Easing,
     ) -> Option<Rect> {
+        self.start_with_curve(
+            key,
+            prop,
+            default_start,
+            end_val,
+            now,
+            duration_ms,
+            dirty_rect,
+            easing,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn start_with_curve(
+        &mut self,
+        key: Key,
+        prop: AnimProp,
+        default_start: i32,
+        end_val: i32,
+        now: InstantMs,
+        duration_ms: u32,
+        dirty_rect: Rect,
+        easing: Easing,
+        curve: Option<&'static crate::animation::StyleCurve>,
+    ) -> Option<Rect> {
         let current = self.current_value(key, prop, now).unwrap_or(default_start);
         self.set_override(key, prop, current);
 
@@ -430,8 +551,9 @@ impl AnimPool {
         }
 
         // Update existing track if present
-        for t in &mut self.tracks {
+        for (i, t) in self.tracks.iter_mut().enumerate() {
             if t.active && t.key == key && t.prop == prop {
+                self.curves[i] = curve;
                 t.easing = easing;
                 t.start_val = current;
                 t.end_val = end_val;
@@ -445,8 +567,9 @@ impl AnimPool {
         }
 
         // Insert into free slot
-        for t in &mut self.tracks {
+        for (i, t) in self.tracks.iter_mut().enumerate() {
             if !t.active {
+                self.curves[i] = curve;
                 *t = AnimTrack {
                     active: true,
                     easing,
@@ -470,17 +593,25 @@ impl AnimPool {
     }
 
     pub fn current_value(&self, key: Key, prop: AnimProp, now: InstantMs) -> Option<i32> {
-        for t in &self.tracks {
+        for (i, t) in self.tracks.iter().enumerate() {
             if t.active && t.key == key && t.prop == prop {
-                return Some(t.evaluate_at(now));
+                return Some(self.sample(i, now));
             }
         }
-        for o in &self.overrides {
-            if o.active && o.key == key && o.prop == prop {
-                return Some(o.value);
+        self.override_slot(key, prop).map(|i| self.overrides[i].1)
+    }
+
+    fn sample(&self, i: usize, now: InstantMs) -> i32 {
+        let t = &self.tracks[i];
+        if let Some(curve) = self.curves[i] {
+            if t.is_finished_at(now) {
+                return t.end_val;
             }
+            let progress = now.saturating_sub(t.start_ms) * 1000 / u64::from(t.duration_ms);
+            crate::animation::interpolate(t.start_val, t.end_val, curve.sample(progress as u16))
+        } else {
+            t.evaluate_at(now)
         }
-        None
     }
 
     pub fn cached_value(&self, key: Key, prop: AnimProp) -> Option<i32> {
@@ -489,19 +620,18 @@ impl AnimPool {
                 return Some(t.current_val);
             }
         }
-        for o in &self.overrides {
-            if o.active && o.key == key && o.prop == prop {
-                return Some(o.value);
-            }
-        }
-        None
+        self.override_slot(key, prop).map(|i| self.overrides[i].1)
     }
 
-    pub(crate) fn target_value(&self, key: Key, prop: AnimProp) -> Option<i32> {
+    pub(crate) fn active_target(&self, key: Key, prop: AnimProp) -> Option<i32> {
         self.tracks
             .iter()
             .find(|t| t.active && t.key == key && t.prop == prop)
             .map(|t| t.end_val)
+    }
+
+    pub(crate) fn target_value(&self, key: Key, prop: AnimProp) -> Option<i32> {
+        self.active_target(key, prop)
             .or_else(|| self.cached_value(key, prop))
     }
 
@@ -513,15 +643,22 @@ impl AnimPool {
         }
     }
 
+    pub fn clear_property(&mut self, key: Key, prop: AnimProp) {
+        self.remove_track(key, prop);
+        if let Some(i) = self.override_slot(key, prop) {
+            self.override_props[i] = 0;
+        }
+    }
+
     pub fn cancel_for_key(&mut self, key: Key) {
         for t in &mut self.tracks {
             if t.active && t.key == key {
                 t.active = false;
             }
         }
-        for o in &mut self.overrides {
-            if o.active && o.key == key {
-                o.active = false;
+        for (entry, prop) in self.overrides.iter().zip(&mut self.override_props) {
+            if entry.0 == key {
+                *prop = 0;
             }
         }
     }
@@ -532,11 +669,11 @@ impl AnimPool {
             if !self.tracks[idx].active {
                 continue;
             }
-            let next_val = self.tracks[idx].evaluate_at(now);
+            let next_val = self.sample(idx, now);
             let finished = self.tracks[idx].is_finished_at(now);
+            self.tracks[idx].last_sample_ms = now;
             if next_val != self.tracks[idx].current_val || finished {
                 self.tracks[idx].current_val = next_val;
-                self.tracks[idx].last_sample_ms = now;
                 on_dirty(self.tracks[idx].dirty_rect);
                 changed = true;
             }
@@ -595,30 +732,20 @@ impl AnimPool {
         }
     }
 
+    fn override_slot(&self, key: Key, prop: AnimProp) -> Option<usize> {
+        self.overrides
+            .iter()
+            .zip(&self.override_props)
+            .position(|(entry, tag)| entry.0 == key && *tag == prop as u8 + 1)
+    }
+
     fn set_override(&mut self, key: Key, prop: AnimProp, val: i32) {
-        for o in &mut self.overrides {
-            if o.active && o.key == key && o.prop == prop {
-                o.value = val;
-                return;
-            }
-        }
-        for o in &mut self.overrides {
-            if !o.active {
-                *o = AnimOverride {
-                    active: true,
-                    key,
-                    prop,
-                    value: val,
-                };
-                return;
-            }
-        }
-        self.overrides[0] = AnimOverride {
-            active: true,
-            key,
-            prop,
-            value: val,
-        };
+        let slot = self
+            .override_slot(key, prop)
+            .or_else(|| self.override_props.iter().position(|&tag| tag == 0))
+            .unwrap_or(0);
+        self.overrides[slot] = (key, val);
+        self.override_props[slot] = prop as u8 + 1;
     }
 }
 
@@ -870,7 +997,8 @@ impl ScrollPhysics {
 
             if self.velocity_q8.abs() < 32 && !self.is_overscrolled() {
                 self.velocity_q8 = 0;
-                if self.snap_step > 1 {
+                // Both ends are valid stops, including a final partial snap interval.
+                if self.snap_step > 1 && self.offset_q8 > min_q8 && self.offset_q8 < max_q8 {
                     let step = i32::from(self.snap_step);
                     let cur = self.offset();
                     let rel = cur - self.min_offset;

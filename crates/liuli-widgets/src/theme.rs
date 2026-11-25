@@ -508,7 +508,7 @@ impl Theme {
     }
 
     fn press_depth_style(self) -> PressDepth {
-        if self.effects.press_depth {
+        if self.effects.press_depth && !self.motion.reduced {
             PressDepth::custom(
                 self.motion.press_depth_ms,
                 self.motion.press_depth_scale,
@@ -610,10 +610,12 @@ impl Theme {
         } else if let Some(shadow) = self.resolved_shadow(spec.elevation) {
             effect = effect.with_shadow(shadow);
         }
-        effect = effect.with_press_depth(
+        effect = effect.with_press_depth(if self.motion.reduced {
+            PressDepth::OFF
+        } else {
             spec.press_depth_override
-                .unwrap_or_else(|| self.press_depth_style()),
-        );
+                .unwrap_or_else(|| self.press_depth_style())
+        });
 
         let mut material_label = "solid";
         let mut active_glass_layer: Option<Layer> = None;
@@ -747,9 +749,11 @@ impl Theme {
     #[track_caller]
     pub fn button(self, variant: ButtonVariant) -> NodeProps {
         let base = NodeProps {
+            parts: self.parts.resolve(crate::WidgetClass::BUTTON),
             style_source: self.source.declared().with_variant(variant.name()),
             ..self.control()
-        };
+        }
+        .state_motion(self.motion.state(MotionState::Pressed, None));
         match variant {
             ButtonVariant::Surface => base,
             ButtonVariant::Primary => NodeProps {
@@ -834,6 +838,7 @@ impl Theme {
     #[track_caller]
     pub fn disabled_button(self) -> NodeProps {
         NodeProps {
+            parts: self.parts.resolve(crate::WidgetClass::BUTTON),
             style_source: self.source.declared().with_variant("disabled"),
             bg: Some(self.surface_alt),
             fg: self.text_muted,
@@ -865,6 +870,7 @@ impl Theme {
     #[track_caller]
     pub fn toggle(self, checked: bool) -> NodeProps {
         NodeProps {
+            parts: self.parts.resolve(crate::WidgetClass::TOGGLE),
             style_source: self.source.declared(),
             bg: Some(self.surface_alt),
             border_color: Some(self.border),
@@ -875,18 +881,19 @@ impl Theme {
             focus_color: self.focus,
             focus_ring: self.interaction.focus,
             checked,
-            anim_easing: self.motion.toggle_easing,
             width: Length::Px(self.density.toggle_width.into()),
             height: Length::Px(self.density.control_height.into()),
             clickable: true,
             focusable: true,
             ..NodeProps::new()
         }
+        .state_motion(self.motion.state(MotionState::Checked, None))
     }
 
     #[track_caller]
     pub fn slider(self, value: i16) -> NodeProps {
         NodeProps {
+            parts: self.parts.resolve(crate::WidgetClass::SLIDER),
             style_source: self.source.declared(),
             bg: Some(self.surface_alt),
             radius: self.shape.radius_md,
@@ -901,11 +908,13 @@ impl Theme {
             focusable: true,
             ..NodeProps::new()
         }
+        .state_motion(self.motion.state(MotionState::Value, None))
     }
 
     #[track_caller]
     pub fn progress_bar(self, value: i16) -> NodeProps {
         NodeProps {
+            parts: self.parts.resolve(crate::WidgetClass::PROGRESS),
             style_source: self.source.declared(),
             bg: Some(self.surface_alt),
             border_color: Some(self.border),
@@ -918,11 +927,13 @@ impl Theme {
             height: Length::Px(self.density.progress_height.into()),
             ..NodeProps::new()
         }
+        .state_motion(self.motion.state(MotionState::Value, None))
     }
 
     #[track_caller]
     pub fn sparkline(self) -> NodeProps {
         NodeProps {
+            parts: self.parts.resolve(crate::WidgetClass::SPARKLINE),
             style_source: self.source.declared(),
             bg: Some(self.surface),
             border_color: Some(self.border),
@@ -1088,7 +1099,8 @@ impl Theme {
         let elevations = style.elevations.unwrap_or(self.elevations);
         let glass = style.glass.unwrap_or(self.glass);
         let interaction = style.interaction.unwrap_or(self.interaction);
-        let motion = style.motion.unwrap_or(self.motion);
+        let mut motion = style.motion.unwrap_or(self.motion);
+        motion.reduced |= self.motion.reduced;
         let effects = style.effects.unwrap_or(self.effects);
         let parts = style.parts.unwrap_or(self.parts);
 

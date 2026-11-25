@@ -6,8 +6,8 @@ use embedded_graphics::draw_target::{DrawTarget, DrawTargetExt};
 use embedded_graphics::geometry::Size;
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::primitives::{
-    Circle, Line, Primitive, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle, RoundedRectangle,
-    StrokeAlignment, Triangle,
+    Circle, ContainsPoint, Line, Primitive, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle,
+    RoundedRectangle, StrokeAlignment, Triangle,
 };
 use liuli_core::geometry::{Point, Rect, rgb565_to_u16};
 use liuli_core::paint::{CommandList, PaintCmd, SceneResources};
@@ -931,6 +931,29 @@ fn render_range<R: SceneResources + ?Sized, T: BandTextSource, A: crate::accel::
                 let shape = RoundedRectangle::with_equal_corners(rect.to_eg(), Size::new(r, r))
                     .into_styled(style);
                 let _ = draw_eg(target, clip, &shape);
+            }
+            PaintCmd::RoundedOverlay {
+                rect,
+                clip,
+                color,
+                alpha,
+                radius,
+            } => {
+                let area = rect.intersect(clip).intersect(band_rect);
+                let r = u32::from(radius).min(rect.w / 2).min(rect.h / 2);
+                let shape = RoundedRectangle::with_equal_corners(rect.to_eg(), Size::new(r, r));
+                let raw = rgb565_to_u16(color);
+                for dy in 0..area.h {
+                    let y = area.y + dy as i32;
+                    for dx in 0..area.w {
+                        let x = area.x + dx as i32;
+                        if shape.contains(Point::new(x, y)) {
+                            let i = (y - band_rect.y) as usize * target.width() as usize
+                                + (x - band_rect.x) as usize;
+                            target.blend_pixel_a4(i, raw, alpha);
+                        }
+                    }
+                }
             }
             PaintCmd::Overlay {
                 rect,

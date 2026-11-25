@@ -27,7 +27,7 @@ pub fn build_settings(
             let bright_txt = ui.text_fmt(format_args!("{:>3}%", model.settings.brightness))?;
             add_value_label(ui, tk::SET_VAL_BRIGHTNESS, bright_txt, 38, t)?;
 
-            let mut step_btn = NodeProps::new();
+            let mut step_btn = t.control();
             step_btn.width = Length::Px(24);
             step_btn.height = Length::Px(24);
             step_btn.padding = EdgeInsets::symmetric(4, 2);
@@ -37,7 +37,6 @@ pub fn build_settings(
             step_btn.radius = 5;
             step_btn.fg = t.text;
             step_btn.accent = t.surface_alt;
-            step_btn.focus_color = t.focus;
             step_btn.text_align = TextAlign::Center;
             step_btn.max_lines = 1;
             step_btn.focusable = true;
@@ -46,13 +45,12 @@ pub fn build_settings(
             step_btn.text = TextRef::Static("-");
             ui.button(tk::SET_BTN_BRIGHT_DEC, step_btn)?;
 
-            let mut sl_p = NodeProps::new();
+            let mut sl_p = t.control();
             sl_p.width = Length::Px(74);
             sl_p.height = Length::Px(24);
             sl_p.bg = Some(t.track_off);
             sl_p.accent = t.accent;
             sl_p.fg = t.knob;
-            sl_p.focus_color = t.focus;
             sl_p.value = model.settings.brightness;
             sl_p.min = 0;
             sl_p.max = 100;
@@ -117,7 +115,7 @@ pub fn build_settings(
         // Row 5: 恢复默认
         setting_row(ui, tk::SET_ROW_RESET, t, true, |ui| {
             add_row_label(ui, tk::SET_LBL_RESET, "恢复默认", t)?;
-            let mut reset_btn = NodeProps::new();
+            let mut reset_btn = t.control();
             reset_btn.width = Length::Px(84);
             reset_btn.height = Length::Px(26);
             reset_btn.padding = EdgeInsets::symmetric(8, 3);
@@ -127,7 +125,6 @@ pub fn build_settings(
             reset_btn.radius = 6;
             reset_btn.fg = t.danger_text;
             reset_btn.accent = t.surface_alt;
-            reset_btn.focus_color = t.focus;
             reset_btn.icon = IconKind::Reset;
             reset_btn.text = TextRef::Static("重设");
             reset_btn.max_lines = 1;
@@ -201,13 +198,12 @@ fn add_cubic_toggle(
     checked: bool,
     t: &Theme,
 ) -> Result<(), BuildError> {
-    let mut tp = NodeProps::new();
+    let mut tp = t.control();
     tp.width = Length::Px(46);
     tp.height = Length::Px(24);
     tp.bg = Some(t.track_off);
     tp.accent = t.accent;
     tp.fg = t.knob;
-    tp.focus_color = t.focus;
     tp.checked = checked;
     tp.focusable = true;
     tp.anim_easing = Easing::EaseOutCubic;

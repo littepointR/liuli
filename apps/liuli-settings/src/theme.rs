@@ -1,4 +1,4 @@
-use liuli::prelude::Rgb565;
+use liuli::prelude::{FocusRingStyle, NodeProps, Rgb565};
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct Theme {
@@ -18,6 +18,20 @@ pub struct Theme {
     pub track_off: Rgb565,
     pub knob: Rgb565,
     pub on_accent: Rgb565,
+}
+
+impl Theme {
+    /// The two v0.2 reference applications use square navigation outlines.
+    pub(crate) fn control(&self) -> NodeProps {
+        NodeProps {
+            focus_color: self.focus,
+            focus_ring: FocusRingStyle {
+                rounded: false,
+                ..FocusRingStyle::DEFAULT
+            },
+            ..NodeProps::new()
+        }
+    }
 }
 
 const fn rgb8(r: u8, g: u8, b: u8) -> Rgb565 {

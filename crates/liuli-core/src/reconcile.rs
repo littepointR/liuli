@@ -40,7 +40,7 @@ pub fn reconcile_into(
 
     candidate.reset();
     candidate.effects = draft.effects;
-    candidate.part_styles = draft.part_styles;
+    candidate.curves = draft.curves;
     candidate.layout_extras = draft.layout_extras;
     candidate.generation_hwm = active.generation_hwm;
     let tlen = draft.text_len as usize;
@@ -101,6 +101,10 @@ pub fn reconcile_into(
         }
     }
 
+    candidate
+        .part_styles
+        .copy_from_draft(&draft.part_styles, &draft_to_cand[..d_count]);
+
     // Track deleted or kind-changed nodes for damage, animation cleanup, and focus/capture cleanup.
     let mut outcome = ReconcileOutcome::default();
     for (old_idx, old) in active.nodes.iter().enumerate() {
@@ -109,7 +113,7 @@ pub fn reconcile_into(
         }
         outcome.tree_changed = true;
         if !old.visible_rect.is_empty() {
-            damage.add(old.visible_rect, screen);
+            damage.add(active.style_bounds(old_idx), screen);
         }
         anims.cancel_for_key(old.key);
         if focused_slot == Some(old_idx as u16) {
@@ -154,6 +158,11 @@ pub fn reconcile_into(
         node.key = d.key;
         node.kind = d.kind;
         node.props = d.props;
+        if old_slot == NO_MAP && matches!(d.kind, NodeKind::ScrollX | NodeKind::ScrollY) {
+            node.scroll_y = d.props.initial_scroll();
+        }
+        node.motion = d.motion;
+        node.motion_ms = d.motion_ms;
         node.parent = map_link(d.parent);
         node.first_child = map_link(d.first_child);
         node.last_child = map_link(d.last_child);
@@ -213,14 +222,14 @@ pub fn reconcile_into(
             || old_next_key != new_next_key
             || old_first_key != new_first_key;
 
-        let (part_changed, part_btn_measure) = crate::part_style::PartStyles::diff_key(
-            &active.part_styles,
-            &candidate.part_styles,
-            node.key,
-        );
+        let old_part = active.part_styles.get(usize::from(old_slot));
+        let new_part = candidate.part_styles.get(c_idx);
+        let part_changed = old_part != new_part;
+        let part_btn_measure = old_part.affects_button_measure(new_part);
         let old_extra = active.layout_extras.get(node.key);
         let new_extra = candidate.layout_extras.get(node.key);
-        let button_part_measure = node.kind == NodeKind::Button && part_btn_measure;
+        let button_part_measure =
+            matches!(node.kind, NodeKind::Button | NodeKind::Tab) && part_btn_measure;
 
         let op = &old.props;
         let np = &node.props;
@@ -244,14 +253,20 @@ pub fn reconcile_into(
             || op.paint_mode() != np.paint_mode()
             || op.justify() != np.justify()
             || (node.kind == NodeKind::Grid && op.grid_cols() != np.grid_cols())
+            || (node.kind == NodeKind::TabBar && op.tab_layout() != np.tab_layout())
+            || (node.kind == NodeKind::Tab && op.min != np.min)
             || old_extra.offset_x != new_extra.offset_x
             || old_extra.offset_y != new_extra.offset_y
+            || old_extra.motion != new_extra.motion
             || old_extra.min_w != new_extra.min_w
             || old_extra.max_w != new_extra.max_w
             || old_extra.min_h != new_extra.min_h
             || old_extra.max_h != new_extra.max_h
             || old_extra.margin != new_extra.margin
-            || button_part_measure;
+            || button_part_measure
+            || (node.kind == NodeKind::Custom
+                && part_changed
+                && old_part.metrics() != new_part.metrics());
 
         let mut text_changed_measure = false;
         let old_text = active.text_str(op.text());
@@ -262,7 +277,7 @@ pub fn reconcile_into(
         if text_changed {
             if !structural_changed && !order_changed && old.text_cache.valid {
                 let wrap_w = old.text_cache.wrap_width;
-                let max_lines = if node.kind == NodeKind::Button {
+                let max_lines = if matches!(node.kind, NodeKind::Button | NodeKind::Tab) {
                     np.max_lines.max(1)
                 } else {
                     np.max_lines
@@ -309,6 +324,9 @@ pub fn reconcile_into(
         let sparkline_changed = node.kind == NodeKind::Sparkline
             && active.sparklines.slice(op.series) != candidate.sparklines.slice(np.series);
 
+        let timing_changed = old.motion_ms != node.motion_ms
+            || old.motion.curve(&active.curves) != node.motion.curve(&candidate.curves)
+            || op.anim_easing() != np.anim_easing();
         let visual_changed = (node.kind == NodeKind::Custom && op != np)
             || op.bg() != np.bg()
             || op.border_color() != np.border_color()
@@ -320,6 +338,8 @@ pub fn reconcile_into(
             || op.value != np.value
             || op.min != np.min
             || op.max != np.max
+            || old.motion.state() != node.motion.state()
+            || timing_changed
             || op.checked() != np.checked()
             || op.enabled() != np.enabled()
             || op.focusable() != np.focusable()
@@ -336,7 +356,10 @@ pub fn reconcile_into(
             || old_extra.custom_rev != new_extra.custom_rev
             || sparkline_changed;
 
-        let toggle_changed = node.kind == NodeKind::Toggle && op.checked() != np.checked();
+        let binding_changed = old.motion.state() != node.motion.state();
+        let toggle_changed = node.motion.state() == crate::view::MotionState::None
+            && node.kind == NodeKind::Toggle
+            && op.checked() != np.checked();
         let node_key = node.key;
         let old_vis_rect = old.visible_rect;
         let old_checked = op.checked();
@@ -346,12 +369,14 @@ pub fn reconcile_into(
             && (!np.enabled() || !np.visible() || !np.focusable());
         let cap_lost = captured_slot == Some(old_slot as u16) && (!np.enabled() || !np.visible());
 
+        let focus_ink_changed =
+            op.focus_ring_raw != np.focus_ring_raw || op.focusable() != np.focusable();
         let c_node = &mut candidate.nodes[c_idx];
         if let Some(cache) = updated_cache {
             c_node.text_cache = cache;
-            if !text_changed_measure {
-                refresh_node_ink_rect(c_node);
-            }
+        }
+        if !text_changed_measure && (updated_cache.is_some() || focus_ink_changed) {
+            refresh_node_ink_rect(c_node);
         }
         if order_changed || structural_changed || text_changed_measure {
             outcome.tree_changed = true;
@@ -360,6 +385,35 @@ pub fn reconcile_into(
         } else if text_changed || visual_changed {
             outcome.tree_changed = true;
             c_node.dirty_paint = true;
+        }
+        let depth = candidate.effects.get(node_key);
+        if depth.shadow.is_none()
+            || !depth.press_depth.is_enabled()
+            || depth.press_depth.duration_ms() == 0
+        {
+            anims.clear_property(node_key, AnimProp::PressDepth);
+        }
+        if binding_changed {
+            c_node.reset_style_target();
+            anims.clear_property(node_key, AnimProp::Style);
+            anims.clear_property(node_key, AnimProp::ToggleKnob);
+        }
+        if !binding_changed
+            && timing_changed
+            && c_node.motion_ms > 0
+            && let Some(target) = anims.active_target(node_key, AnimProp::Style)
+        {
+            anims.start_with_curve(
+                node_key,
+                AnimProp::Style,
+                target,
+                target,
+                now,
+                c_node.motion_ms.into(),
+                old_vis_rect,
+                anim_easing,
+                c_node.motion.curve(&candidate.curves),
+            );
         }
         if toggle_changed {
             let start_def = if old_checked { ANIM_SCALE } else { 0 };
@@ -389,6 +443,21 @@ pub fn reconcile_into(
             !has_active || old_screen != screen || modal_changed;
         candidate.nodes[root_c].dirty_paint = true;
         outcome.tree_changed = true;
+    }
+
+    // Reveal a newly selected page once. Ordinary commits preserve manual browsing.
+    for i in 0..d_count {
+        let slot = usize::from(draft_to_cand[i]);
+        let node = &candidate.nodes[slot];
+        if node.kind == NodeKind::Tab
+            && node.props.checked()
+            && (matched_from_old[slot] == NO_MAP || !active.nodes[slot].props.checked())
+            && let Some(parent) = node.parent.get()
+            && candidate.nodes[parent].kind == NodeKind::TabBar
+        {
+            candidate.nodes[parent].scroll_y = -1;
+            candidate.nodes[parent].dirty_measure = true;
+        }
     }
 
     // Propagate dirty_measure up parent chain using bitmask.
@@ -447,10 +516,10 @@ pub fn reconcile_into(
             };
             if n.dirty_paint || n.dirty_measure || n.visible_rect != old_vis {
                 if !old_vis.is_empty() {
-                    damage.add(old_vis, screen);
+                    damage.add(active.style_bounds(usize::from(old_slot)), screen);
                 }
                 if !n.visible_rect.is_empty() {
-                    damage.add(n.visible_rect, screen);
+                    damage.add(candidate.style_bounds(c_idx), screen);
                 }
             }
         }

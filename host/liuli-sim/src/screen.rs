@@ -4,8 +4,8 @@ use embedded_graphics::draw_target::{DrawTarget, DrawTargetExt};
 use embedded_graphics::geometry::{OriginDimensions, Size};
 use embedded_graphics::pixelcolor::{IntoStorage, Rgb565};
 use embedded_graphics::primitives::{
-    Circle, Line, Primitive, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle, RoundedRectangle,
-    StrokeAlignment, Triangle,
+    Circle, ContainsPoint, Line, Primitive, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle,
+    RoundedRectangle, StrokeAlignment, Triangle,
 };
 use embedded_graphics::{Drawable, Pixel};
 use liuli::core::paint::{CommandList, PaintCmd, SceneResources};
@@ -874,6 +874,28 @@ fn reference_range_with_source<S: SimTextSource>(
                     let _ = RoundedRectangle::with_equal_corners(rect.to_eg(), Size::new(r, r))
                         .into_styled(builder.build())
                         .draw(&mut clipped);
+                }
+            }
+            PaintCmd::RoundedOverlay {
+                rect,
+                clip,
+                color,
+                alpha,
+                radius,
+            } => {
+                let area = rect.intersect(clip).intersect(full);
+                let r = u32::from(radius).min(rect.w / 2).min(rect.h / 2);
+                let shape = RoundedRectangle::with_equal_corners(rect.to_eg(), Size::new(r, r));
+                for y in area.y..area.bottom64() as i32 {
+                    for x in area.x..area.right64() as i32 {
+                        if shape.contains(Point::new(x, y)) {
+                            screen.blend_pixel_a4(
+                                y as usize * stride + x as usize,
+                                color.into_storage(),
+                                alpha,
+                            );
+                        }
+                    }
                 }
             }
             PaintCmd::Overlay {

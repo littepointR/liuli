@@ -827,6 +827,13 @@ impl Default for InteractionStyle {
 /// Durations and easing curves used by themed controls and depth animations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Motion {
+    /// Applies to child scopes and local transitions as an accessibility preference.
+    pub reduced: bool,
+    pub state_ms: u16,
+    pub state_curve: Option<&'static StyleCurve>,
+    pub page: crate::transition::TransitionStyle,
+    pub entrance: crate::transition::TransitionStyle,
+    pub exit: crate::transition::TransitionStyle,
     pub toggle_easing: Easing,
     pub press_depth_ms: u16,
     pub press_depth_scale: u8,
@@ -837,6 +844,24 @@ pub struct Motion {
 
 impl Motion {
     pub const STANDARD: Self = Self {
+        reduced: false,
+        state_ms: 160,
+        state_curve: None,
+        page: crate::transition::TransitionStyle::new(
+            crate::TransitionKind::SlideLeft,
+            260,
+            Easing::EaseOutCubic,
+        ),
+        entrance: crate::transition::TransitionStyle::new(
+            crate::TransitionKind::FloatUp,
+            720,
+            Easing::Linear,
+        ),
+        exit: crate::transition::TransitionStyle::new(
+            crate::TransitionKind::Fade,
+            180,
+            Easing::EaseInQuad,
+        ),
         toggle_easing: Easing::EaseOutCubic,
         press_depth_ms: 120,
         press_depth_scale: 15,
@@ -846,6 +871,24 @@ impl Motion {
     };
 
     pub const SNAPPY: Self = Self {
+        reduced: false,
+        state_ms: 85,
+        state_curve: None,
+        page: crate::transition::TransitionStyle::new(
+            crate::TransitionKind::SlideLeft,
+            160,
+            Easing::EaseOutCubic,
+        ),
+        entrance: crate::transition::TransitionStyle::new(
+            crate::TransitionKind::FloatUp,
+            350,
+            Easing::Linear,
+        ),
+        exit: crate::transition::TransitionStyle::new(
+            crate::TransitionKind::Fade,
+            100,
+            Easing::EaseInQuad,
+        ),
         toggle_easing: Easing::EaseOutCubic,
         press_depth_ms: 70,
         press_depth_scale: 12,
@@ -855,6 +898,24 @@ impl Motion {
     };
 
     pub const REDUCED: Self = Self {
+        reduced: true,
+        state_ms: 0,
+        state_curve: None,
+        page: crate::transition::TransitionStyle::new(
+            crate::TransitionKind::SlideLeft,
+            0,
+            Easing::EaseOutCubic,
+        ),
+        entrance: crate::transition::TransitionStyle::new(
+            crate::TransitionKind::FloatUp,
+            0,
+            Easing::Linear,
+        ),
+        exit: crate::transition::TransitionStyle::new(
+            crate::TransitionKind::Fade,
+            0,
+            Easing::EaseInQuad,
+        ),
         toggle_easing: Easing::Linear,
         press_depth_ms: 0,
         press_depth_scale: 10,
@@ -864,7 +925,43 @@ impl Motion {
     };
 
     #[inline]
-    pub const fn with_toggle_easing(mut self, easing: Easing) -> Self {
+    pub const fn with_reduced(mut self, reduced: bool) -> Self {
+        self.reduced = reduced;
+        self
+    }
+    pub const fn with_state_curve(mut self, curve: &'static StyleCurve) -> Self {
+        self.state_curve = Some(curve);
+        self
+    }
+    pub const fn with_state_ms(mut self, ms: u16) -> Self {
+        self.state_ms = ms;
+        self
+    }
+
+    /// Resolve a timing override after inheriting the motion preference.
+    pub const fn state(self, state: MotionState, local: Option<StateMotion>) -> StateMotion {
+        let mut spec = match local {
+            Some(s) => s,
+            None if matches!(state, MotionState::Pressed) => {
+                StateMotion::new(state, self.press_depth_ms, self.press_depth_easing)
+            }
+            None => StateMotion::new(state, self.state_ms, self.toggle_easing),
+        };
+        if local.is_none() {
+            spec.curve = self.state_curve;
+        }
+        spec.state = state;
+        if self.reduced {
+            spec.duration_ms = 0;
+        }
+        spec
+    }
+
+    pub const fn with_toggle_easing(self, easing: Easing) -> Self {
+        self.with_state_easing(easing)
+    }
+    pub const fn with_state_easing(mut self, easing: Easing) -> Self {
+        self.state_curve = None;
         self.toggle_easing = easing;
         self
     }
@@ -1047,9 +1144,32 @@ impl Default for EffectsConfig {
     }
 }
 
+/// Stable, namespaced style identity published by the widget's author.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WidgetClass(pub &'static str);
+impl WidgetClass {
+    pub const BUTTON: Self = Self("liuli.button");
+    pub const TOGGLE: Self = Self("liuli.toggle");
+    pub const SLIDER: Self = Self("liuli.slider");
+    pub const SCROLLBAR: Self = Self("liuli.scrollbar");
+    pub const PROGRESS: Self = Self("liuli.progress");
+    pub const SPARKLINE: Self = Self("liuli.sparkline");
+    pub const TAB: Self = Self("liuli.tab");
+    pub const CHECKBOX: Self = Self("liuli.checkbox");
+    pub const RADIO: Self = Self("liuli.radio");
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PartRule {
+    pub class: WidgetClass,
+    pub parts: WidgetPartStyle,
+}
+
 /// Default part-level and state-aware style overrides applied per widget kind by `ThemedUi`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ComponentParts {
+    pub rules: &'static [PartRule],
+    pub tab: WidgetPartStyle,
     pub button: WidgetPartStyle,
     pub toggle: WidgetPartStyle,
     pub slider: WidgetPartStyle,
@@ -1060,6 +1180,8 @@ pub struct ComponentParts {
 
 impl ComponentParts {
     pub const DEFAULT: Self = Self {
+        rules: &[],
+        tab: WidgetPartStyle::ZERO,
         button: WidgetPartStyle::ZERO,
         toggle: WidgetPartStyle::ZERO,
         slider: WidgetPartStyle::ZERO,
@@ -1068,9 +1190,37 @@ impl ComponentParts {
         sparkline: WidgetPartStyle::ZERO,
     };
 
+    /// Install a theme stylesheet. Matching rules are merged in declaration order.
+    pub const fn with_rules(mut self, rules: &'static [PartRule]) -> Self {
+        self.rules = rules;
+        self
+    }
+
+    pub fn resolve(&self, class: WidgetClass) -> WidgetPartStyle {
+        let base = match class {
+            WidgetClass::BUTTON => self.button,
+            WidgetClass::TOGGLE => self.toggle,
+            WidgetClass::SLIDER => self.slider,
+            WidgetClass::SCROLLBAR => self.scrollbar,
+            WidgetClass::PROGRESS => self.progress,
+            WidgetClass::SPARKLINE => self.sparkline,
+            WidgetClass::TAB => self.tab,
+            _ => WidgetPartStyle::ZERO,
+        };
+        self.rules
+            .iter()
+            .filter(|r| r.class == class)
+            .fold(base, |s, r| s.merge(r.parts))
+    }
+
     #[inline]
     pub const fn with_button(mut self, style: WidgetPartStyle) -> Self {
         self.button = style;
+        self
+    }
+
+    pub const fn with_tab(mut self, style: WidgetPartStyle) -> Self {
+        self.tab = style;
         self
     }
 

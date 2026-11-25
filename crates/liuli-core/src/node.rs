@@ -78,6 +78,10 @@ pub struct RetainedNode {
     pub scroll_y: i32,
     pub content_height: u32,
     pub pressed: bool,
+    // Last successfully painted style target plus one. Zero marks a fresh binding.
+    style_target: u16,
+    pub(crate) motion: crate::view::MotionBinding,
+    pub motion_ms: u16,
 }
 
 impl RetainedNode {
@@ -102,6 +106,9 @@ impl RetainedNode {
         scroll_y: 0,
         content_height: 0,
         pressed: false,
+        style_target: 0,
+        motion: crate::view::MotionBinding::EMPTY,
+        motion_ms: 0,
     };
 
     pub fn clear_fresh(&mut self, generation: u32) {
@@ -125,10 +132,53 @@ impl RetainedNode {
         self.scroll_y = 0;
         self.content_height = 0;
         self.pressed = false;
+        self.style_target = 0;
+    }
+
+    pub fn motion_target(&self, focused: bool) -> i32 {
+        use crate::view::MotionState::*;
+        match self.motion.state() {
+            None => 0,
+            Checked => i32::from(self.props.checked()) * 1000,
+            Pressed => i32::from(self.pressed) * 1000,
+            Focused => i32::from(focused) * 1000,
+            Value => {
+                let lo = i32::from(self.props.min);
+                let range = i32::from(self.props.max) - lo;
+                if range <= 0 {
+                    0
+                } else {
+                    ((i32::from(self.props.value) - lo) * 1000 / range).clamp(0, 1000)
+                }
+            }
+        }
+    }
+
+    pub(crate) fn reset_style_target(&mut self) {
+        self.style_target = 0;
     }
 
     pub fn copy_from(&mut self, src: &Self) {
         *self = *src;
+    }
+
+    /// The stable key of the page currently mounted in this tab panel.
+    pub fn active_tab(&self) -> Option<Key> {
+        if self.kind != NodeKind::TabPanel {
+            return None;
+        }
+        Some(self.props.key_payload())
+    }
+
+    /// Maximum legal offset along the scrolling axis, including the content padding.
+    pub fn scroll_limit(&self) -> Option<i32> {
+        let viewport = match self.kind {
+            NodeKind::ScrollX | NodeKind::TabBar => self.layout_rect.w,
+            NodeKind::ScrollY => self.layout_rect.h,
+            _ => return None,
+        };
+        let overflow = self.content_height.saturating_sub(viewport);
+        Some(overflow.min(i32::MAX as u32) as i32)
     }
 
     #[inline]
@@ -142,6 +192,7 @@ impl RetainedNode {
 }
 
 pub struct RetainedTree {
+    pub(crate) curves: crate::view::CurvePalette,
     pub effects: crate::effects::Effects,
     pub part_styles: crate::part_style::PartStyles,
     pub layout_extras: crate::part_style::LayoutExtras,
@@ -156,8 +207,85 @@ pub struct RetainedTree {
 }
 
 impl RetainedTree {
+    pub fn part_style(&self, key: Key) -> &crate::part_style::WidgetPartStyle {
+        self.find_slot_by_key(key)
+            .map_or(&crate::part_style::WidgetPartStyle::ZERO, |i| {
+                self.part_styles.get(usize::from(i))
+            })
+    }
+
+    /// Geometry that can contain pixels from a node's selection animation.
+    pub(crate) fn style_bounds(&self, i: usize) -> Rect {
+        let n = &self.nodes[i];
+        if n.kind == NodeKind::Tab
+            && self.part_styles.get(i).indicator_transition
+                == crate::part_style::IndicatorMotion::Slide
+        {
+            n.parent
+                .get()
+                .map_or(n.visible_rect, |p| self.nodes[p].visible_rect)
+        } else {
+            n.visible_rect
+        }
+    }
+
+    pub fn sync_style_motion(
+        &self,
+        anims: &mut crate::time::AnimPool,
+        now: crate::time::InstantMs,
+        focused: Option<u16>,
+        capture: crate::focus::CaptureKind,
+    ) {
+        use crate::focus::CaptureKind;
+        use crate::time::AnimProp;
+        use crate::view::MotionState;
+        for (i, n) in self.nodes.iter().enumerate() {
+            if !n.occupied || n.motion.state() == crate::view::MotionState::None {
+                continue;
+            }
+            let target = n.motion_target(focused == Some(i as u16));
+            // Once a drag wins, the slider must track the finger and losing buttons must release immediately.
+            let direct = match (capture, n.motion.state()) {
+                (CaptureKind::Slider { id }, MotionState::Value) => id == n.id(i as u16),
+                (CaptureKind::Scrolling { scroll, .. }, MotionState::Pressed) => {
+                    self.is_descendant_of(i as u16, scroll.slot())
+                }
+                _ => false,
+            };
+            let damage = self.style_bounds(i);
+            let instant = n.kind == NodeKind::Tab
+                && self.part_styles.get(i).indicator_transition
+                    == crate::part_style::IndicatorMotion::Instant;
+            if n.motion_ms == 0 || n.style_target == 0 || direct || instant {
+                anims.clear_property(n.key, AnimProp::Style);
+            } else if i32::from(n.style_target) - 1 != target {
+                anims.start_with_curve(
+                    n.key,
+                    AnimProp::Style,
+                    i32::from(n.style_target) - 1,
+                    target,
+                    now,
+                    n.motion_ms.into(),
+                    damage,
+                    n.props.anim_easing(),
+                    n.motion.curve(&self.curves),
+                );
+            }
+            anims.update_rect(n.key, AnimProp::Style, damage);
+        }
+    }
+
+    pub fn accept_style_targets(&mut self, focused: Option<u16>) {
+        for (i, n) in self.nodes.iter_mut().enumerate() {
+            if n.occupied && n.motion.state() != crate::view::MotionState::None {
+                n.style_target = 1 + n.motion_target(focused == Some(i as u16)) as u16;
+            }
+        }
+    }
+
     pub const ZERO: Self = Self {
         effects: crate::effects::Effects::EMPTY,
+        curves: [None; crate::capacity::MAX_ANIMATIONS],
         part_styles: crate::part_style::PartStyles::EMPTY,
         layout_extras: crate::part_style::LayoutExtras::EMPTY,
         nodes: [RetainedNode::EMPTY; MAX_NODES],
@@ -189,6 +317,7 @@ impl RetainedTree {
         self.text_len = 0;
         self.sparklines.reset();
         self.effects = crate::effects::Effects::EMPTY;
+        self.curves = [None; crate::capacity::MAX_ANIMATIONS];
         self.part_styles = crate::part_style::PartStyles::EMPTY;
         self.layout_extras = crate::part_style::LayoutExtras::EMPTY;
         self.root = SlotLink::NONE;

@@ -119,6 +119,9 @@ impl Default for PointerState {
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct FocusState {
+    // The most recent eight panels retain a stable child key without keeping their trees alive.
+    panel_history: [(Key, Key); 8],
+    history_len: u8,
     has_focus: bool,
     focused_key: Key,
     pub ring_visible: bool,
@@ -130,6 +133,8 @@ pub struct FocusState {
 
 impl FocusState {
     pub const ZERO: Self = Self {
+        panel_history: [(Key(0), Key(0)); 8],
+        history_len: 0,
         has_focus: false,
         focused_key: Key(0),
         ring_visible: false,
@@ -181,6 +186,41 @@ impl FocusState {
 
     pub fn focused_slot(&self, tree: &RetainedTree) -> Option<u16> {
         self.focused_key().and_then(|k| tree.find_slot_by_key(k))
+    }
+
+    pub fn remember_panel_focus(&mut self, tree: &RetainedTree) {
+        let Some(slot) = self.focused_slot(tree) else {
+            return;
+        };
+        let Some((_, tab)) = panel_for(tree, slot) else {
+            return;
+        };
+        let key = tree.nodes[slot as usize].key;
+        let len = self.history_len as usize;
+        let pos = self.panel_history[..len]
+            .iter()
+            .position(|&(id, _)| id == tab);
+        let index = pos.unwrap_or(len.min(self.panel_history.len() - 1));
+        self.panel_history[..=index].rotate_right(1);
+        self.panel_history[0] = (tab, key);
+        if pos.is_none() && len < self.panel_history.len() {
+            self.history_len += 1;
+        }
+    }
+
+    fn panel_entry(&self, tree: &RetainedTree, old: Option<u16>, target: u16) -> u16 {
+        let Some((panel, tab)) = panel_for(tree, target) else {
+            return target;
+        };
+        if old.is_some_and(|s| tree.is_descendant_of(s, panel)) {
+            return target;
+        }
+        self.panel_history[..self.history_len as usize]
+            .iter()
+            .find(|(id, _)| *id == tab)
+            .and_then(|(_, key)| tree.find_slot_by_key(*key))
+            .filter(|&s| is_focus_eligible_in_scope(tree, s, panel))
+            .unwrap_or(target)
     }
 
     pub fn ensure_valid(&mut self, tree: &RetainedTree) {
@@ -283,7 +323,7 @@ impl FocusState {
             return None;
         }
         for &slot in &list[..cnt] {
-            if !is_tab(tree.nodes[slot as usize].key) {
+            if is_group_entry(tree, slot) && !is_tab(tree.nodes[slot as usize].key) {
                 return Some(slot);
             }
         }
@@ -449,6 +489,70 @@ pub fn collect_focusables_in_scope(
     count
 }
 
+fn panel_for(tree: &RetainedTree, slot: u16) -> Option<(u16, Key)> {
+    let mut parent = tree.nodes[slot as usize].parent;
+    while let Some(i) = parent.get_u16() {
+        let n = &tree.nodes[i as usize];
+        if let Some(tab) = n.active_tab() {
+            return Some((i, tab));
+        }
+        parent = n.parent;
+    }
+    None
+}
+
+fn sibling_tabs(tree: &RetainedTree, slot: u16) -> impl Iterator<Item = u16> + '_ {
+    let node = &tree.nodes[slot as usize];
+    let first = node
+        .parent
+        .get()
+        .and_then(|p| tree.nodes[p].first_child.get_u16());
+    core::iter::successors(first, |&i| tree.nodes[i as usize].next_sibling.get_u16()).filter(|&i| {
+        let n = &tree.nodes[i as usize];
+        n.kind == NodeKind::Tab && n.props.focusable() && n.props.visible() && n.props.enabled()
+    })
+}
+
+fn is_group_entry(tree: &RetainedTree, slot: u16) -> bool {
+    let n = &tree.nodes[slot as usize];
+    n.kind != NodeKind::Tab || n.props.checked() || {
+        let mut tabs = sibling_tabs(tree, slot);
+        tabs.next() == Some(slot) && !tabs.any(|i| tree.nodes[i as usize].props.checked())
+    }
+}
+
+fn navigate_tabs(
+    tree: &mut RetainedTree,
+    focus: &mut FocusState,
+    slot: u16,
+    steps: i16,
+    screen: Rect,
+    damage: &mut DamageSet,
+) -> (bool, Option<UiAction>, Option<(Key, PointerEvent)>) {
+    let count = sibling_tabs(tree, slot).count() as i32;
+    let Some(index) = sibling_tabs(tree, slot).position(|i| i == slot) else {
+        return (false, None, None);
+    };
+    let next = (index as i32 + i32::from(steps)).rem_euclid(count) as usize;
+    let dest = sibling_tabs(tree, slot).nth(next).unwrap_or(slot);
+    damage.add(tree.nodes[slot as usize].visible_rect, screen);
+    let key = tree.nodes[dest as usize].key;
+    focus.set_focused_key(Some(key));
+    focus.ring_visible = true;
+    if let Some(s) = ensure_visible(tree, dest, screen) {
+        damage.add(tree.nodes[s as usize].visible_rect, screen);
+    }
+    damage.add(tree.nodes[dest as usize].visible_rect, screen);
+    (
+        true,
+        (!focus.editing && dest != slot).then_some(UiAction {
+            key,
+            kind: ActionKind::Activate,
+        }),
+        None,
+    )
+}
+
 fn first_focusable_in_scope(tree: &RetainedTree, scope_root: u16) -> Option<u16> {
     if (scope_root as usize) >= MAX_NODES || !tree.nodes[scope_root as usize].occupied {
         return None;
@@ -478,7 +582,7 @@ fn first_focusable_in_scope(tree: &RetainedTree, scope_root: u16) -> Option<u16>
                 sp -= 1;
                 continue;
             }
-            if n.props.focusable() {
+            if n.props.focusable() && is_group_entry(tree, slot as u16) {
                 return Some(slot as u16);
             }
             stack[top].entered = true;
@@ -546,12 +650,27 @@ pub fn dispatch_input_ext(
     damage: &mut DamageSet,
 ) -> (bool, Option<UiAction>, Option<(Key, PointerEvent)>) {
     focus.ensure_valid(tree);
+    focus.remember_panel_focus(tree);
     let Some(scope_root) = active_scope_root(tree) else {
         return (false, None, None);
     };
 
     match input {
         RawInput::Nav(dir) => {
+            if let Some(slot) = focus.focused_slot(tree)
+                && tree.nodes[slot as usize].kind == NodeKind::Tab
+                && (focus.editing || matches!(dir, NavDir::Left | NavDir::Right))
+            {
+                let forward = matches!(dir, NavDir::Next | NavDir::Right | NavDir::Down);
+                return navigate_tabs(
+                    tree,
+                    focus,
+                    slot,
+                    if forward { 1 } else { -1 },
+                    screen,
+                    damage,
+                );
+            }
             if focus.editing
                 && let Some(slot) = focus.focused_slot(tree)
             {
@@ -577,7 +696,18 @@ pub fn dispatch_input_ext(
             }
 
             let mut list = [0u16; MAX_NODES];
-            let cnt = collect_focusables_in_scope(tree, scope_root, &mut list);
+            let mut cnt = collect_focusables_in_scope(tree, scope_root, &mut list);
+            if matches!(dir, NavDir::Next | NavDir::Prev) {
+                let mut written = 0;
+                for i in 0..cnt {
+                    let slot = list[i];
+                    if is_group_entry(tree, slot) {
+                        list[written] = slot;
+                        written += 1;
+                    }
+                }
+                cnt = written;
+            }
             if cnt == 0 {
                 return (false, None, None);
             }
@@ -603,6 +733,11 @@ pub fn dispatch_input_ext(
                 }
             };
 
+            let next_slot = if matches!(dir, NavDir::Next | NavDir::Prev) {
+                focus.panel_entry(tree, old_slot, next_slot)
+            } else {
+                next_slot
+            };
             focus.set_focused_key(Some(tree.nodes[next_slot as usize].key));
             focus.ring_visible = true;
 
@@ -621,6 +756,9 @@ pub fn dispatch_input_ext(
             let Some(slot) = focus.focused_slot(tree) else {
                 return (false, None, None);
             };
+            if focus.editing && tree.nodes[slot as usize].kind == NodeKind::Tab {
+                return navigate_tabs(tree, focus, slot, steps, screen, damage);
+            }
             if focus.editing {
                 let node = &tree.nodes[slot as usize];
                 if node.kind == NodeKind::Slider {
@@ -667,6 +805,18 @@ pub fn dispatch_input_ext(
                 damage.add(tree.nodes[slot as usize].visible_rect, screen);
             }
             let node = &tree.nodes[slot as usize];
+            if node.kind == NodeKind::Tab {
+                focus.editing = !focus.editing;
+                damage.add(node.visible_rect, screen);
+                return (
+                    true,
+                    (!focus.editing).then_some(UiAction {
+                        key: node.key,
+                        kind: ActionKind::Activate,
+                    }),
+                    None,
+                );
+            }
             if node.kind == NodeKind::Slider || node.props.editable() {
                 focus.editing = !focus.editing;
                 damage.add(node.visible_rect, screen);
@@ -682,6 +832,7 @@ pub fn dispatch_input_ext(
                     None,
                 ),
                 NodeKind::Button
+                | NodeKind::Tab
                 | NodeKind::Row
                 | NodeKind::Column
                 | NodeKind::Stack
@@ -703,6 +854,18 @@ pub fn dispatch_input_ext(
                 focus.editing = false;
                 if let Some(slot) = focus.focused_slot(tree) {
                     damage.add(tree.nodes[slot as usize].visible_rect, screen);
+                    let selected = if tree.nodes[slot as usize].kind == NodeKind::Tab {
+                        sibling_tabs(tree, slot).find(|&i| tree.nodes[i as usize].props.checked())
+                    } else {
+                        None
+                    };
+                    if let Some(i) = selected {
+                        focus.set_focused_key(Some(tree.nodes[i as usize].key));
+                        if let Some(s) = ensure_visible(tree, i, screen) {
+                            damage.add(tree.nodes[s as usize].visible_rect, screen);
+                        }
+                        damage.add(tree.nodes[i as usize].visible_rect, screen);
+                    }
                 }
                 return (true, None, None);
             }
@@ -774,7 +937,7 @@ pub fn dispatch_input_ext(
 
             let hit_kind = tree.nodes[hit_slot as usize].kind;
             let hit_cap = tree.nodes[hit_slot as usize].props.pointer_capture();
-            let scroll_anc = if matches!(hit_kind, NodeKind::ScrollY | NodeKind::ScrollX) {
+            let scroll_anc = if hit_kind.is_scroll_view() {
                 Some(hit_slot)
             } else {
                 find_scroll_ancestor(tree, hit_slot, scope_root)
@@ -959,26 +1122,30 @@ pub fn dispatch_input_ext(
                         return (true, action, None);
                     }
 
-                    let is_scroll_x = tree.nodes[scroll_slot as usize].kind == NodeKind::ScrollX;
-                    let scroll_triggered = if is_scroll_x {
-                        adx >= DRAG_THRESHOLD_PX && adx > ady
-                    } else {
-                        ady >= DRAG_THRESHOLD_PX && ady >= adx
-                    };
-                    if scroll_triggered {
+                    let horizontal = adx > ady;
+                    let axis_delta = if horizontal { dx } else { dy };
+                    if adx.max(ady) >= DRAG_THRESHOLD_PX
+                        && let Some(owner) =
+                            scroll_for_drag(tree, scroll_slot, scope_root, horizontal, axis_delta)
+                    {
                         if tree.nodes[candidate_slot as usize].pressed {
                             tree.nodes[candidate_slot as usize].pressed = false;
                             damage.add(tree.nodes[candidate_slot as usize].visible_rect, screen);
                         }
+                        let node = &tree.nodes[owner as usize];
+                        let start_offset = if owner == scroll_slot {
+                            start_offset
+                        } else {
+                            node.scroll_y
+                        };
                         pointer.capture = CaptureKind::Scrolling {
-                            scroll,
+                            scroll: node.id(owner),
                             start_pos,
                             start_offset,
                         };
-                        let axis_delta = if is_scroll_x { dx } else { dy };
                         apply_scroll_drag(
                             tree,
-                            scroll_slot,
+                            owner,
                             start_offset.saturating_sub(axis_delta),
                             screen,
                             damage,
@@ -1004,7 +1171,7 @@ pub fn dispatch_input_ext(
                         pointer.clear(tree, damage, screen);
                         return (false, None, None);
                     };
-                    let is_scroll_x = tree.nodes[scroll_slot as usize].kind == NodeKind::ScrollX;
+                    let is_scroll_x = tree.nodes[scroll_slot as usize].kind.scrolls_x();
                     let axis_delta = if is_scroll_x {
                         pos.x.saturating_sub(start_pos.x)
                     } else {
@@ -1229,13 +1396,19 @@ fn adjust_slider_by_steps(
     screen: Rect,
 ) -> (bool, Option<UiAction>) {
     let n = &tree.nodes[slot as usize];
-    if n.props.min >= n.props.max || n.props.step <= 0 {
+    if n.props.min >= n.props.max || n.props.step <= 0 || steps == 0 {
         return (true, None);
     }
-    let min = n.props.min as i64;
-    let max = n.props.max as i64;
-    let step = n.props.step as i64;
-    let new_val = (n.props.value as i64 + (steps as i64) * step).clamp(min, max) as i16;
+    let min = i32::from(n.props.min);
+    let max = i32::from(n.props.max);
+    let step = i32::from(n.props.step);
+    let rel = i32::from(n.props.value.clamp(n.props.min, n.props.max)) - min;
+    let index = if steps > 0 {
+        rel / step
+    } else {
+        (rel + step - 1) / step
+    };
+    let new_val = (min + (index + i32::from(steps)) * step).clamp(min, max) as i16;
     if new_val == n.props.value {
         return (true, None);
     }
@@ -1268,17 +1441,18 @@ fn update_slider_from_pos(
     let Some(pos) = tree.local_point(slot, pos) else {
         return (true, None);
     };
-    let knob_w = (rect.w as i32).min(12);
-    let usable = (rect.w as i32 - knob_w).max(1);
-    let rel_x = (pos.x - (rect.x + knob_w / 2)).clamp(0, usable);
+    let (knob_w, _) = tree.part_style(n.key).slider_knob_size(rect.size());
+    let usable = i64::from(rect.w - knob_w);
+    if usable == 0 {
+        return (true, None);
+    }
+    let rel_x = (i64::from(pos.x) - i64::from(rect.x) - i64::from(knob_w / 2)).clamp(0, usable);
     let min = n.props.min as i64;
     let max = n.props.max as i64;
     let span = (max - min).max(1);
-    let raw_val = min + ((rel_x as i64 * span + (usable as i64 / 2)) / usable as i64);
-    let step = n.props.step as i64;
-    let offset_from_min = raw_val - min;
-    let snapped_steps = (offset_from_min + step / 2) / step;
-    let snapped = (min + snapped_steps * step).clamp(min, max) as i16;
+    let raw_val = min + (rel_x * span + usable / 2) / usable;
+    let snapped =
+        crate::input::snap_stepped_value(n.props.min, n.props.max, n.props.step, raw_val as i16);
 
     if snapped == n.props.value {
         return (true, None);
@@ -1329,12 +1503,7 @@ fn apply_scroll_drag(
     damage: &mut DamageSet,
 ) {
     let sv = &tree.nodes[scroll_slot as usize];
-    let vp_extent = if sv.kind == NodeKind::ScrollX {
-        sv.layout_rect.w
-    } else {
-        sv.layout_rect.h
-    };
-    let max_scroll = sv.content_height.saturating_sub(vp_extent) as i32;
+    let max_scroll = sv.scroll_limit().unwrap_or(0);
     let new_offset = desired_offset.clamp(0, max_scroll);
     if new_offset != sv.scroll_y {
         tree.nodes[scroll_slot as usize].scroll_y = new_offset;
@@ -1427,20 +1596,56 @@ fn pointer_hits_slot(tree: &RetainedTree, slot: u16, pos: Point) -> bool {
 }
 
 fn find_scroll_ancestor(tree: &RetainedTree, slot: u16, scope_root: u16) -> Option<u16> {
+    let mut child = slot;
     let mut cur = tree.nodes[slot as usize].parent;
     while let Some(idx) = cur.get_u16() {
-        if matches!(
-            tree.nodes[idx as usize].kind,
-            NodeKind::ScrollY | NodeKind::ScrollX
-        ) {
+        let kind = tree.nodes[idx as usize].kind;
+        if kind.is_scroll_view()
+            && (kind != NodeKind::TabBar || tree.nodes[child as usize].kind == NodeKind::Tab)
+        {
             return Some(idx);
         }
         if idx == scope_root {
             break;
         }
+        child = idx;
         cur = tree.nodes[idx as usize].parent;
     }
     None
+}
+
+// Lock once, to the nearest ancestor that can move along the dominant drag axis.
+// At the end of the whole chain, still consume the drag instead of activating a row.
+fn scroll_for_drag(
+    tree: &RetainedTree,
+    start: u16,
+    scope: u16,
+    horizontal: bool,
+    delta: i32,
+) -> Option<u16> {
+    let kind = if horizontal {
+        NodeKind::ScrollX
+    } else {
+        NodeKind::ScrollY
+    };
+    let mut slot = Some(start);
+    let mut nearest = None;
+    while let Some(index) = slot {
+        let node = &tree.nodes[index as usize];
+        if node.kind == kind || (horizontal && node.kind == NodeKind::TabBar) {
+            nearest.get_or_insert(index);
+            if (delta > 0 && node.scroll_y > 0)
+                || (delta < 0 && node.scroll_y < node.scroll_limit()?)
+            {
+                return Some(index);
+            }
+        }
+        if index == scope {
+            break;
+        }
+        slot = node.parent.get_u16();
+    }
+    nearest
 }
 
 pub fn hit_test_in_scope(tree: &RetainedTree, scope_root: u16, pos: Point) -> Option<u16> {

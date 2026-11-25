@@ -33,7 +33,7 @@ liuli-trace 1
 
 ## 控件与主题
 
-从包含 Spool 的 SDK 运行 tools/bin/liuli-widget-demo（Windows 使用 .exe），打开终端打印的网址即可进入便携录音台。在 Deck、Tapes 和 Mixer 之间可以播放、保存素材、调音和编辑。示例源码位于包根目录的 liuli-widget-demo。板级固件使用同一份应用代码。[控件清单和运行方法](widget-demo.md)
+从 SDK 运行 `tools/bin/liuli-widget-demo`（Windows 使用 .exe）可打开琉璃功能展台，切换仪表、表单、图表、布局和动效页面。传入 `--studio` 可以进入便携录音台。桌面与参考板共用应用源码。[控件清单和运行方法](widget-demo.md)
 
 用下面的命令启动控件目录，切换 Controls / Meter，操作选择器、数值编辑器和确认框。控件目录可独立从供应的控件包构建。
 
@@ -46,6 +46,7 @@ cargo test --offline --manifest-path liuli-alarms/Cargo.toml --release
 | 控件 | 应用接入方式 |
 |---|---|
 | 按钮、开关、滑块、进度条、曲线 | 调用 Children 或 ThemedUi 上的对应构建方法。通过 UiAction 处理激活、切换和数值变化。 |
+| 页签 | 用 `TabPage` 声明页面，`Tabs` 统一生成页签栏、选择事件和当前内容页。`ThemedUi::tab_view` 提供常用布局。 |
 | 虚拟列表 | virtual_list 接收非零行高、记录数、偏移和视口高度。为每个数据 ID 提供稳定 Key，在 App::on_scroll 中更新偏移。 |
 | 数值编辑、选择器、页签 | number_editor 产生 SetValue。selector 和 tabs 使用调用方提供的选项键。应用保存选中项。 |
 | 对话框、提示条 | confirm_dialog / centered_confirm_dialog 使用模态焦点域和 Dismiss 动作。toast 使用无焦点标签，显示时长由应用的时钟控制。 |
@@ -55,15 +56,123 @@ cargo test --offline --manifest-path liuli-alarms/Cargo.toml --release
 
 复合组件可以是接收 Children、键和主题的普通 Rust 函数。liuli-widgets 中的 paint_meter、confirm_dialog 和 virtual_list 是可运行范例。为复合组件的每个子节点提供稳定键。将决定自绘内容的值保存在 NodeProps 中，框架依据提交前后的属性差异决定损伤区域。
 
-把 Tween::at(initial) 存入组件状态，用 animate_to(now, target, duration_ms, easing) 控制位置、缩放或透明度。App::next_deadline 返回 tween.next_deadline 的结果，App::on_timer 读取 tween.value(now) 更新绘制属性。重新设置目标会从当前取值续接，cancel(now) 可在页面退出时冻结动画。
+### 动画
+
+### 页签与内容页
+
+每个 `TabPage<Id, Model>` 声明业务 ID、稳定控件键、可本地化的标题和构建函数。也可以通过 `with_icon` 指定图标。业务 ID 和键在组内唯一，控件键遵守整棵视图树的唯一性约束。应用模型保存选中的 ID。库在生成视图时只调用当前内容页的构建函数，输入通过同一份声明映射回 ID。
+
+```rust
+let pages = [
+    TabPage::new(Page::Live, Key(11), TextRef::Static("实时"), live_view),
+    TabPage::new(Page::History, Key(12), TextRef::Static("历史记录"), history_view),
+];
+let tabs = Tabs::new(&pages, model.page)?;
+tabs.view(column, [Key(10), Key(20)], model, theme)?;
+```
+
+在 `App::on_action` 中调用 `tabs.selection(action).map(Msg::SelectPage)`，并在更新函数中保存选中的页面。分离布局可用 `header_with` 放置标题和工具，配合 `panel` 把活动页放入裁剪视口或转场容器。检查器会显示 `TabBar`、`Tab` 和 `TabPanel`，以及内容区对应的页签键。
+
+默认策略按字形、内边距、图标和触摸尺寸求宽；放不下时页签栏可以横滚。`TabLayout::Wrap { max_rows: 2 }` 按可用宽度换行，超过行数上限时回退为单行横滚。工具会按内容测量，空间紧张时页签另起一行。`tabs` 和 `tabs_in_columns` 是单独构建页签栏的兼容入口，后者保留调用方指定的列数。
+
+左右键直接选择页签，顺序导航将一组页签作为一个焦点停靠点。旋钮按下后旋转预选，再按确认，返回键取消。焦点系统记住最近八个面板的子控件键，重新进入时恢复仍然有效的目标。记录和编辑值由模型保存。虚拟列表复用模型中的偏移，普通滚动视口可以用 `NodeProps::initial_scroll_offset` 恢复挂载位置。指示器使用作用域主题中的状态动效，支持本地覆盖和减少动态效果。
+
+#### 控件架构与回归
+
+布局引擎根据父约束和字体度量产生矩形。绘制和命中都使用布局产生的裁剪范围。控件库拥有语义、可选项与事件契约；应用声明页面、数据和业务更新。具有共同测量、输入或焦点语义的需求在相应库层实现，Demo 使用公开接口。修改这些契约时，用一个独立消费者测试及一条真实应用入口回放验证。页签回归同时覆盖临界宽度相差一像素、长标题、焦点、挂载和横滚；H743 验收比对范围包括顶栏标题及两侧操作。
+
+### 控件布局与部件样式
+
+控件通过 `NodeProps` 声明所需宽高，父容器分配空间，命中和焦点使用排版后的控件边界。需要单独限制页签时，在声明页签栏后用稳定键调用 `set_layout_constraints(key, min_w, max_w, min_h, max_h)`。例如将宽度的上下限均设为 `Some(80)`，就能让该页签在有足够空间时保持 80 像素宽。外边距参与排版，`set_offset` 在排版结果上移动控件及其命中区域。
+
+Tabs 把栏底线映射到轨道部件，把选中标记映射到指示器部件。默认外观为整栏宽的 3 像素下划线。下面的主题让标记跟随文字和图标的实际宽度，切页时平移，距底边 2 像素。
+
+```rust
+use liuli::prelude::*;
+use liuli_widgets::{PartRule, Theme, WidgetClass};
+
+const RULES: &[PartRule] = &[PartRule {
+    class: WidgetClass::TAB,
+    parts: WidgetPartStyle::new()
+        .with_indicator_layout(IndicatorLayout {
+            span: IndicatorSpan::Content,
+            edge_offset: 2,
+            ..IndicatorLayout::UNDERLINE
+        })
+        .with_indicator_radius(2)
+        .with_indicator_motion(IndicatorMotion::Slide),
+}];
+let theme = Theme::DARK.map_parts(|p| p.with_rules(RULES));
+```
+
+`IndicatorShape` 提供底线、顶线、填充和隐藏。`with_track_size(0)` 单独隐藏分隔线。`IndicatorMotion` 提供居中展开、淡变、平移和即时切换，持续时间和缓动取自主题的选中态动效。平移由页签栏统一绘制，换行和滚动使用同一组逻辑坐标。减少动态效果时直接呈现最终状态。
+
+**主题与实例的覆盖顺序。** 控件类别默认值先应用，同一主题中匹配该 `WidgetClass` 的规则按声明顺序合并，最后合并 `NodeProps::with_parts` 或声明后的 `Children::style_parts(key, parts)`。每次合并只覆盖显式提供的属性。`with_rules` 安装整张规则表。对子树使用派生的主题，对某个实例使用按键覆盖。文本、指示器和焦点环分别取色。
+
+**第三方控件。** 控件包可以定义 `const METER: WidgetClass = WidgetClass("vendor.meter");`。声明自绘节点时使用 `NodeProps::new().with_parts(theme.parts.resolve(METER))`。在 `App::measure_custom_styled` 中读取 `PartMetrics` 决定固有尺寸，在 `paint_custom` 中通过 `canvas.parts()`、`foreground()`、`background()` 和 `selection_indicator(control, content)` 读取相同样式和状态。颜色和指示器几何变动只需重绘，参与自绘测量的部件尺寸变动会触发重新测量。旧的 `measure_custom` 实现继续工作。
+
+每个场景最多保存 12 份不同的非空部件样式，相同样式由多个节点共用。容量耗尽通过 `BuildError::PartStyles` 报告。诊断代码通过 `ViewDraft::part_style(key)` 或 `RetainedTree::part_style(key)` 读取合并结果，替代直接访问底层 `part_styles.get(key)`。使用桌面检查器点选页签，也能查看指示器几何、颜色、过渡和分隔线厚度。
+
+### 控件状态动画与主题
+
+控件声明时用 `theme.motion.state(state, local)` 解析当前作用域的规则，再用 `NodeProps::state_motion` 绑定状态。支持 `Pressed`、`Checked`、`Focused`（可见焦点）和 `Value`（按 min/max 归一化）。框架在提交成功后保存上一次目标。按稳定键复用的控件可以在动画中途反向。逻辑状态和操作立即生效，自绘时读取 `canvas.state.anim_progress`，范围为 0 至 1000。内置按钮、开关、复选框、单选项、滑块和进度条共用这条路径，拖动滑块时手柄直接跟随触点。
+
+下面是包外控件声明一条局部规则所需的代码。已有的 `ThemedUi` 会把页面或父组件的主题传给子组件。
+
+~~~rust
+let motion = ui.theme().motion;
+let local = StateMotion::new(MotionState::Checked, 480, Easing::Linear);
+let props = ui.theme().control()
+    .checked(selected)
+    .clickable(true)
+    .focusable(true)
+    .state_motion(motion.state(MotionState::Checked, Some(local)));
+ui.raw().custom(key, props)?;
+~~~
+
+
+- 可在主题上使用 `Motion::STANDARD`、`SNAPPY` 或 `REDUCED`，也可用 `ThemedUi::with_style` 为一组控件覆盖 `Style.motion`。根主题启用 `with_reduced(true)` 后，子作用域继承该偏好。当前控件在下次提交抵达终态，仍会显示选中、按下和焦点反馈。
+- 控件可选内置缓动，或用 `StateMotion::with_curve` / `Motion::with_state_curve` 引用静态 `StyleCurve`。可自定义三次贝塞尔控制点或提供 17 个等间距采样值。每棵树可引用 `MAX_ANIMATIONS` 条不同的自定义曲线，重复引用共用一项，超限返回 `BuildError::MotionCurves`。内置缓动和时长不占这个配额。
+- 页面、入场、退场使用 `Motion.page`、`entrance`、`exit`。调用 `PageTransition::play_styled(motion, role, local, now)` 解析预设、时长和曲线。退场自动倒放，节点需保留到结束。应用持有的转场在偏好改变时调用 `apply_motion(motion, now)`，即可在同一事务抵达对应的终帧。业务采样周期和提示停留时间由应用独立设置。
+
+### 模型持有的动画
+
+单个数值变化用 `Tween`，自绘控件可以把它的值解释为角度、颜色混合比例或仪表读数。整页或子树的常用动效用 `PageTransition`。两者都存入应用模型，在 `App::animations` 绑定到稳定键，由宿主原有的 `Engine::tick` 和 `wakeup` 驱动。例如，可以把一张卡片绑定到 `Key(42)`：
+
+```rust
+// App::animations
+fn animations(m: &mut Self::Model, bind: &mut dyn FnMut(Key, &mut dyn Animation)) {
+    bind(Key(42), &mut m.card);
+}
+
+// 在 update 中播放并返回 Change::View
+m.card.start(TransitionKind::FloatUp, now, 280);
+
+// 在 view 中声明并装饰卡片后
+m.card.frame().apply(ui, Key(42))?;
+```
+
+引擎合并下一帧、业务定时器和按键重复的唤醒时间。动画延迟期间可以休眠，迟到的帧按单调时钟直接追到当前进度，最后一帧提交后停止唤醒。注册时也应列出属于其他页面的动画，框架会在节点退出已提交的树后取消它们。旧应用可以继续使用手工采样接口。迁移时删除对应的 `on_timer` 和 `next_deadline` 分支，在视图中读取 `Tween::current()` 或 `PageTransition::frame()`。重新调用 `animate_to` 会从事件发生时的取值续接，`cancel(now)` 会冻结当时的值。
+
+| 需求 | 用法 |
+|---|---|
+| 内置动效 | `TransitionKind::ALL` 包含四向滑入、四向浮入并淡显、淡显、放大进入、缩小进入、弹出、脉冲、摇动、弹跳和翻转。 |
+| 缓动 | `Easing::ALL` 列出 12 条曲线，包括线性、二次和三次缓入缓出、SmoothStep、SmootherStep、回弹超调、落地回跳和末端阶跃。`Curve::Bezier(CubicBezier::new(250,100,250,1000).unwrap())` 按时间轴求值。`Curve::Custom(fn(u16) -> i16)` 接受千分比时间，允许中间值超调。 |
+| 延迟、倒放、重复、往返 | 用 `Timing { delay_ms, reverse, repeat, alternate, ..Timing::once(ms) }` 和 `PageTransition::play`。`Repeat::Times(n)` 计单程次数，往返一轮取 2。播放退出动效时，需保留节点到终帧，再由应用执行路由切换。 |
+| 多段与并行动画 | 给 `Playback` 绑定节点，在视图中用同一个 `progress()` 采样多组 `Keyframes`。每组由调用方提供有序切片，首尾时间为 0 和 1000；每个键控制到下一个键的插值曲线。相邻键取相同值可让某个属性等待其他属性完成。 |
+| 自定义转场 | `PageTransition::with_curve` 改变时间曲线，`play_custom` 接受从缓动进度到 `TransitionFrame` 的函数。也可以直接根据模型构造帧，或在自绘控件中驱动其他属性。 |
+
+`TransitionFrame.layout` 的位移按父容器内容框的宽高计算，`grow` 围绕子节点中心改变布局框，子节点的绘制与命中随框移动。文字仍用原来的字号。增强档可叠加 4 位组透明度和绕 Y 轴的投影。基础档的淡显与翻转预设以尺寸变化表达，浮入保留位移。关键帧切片可以放在 Flash，播放和调度均无需堆分配。
 
 ### 主题系统与按能力细粒度配置
 
-主题由正交、可独立替换和逐项微调的配置令牌组成：`ColorScheme`（画布、三级抬升表面、`border_strong`、主文字/次文字/禁用文字、`accent`、`danger`、`success`、`warning`、`focus`）、`Density`（控件高度、间距、内边距、标题/图元高度）、`Shape`（三档圆角与边框线宽）、`Typography`（标题/正文/说明字体槽）、`ElevationScale`（`Raised`/`Floating` 阴影偏移、模糊、透明度与色调抬升）、`GlassStyle`（毛玻璃模糊半径、透色遮罩颜色与透明度、高光边框）、`InteractionStyle`（`FocusRingStyle` 启用/线宽/外扩/圆角模式、`PressFeedback` 暗化/提亮/强调染色/禁用、模态遮罩透明度）、`Motion`（`PressDepth` 时长/缩放比例/缓动、`Toggle` 缓动、提示与翻转时长）以及 `EffectsConfig`。
+主题由正交、可独立替换和逐项微调的配置令牌组成：`ColorScheme`（画布、三级抬升表面、`border_strong`、主文字/次文字/禁用文字、`accent`、`danger`、`success`、`warning`、`focus`）、`Density`（控件高度、间距、内边距、标题/图元高度）、`Shape`（三档圆角与边框线宽）、`Typography`（标题/正文/说明字体槽）、`ElevationScale`（`Raised`/`Floating` 阴影偏移、模糊、透明度与色调抬升）、`GlassStyle`（毛玻璃模糊半径、透色遮罩颜色与透明度、高光边框）、`InteractionStyle`（`FocusRingStyle` 启用/线宽/外扩/圆角模式、`PressFeedback` 暗化/提亮/强调染色/禁用、模态遮罩透明度）、`Motion`（状态时长与曲线、页面/入场/退场样式、减少动态效果偏好、按压深度与提示停留时长）以及 `EffectsConfig`。
 
 - 预设构造：`Theme::DARK`、`Theme::LIGHT` 与 `Theme::preset(ThemePreset::{Liuli, Classic, Industrial}, dark)`；`EffectTier::{Flat, Depth, Tinted, Glass}` 作为构造 `EffectsConfig` 的快捷挡位。
 - 逐项独立覆盖：所有结构字段和单能力开关都可以单独调整，例如 `theme.with_shadows(false)`、`theme.with_press_depth(false)`、`theme.with_glass_blur(false)`、`theme.with_blur_radius(3)`、`theme.with_glass_tint(None, 8)`、`theme.with_rounded_focus(true)`、`theme.with_control_height(38)`、`theme.with_motion(Motion::SNAPPY)`，也保留 1.x `Theme::with(Style { .. })` 的局部覆盖兼容。
 - 语义化容器与按钮变体：`SurfaceSpec` 统一组合 `Material::{Solid, Glass { .. }, Transparent}`、`Elevation::{Flat, Raised, Floating}` 与 `Compositor`（组透明度与 3D 投影）；`ButtonVariant` 提供 `Surface`、`Primary`、`Secondary`、`Outline`、`Ghost`、`Danger`。通过 `ThemedUi` 作用域构建器声明 `card` / `surface_column` / `button` 时，框架按 `EffectsConfig` 自动降级（例如关闭模糊但保留透色玻璃，或无图层后端时退回实色抬升卡片），同时保持 `Compositor` 变更可命中 `reuse_groups` 缓存。
+
+焦点框默认跟随控件的 `radius`。例如按钮半径为 6 px、四周留有空间时，默认焦点框外扩 2 px，外侧半径为 8 px，描边宽 2 px。靠近裁剪边界时，圆角框会等量缩小四边的外扩距离。直角按钮使用直角框；主题或局部作用域可用 `with_rounded_focus(false)` 强制使用直角框。键盘或旋钮导航显示焦点框，触摸按下控件会隐藏它。
 
 ## 表面效果与图层合成
 
@@ -116,6 +225,8 @@ cargo run --offline --manifest-path liuli-alarms/Cargo.toml --example editor --f
 ~~~
 
 示例把 TextField 放在模型中，用 accepts_text 和 on_text 接收焦点路由的 TextInput。预编辑与已提交字符串分开保存，按字素进行删除，按视觉顺序移动光标。paint_model 提交不可变的 RGB565 文本图，保留到该帧被替换。单行控件在创建时指定最大 UTF-8 字节数，容量或栅格化失败时保留上次成功的文字和图像。
+
+若文本控件需要直接把借用的输入写入模型，可实现 `App::update_text`。M1–M6 演示的表单页将提交、移动光标和退格交给 `MultiLineState::apply_text`，省去了消息中的字符串副本。
 
 ## 录制、排查与回归
 
@@ -173,6 +284,8 @@ try_message、try_dispatch 和 try_advance 提供事务结果。Busy 会交还�
 
 导航示例在 liuli-alarms/src/lib.rs。Navigator 以 const 容量保存携带参数的页面枚举。确认框关闭后才处理页面返回。离开列表前保存条目键、偏移和焦点，返回时通过 page_restore 提供这些值。运行 workflow 测试可检查整条路径。
 
+一页有多个滚动容器时，通过 `page_restore(model, page).scroll_key` 指定要随页保存和恢复的容器。方向键将焦点移入嵌套视口时，发生移动的每一层都会触发一次 `on_scroll`，本次输入的模型更新合并为一次视图提交。
+
 
 ## 容量档位与声明式布局进阶
 
@@ -190,11 +303,13 @@ try_message、try_dispatch 和 try_advance 提供事务结果。Busy 会交还�
 - **扩展容器与排版**：`Justify::{Start, Center, End, SpaceBetween, SpaceAround, SpaceEvenly}` 控制主轴分配；`Children::grid(key, cols, props, ...)` 构建固定列数网格；`Children::scroll_x(key, props, ...)` 支持横向滚动容器。
 - **2D 方向导航与物理滚动**：`NavDir` 在树中执行几何方向焦点移动；`ScrollPhysics` 提供 Q8 定点滑动惯性、阻力衰减、越界回弹（`with_bounce`）和刻度吸附（`with_snap`）。
 
+当按钮和拖动操作同一个滚动容器时，可通过 `App::scroll_controller` 按容器键返回模型中的 `ScrollPhysics`。引擎按实际内容和视口尺寸设置范围，并把拖动结果同步给控制器。按钮可以启动惯性动画，由应用定时器推进。容器会按合法范围绘制一次偏移，子行使用正常布局坐标。M1–M6 演示的网格页使用这个接口。
+
 ### 3. 扩展控件、表单、图表与转场
 `liuli_widgets` 新增高阶组件，全部保持 `#![no_std]` 与有界内存：
 - **表单输入**（`inputs`）：`checkbox` / `paint_checkbox`、`radio` / `paint_radio`、`dropdown`（`DropdownState`）、`roller`（`RollerState`）与多行文本编辑器 `multi_line_editor` / `paint_multi_line_editor`（`MultiLineState`）。
 - **数据展示**（`data`）：`data_table`（`TableColumn` 表头与斑马纹行选择）、`gauge` / `paint_gauge`（`GaugeSpec`）、`spinner` / `paint_spinner`、`rich_text` / `paint_rich_text`（多段彩色样式 `TextSpan`）、柱状图 `paint_bar_chart` 与多折线图 `paint_multi_line_chart`（`ChartSeries`）。
-- **页面转场**（`transition`）：`PageTransition` 与 `TransitionKind::{SlideLeft, SlideRight, SlideUp, Fade}`，使用整数像素位移和组透明度控制切页动效。
+- **页面转场**使用 `PageTransition` 和 `TransitionFrame`。预设、组合与自定义用法见本页“动画”。
 
 ### 4. L565 v2 压缩纹理、渐变、旋转与硬件 2D 加速
 - **位图打包 v2**：`liuli-image` 支持 `--v2`、`--rle`（行索引行程压缩）与 `--chroma-key <hex>`（透明色键）；对应渲染标志 `L565_FLAG_CHROMA_KEY`、`L565_FLAG_ALPHA4`、`L565_FLAG_RLE`。

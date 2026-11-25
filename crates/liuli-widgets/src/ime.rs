@@ -266,30 +266,43 @@ impl<const CAP: usize> FixedTextEditor<CAP> {
         scroll_x: i32,
         font: Option<&Lf4Font<'_>>,
     ) -> bool {
-        let target_x = (local_x - TEXT_BOX_PAD_X + scroll_x).max(0);
+        let mut tmp = [0u8; MAX_DISPLAY_BYTES];
+        let (display, start, end, _) = self.format_display(&mut tmp);
+        self.place_display_cursor(local_x, scroll_x, font, display, start..end)
+    }
+
+    fn place_display_cursor(
+        &mut self,
+        local_x: i32,
+        scroll_x: i32,
+        font: Option<&Lf4Font<'_>>,
+        display: &str,
+        preedit: core::ops::Range<usize>,
+    ) -> bool {
+        let target_x = local_x
+            .saturating_sub(TEXT_BOX_PAD_X)
+            .saturating_add(scroll_x)
+            .max(0);
         let mut best_pos = 0usize;
         let mut best_dist = target_x.abs();
         let mut pen_q2 = 0i64;
         let mut prev: Option<char> = None;
-
-        for (idx, ch) in self.text().char_indices() {
+        let mut committed = self.text().chars();
+        let mut pos = 0;
+        for (idx, ch) in display.char_indices() {
+            pen_q2 += char_adv_q2(ch, prev, font);
+            prev = Some(ch);
+            if !preedit.contains(&idx)
+                && let Some(original) = committed.next()
+            {
+                pos += original.len_utf8();
+            }
             let boundary_x = ((pen_q2 + 2) >> 2) as i32;
             let dist = (target_x - boundary_x).abs();
-            if dist < best_dist {
+            if dist < best_dist || (idx + ch.len_utf8() == display.len() && dist == best_dist) {
                 best_dist = dist;
-                best_pos = idx;
+                best_pos = pos;
             }
-            if self.password {
-                pen_q2 += char_adv_q2('*', prev, font);
-                prev = Some('*');
-            } else {
-                pen_q2 += char_adv_q2(ch, prev, font);
-                prev = Some(ch);
-            }
-        }
-        let end_x = ((pen_q2 + 2) >> 2) as i32;
-        if (target_x - end_x).abs() <= best_dist {
-            best_pos = self.len;
         }
 
         let changed = self.cursor != best_pos || self.preedit_len > 0;
@@ -1450,8 +1463,9 @@ pub fn paint_text_box<const CAP: usize>(
             }
         }
         if active {
-            let cx = (inner.x + caret_x - scroll_x).clamp(inner.x, inner.x + inner.w as i32 - 2);
-            canvas.fill(Rect::new(cx, text_y, 2, line_h.min(18)), props.accent)?;
+            let w = inner.w.min(2);
+            let cx = (inner.x + caret_x - scroll_x).clamp(inner.x, inner.x + (inner.w - w) as i32);
+            canvas.fill(Rect::new(cx, text_y, w, line_h.min(18)), props.accent)?;
         }
     }
     canvas.pop_clip();
@@ -1469,10 +1483,10 @@ pub fn text_box_on_pointer<const CAP: usize>(
     }
     let inner_w = ev.size.width.saturating_sub((TEXT_BOX_PAD_X * 2) as u32) as i32;
     let mut tmp = [0u8; MAX_DISPLAY_BYTES];
-    let (disp, _, _, caret_byte) = editor.format_display(&mut tmp);
+    let (disp, start, end, caret_byte) = editor.format_display(&mut tmp);
     let caret_x = measure_prefix_px(disp, caret_byte, font, false);
     let scroll_x = (caret_x + 3 - inner_w).max(0);
-    editor.set_cursor_from_x(ev.local.x, scroll_x, font)
+    editor.place_display_cursor(ev.local.x, scroll_x, font, disp, start..end)
 }
 
 #[inline]

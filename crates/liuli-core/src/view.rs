@@ -36,6 +36,14 @@ pub trait App {
     fn view(model: &Self::Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildError>;
     fn on_action(model: &Self::Model, event: UiAction) -> Option<Self::Msg>;
 
+    /// Visit model-owned animations, including inactive ones. The engine advances them,
+    /// coalesces wakeups and cancels a binding when its node leaves the committed tree.
+    fn animations(
+        _model: &mut Self::Model,
+        _bind: &mut dyn FnMut(Key, &mut dyn crate::animation::Animation),
+    ) {
+    }
+
     fn accepts_text(_model: &Self::Model, _key: Key) -> bool {
         false
     }
@@ -46,6 +54,16 @@ pub trait App {
     ) -> Option<Self::Msg> {
         None
     }
+    /// Apply borrowed text directly to model storage or dispatch the application's text message.
+    fn update_text(
+        model: &mut Self::Model,
+        key: Key,
+        input: crate::input::TextInput<'_>,
+        now: InstantMs,
+    ) -> Option<Change> {
+        Self::on_text(model, key, input).map(|msg| Self::update(model, msg, now))
+    }
+
     /// Intrinsic content size of a custom leaf, excluding padding.
     fn measure_custom(
         _key: Key,
@@ -53,6 +71,16 @@ pub trait App {
         _available: crate::geometry::Size,
     ) -> crate::geometry::Size {
         crate::geometry::Size::zero()
+    }
+
+    /// Style-aware intrinsic measurement. The same resolved dimensions reach the painter.
+    fn measure_custom_styled(
+        key: Key,
+        font: FontId,
+        available: crate::geometry::Size,
+        _metrics: crate::part_style::PartMetrics,
+    ) -> crate::geometry::Size {
+        Self::measure_custom(key, font, available)
     }
 
     /// Emit bounded paint commands for a custom leaf. All paint dependencies
@@ -119,6 +147,16 @@ pub trait App {
         None
     }
 
+    /// Bind a model's animation to the native ScrollX/ScrollY position. The engine supplies
+    /// the measured bounds and synchronizes direct manipulation. Advance the controller
+    /// from the app timer and return `Change::View` when its position changes.
+    fn scroll_controller(
+        _model: &mut Self::Model,
+        _key: Key,
+    ) -> Option<&mut crate::time::ScrollPhysics> {
+        None
+    }
+
     fn next_deadline(_model: &Self::Model, _now: InstantMs) -> Option<InstantMs> {
         None
     }
@@ -152,7 +190,8 @@ pub trait App {
 /// 1-based slot link so `0` represents an empty link and types using it remain all-zero in `.bss`.
 #[repr(transparent)]
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Default)]
-pub struct SlotLink(u16);
+pub struct SlotLink(u8);
+const _: () = assert!(MAX_NODES <= u8::MAX as usize);
 
 impl SlotLink {
     pub const NONE: Self = Self(0);
@@ -160,7 +199,7 @@ impl SlotLink {
     #[inline]
     pub const fn from_slot(slot: usize) -> Option<Self> {
         if slot < MAX_NODES {
-            Some(Self((slot + 1) as u16))
+            Some(Self((slot + 1) as u8))
         } else {
             None
         }
@@ -169,7 +208,7 @@ impl SlotLink {
     #[inline]
     pub const fn from_slot_u16(slot: u16) -> Option<Self> {
         if (slot as usize) < MAX_NODES {
-            Some(Self(slot + 1))
+            Some(Self((slot + 1) as u8))
         } else {
             None
         }
@@ -192,7 +231,7 @@ impl SlotLink {
         } else {
             let idx = self.0 - 1;
             if (idx as usize) < MAX_NODES {
-                Some(idx)
+                Some(idx as u16)
             } else {
                 None
             }
@@ -552,9 +591,27 @@ pub enum NodeKind {
     CustomContainer = 14,
     ScrollX = 15,
     Grid = 16,
+    TabBar = 17,
+    Tab = 18,
+    TabPanel = 19,
 }
 
 impl NodeKind {
+    pub const fn scrolls_x(self) -> bool {
+        matches!(self, Self::ScrollX | Self::TabBar)
+    }
+
+    pub const fn is_scroll_view(self) -> bool {
+        self.scrolls_x() || matches!(self, Self::ScrollY)
+    }
+
+    pub(crate) const fn layout_kind(self) -> Self {
+        match self {
+            Self::TabPanel => Self::Column,
+            other => other,
+        }
+    }
+
     pub const fn is_container(self) -> bool {
         matches!(
             self,
@@ -568,8 +625,33 @@ impl NodeKind {
                 | Self::Wrap
                 | Self::CustomContainer
                 | Self::Grid
+                | Self::TabBar
+                | Self::TabPanel
         )
     }
+}
+
+/// Overflow policy for one semantic tab bar. Track widths are measured using the active font.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TabLayout {
+    #[default]
+    Scroll,
+    Wrap {
+        max_rows: u8,
+    },
+    Columns(u8),
+}
+
+const SCROLL_OFFSET_PRESENT: i16 = i16::MIN;
+
+fn pack_payload(bits: u32) -> (i16, i16) {
+    let [a, b, c, d] = bits.to_le_bytes();
+    (i16::from_le_bytes([a, b]), i16::from_le_bytes([c, d]))
+}
+fn unpack_payload(lo: i16, hi: i16) -> u32 {
+    let [a, b] = lo.to_le_bytes();
+    let [c, d] = hi.to_le_bytes();
+    u32::from_le_bytes([a, b, c, d])
 }
 
 /// Visual press feedback applied to a button or container background when `pressed`.
@@ -620,12 +702,13 @@ impl PressFeedback {
     }
 }
 
-/// Configurable focus outline geometry. `DEFAULT` (`0x00` encoded) emits a 2 px sharp outward outline.
+/// A focus outline. By default a 2 px stroke follows the widget's corners.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct FocusRingStyle {
     pub enabled: bool,
     pub width: u8,
     pub offset: u8,
+    /// Follow the widget's radius. Set to false to force square corners.
     pub rounded: bool,
 }
 
@@ -634,7 +717,7 @@ impl FocusRingStyle {
         enabled: true,
         width: 2,
         offset: 2,
-        rounded: false,
+        rounded: true,
     };
     pub const OFF: Self = Self {
         enabled: false,
@@ -645,7 +728,7 @@ impl FocusRingStyle {
 
     #[inline]
     pub const fn to_raw(self) -> u8 {
-        if self.enabled && self.width == 2 && self.offset == 2 && !self.rounded {
+        if self.enabled && self.width == 2 && self.offset == 2 && self.rounded {
             return 0;
         }
         let w = if self.width < 1 {
@@ -671,6 +754,25 @@ impl FocusRingStyle {
             rounded: (raw & 0x20) != 0,
         }
     }
+
+    /// Outer stroke bounds and radius before clipping to the viewport.
+    pub fn outline_geometry(self, rect: Rect, clip: Rect, radius: u8) -> (Rect, u8) {
+        let offset = u32::from(self.offset.min(3));
+        if !self.rounded || radius == 0 {
+            return (rect.union(rect.expand(offset).intersect(clip)), 0);
+        }
+        // All four arcs stay concentric with the button, including at viewport edges.
+        let clearance = (rect.left64() - clip.left64())
+            .min(rect.top64() - clip.top64())
+            .min(clip.right64() - rect.right64())
+            .min(clip.bottom64() - rect.bottom64());
+        let expansion = clearance.clamp(0, i64::from(offset)) as u32;
+        let body_radius = u32::from(radius).min(rect.w / 2).min(rect.h / 2);
+        (
+            rect.expand(expansion),
+            (body_radius + expansion).min(255) as u8,
+        )
+    }
 }
 
 impl Default for FocusRingStyle {
@@ -679,9 +781,77 @@ impl Default for FocusRingStyle {
     }
 }
 
+/// State that supplies a normalized 0..=1000 target to a widget painter.
+#[derive(Copy, Clone, Default, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum MotionState {
+    #[default]
+    None,
+    Pressed,
+    Checked,
+    Focused,
+    Value,
+}
+
+/// A paint-only transition. A zero duration still publishes the exact target.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct StateMotion {
+    pub state: MotionState,
+    pub duration_ms: u16,
+    pub easing: Easing,
+    pub curve: Option<&'static crate::animation::StyleCurve>,
+}
+
+impl StateMotion {
+    pub const fn new(state: MotionState, duration_ms: u16, easing: Easing) -> Self {
+        Self {
+            state,
+            duration_ms,
+            easing,
+            curve: None,
+        }
+    }
+    pub const fn with_curve(mut self, curve: &'static crate::animation::StyleCurve) -> Self {
+        self.curve = Some(curve);
+        self
+    }
+}
+
+/// Three low bits select the state. The remaining bits index a tree-local palette of custom curves.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
+pub(crate) struct MotionBinding(u8);
+impl MotionBinding {
+    pub(crate) const EMPTY: Self = Self(0);
+    fn new(state: MotionState, slot: u8) -> Self {
+        Self(state as u8 | (slot << 3))
+    }
+    pub(crate) fn state(self) -> MotionState {
+        match self.0 & 7 {
+            1 => MotionState::Pressed,
+            2 => MotionState::Checked,
+            3 => MotionState::Focused,
+            4 => MotionState::Value,
+            _ => MotionState::None,
+        }
+    }
+    pub(crate) fn curve(
+        self,
+        curves: &CurvePalette,
+    ) -> Option<&'static crate::animation::StyleCurve> {
+        (self.0 >> 3)
+            .checked_sub(1)
+            .and_then(|i| curves[i as usize])
+    }
+}
+pub(crate) type CurvePalette =
+    [Option<&'static crate::animation::StyleCurve>; crate::capacity::MAX_ANIMATIONS];
+const _: () = assert!(crate::capacity::MAX_ANIMATIONS < 32);
+
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct NodeProps {
     pub style_source: crate::style_source::StyleSource,
+    /// Declarative part defaults and local overrides, interned by the scene builder.
+    pub parts: crate::part_style::WidgetPartStyle,
     pub width: Length,
     pub height: Length,
     pub padding: EdgeInsets,
@@ -723,6 +893,9 @@ pub struct NodeProps {
     pub theme_id: u16,
     pub series: u8,
     pub anim_easing: Easing,
+    pub motion_state: MotionState,
+    pub motion_ms: u16,
+    pub motion_curve: Option<&'static crate::animation::StyleCurve>,
     pub repeatable: bool,
     pub swipeable: bool,
     pub long_press: bool,
@@ -745,6 +918,7 @@ impl NodeProps {
     pub const fn new() -> Self {
         Self {
             style_source: crate::style_source::StyleSource::named("NodeProps").declared(),
+            parts: crate::part_style::WidgetPartStyle::ZERO,
             width: Length::Content,
             height: Length::Content,
             padding: EdgeInsets::ZERO,
@@ -786,6 +960,9 @@ impl NodeProps {
             theme_id: 0,
             series: 0,
             anim_easing: Easing::Linear,
+            motion_state: MotionState::None,
+            motion_ms: 0,
+            motion_curve: None,
             repeatable: false,
             swipeable: false,
             long_press: false,
@@ -798,7 +975,29 @@ impl NodeProps {
         }
     }
 
+    /// Merge a local override over the declaration's theme defaults.
+    pub const fn with_parts(mut self, style: crate::part_style::WidgetPartStyle) -> Self {
+        self.parts = self.parts.merge(style);
+        self
+    }
+
     #[inline]
+    /// Initial offset for a scroll viewport when its keyed node is mounted.
+    /// Subsequent commits preserve live input unless a scroll controller is bound.
+    pub fn initial_scroll_offset(mut self, offset: i32) -> Self {
+        self.step = SCROLL_OFFSET_PRESENT;
+        (self.min, self.max) = pack_payload(offset.max(0) as u32);
+        self
+    }
+
+    pub const fn state_motion(mut self, motion: StateMotion) -> Self {
+        self.motion_state = motion.state;
+        self.motion_ms = motion.duration_ms;
+        self.motion_curve = motion.curve;
+        self.anim_easing = motion.easing;
+        self
+    }
+
     pub const fn width(mut self, width: Length) -> Self {
         self.width = width;
         self
@@ -995,6 +1194,7 @@ const FLAG_ENABLED: u16 = 1 << 5;
 const FLAG_VISIBLE: u16 = 1 << 6;
 const FLAG_CLICKABLE: u16 = 1 << 7;
 const FLAG_TEXT_DYN: u16 = 1 << 8;
+const FLAG_STATE_MOTION: u16 = 1 << 9;
 const TEXT_ALIGN_SHIFT: u16 = 10;
 const TEXT_ALIGN_MASK: u16 = 0b11 << TEXT_ALIGN_SHIFT;
 const FLAG_EASE_OUT_CUBIC: u16 = 1 << 12;
@@ -1074,7 +1274,11 @@ impl StoredProps {
     };
 
     pub fn from_props(p: NodeProps) -> Self {
-        let mut flags = 0u16;
+        let mut flags = if p.motion_state == MotionState::None {
+            0
+        } else {
+            FLAG_STATE_MOTION
+        };
         let bg_raw = match p.bg {
             Some(c) => {
                 flags |= FLAG_HAS_BG;
@@ -1115,7 +1319,7 @@ impl StoredProps {
             .with_subpixel(p.subpixel);
         let text_style_raw = (text_style_flags.0 & 0x3F) | (((p.font as u8) & 0x03) << 6);
         flags |= ((p.text_align as u16) << TEXT_ALIGN_SHIFT) & TEXT_ALIGN_MASK;
-        if p.anim_easing == Easing::EaseOutCubic {
+        if p.anim_easing as u8 & 1 != 0 {
             flags |= FLAG_EASE_OUT_CUBIC;
         }
         if p.swipeable {
@@ -1138,6 +1342,7 @@ impl StoredProps {
             ),
         };
         let mut ext_flags = (p.pointer_capture as u16) & EXT_POINTER_CAPTURE_MASK;
+        ext_flags |= ((p.anim_easing as u16) >> 1) << 12;
         if p.editable {
             ext_flags |= EXT_FLAG_EDITABLE;
         }
@@ -1227,6 +1432,10 @@ impl StoredProps {
     }
 
     #[inline]
+    pub const fn has_state_motion(&self) -> bool {
+        self.flags & FLAG_STATE_MOTION != 0
+    }
+
     pub const fn clickable(&self) -> bool {
         (self.flags & FLAG_CLICKABLE) != 0
     }
@@ -1298,11 +1507,9 @@ impl StoredProps {
 
     #[inline]
     pub const fn anim_easing(&self) -> Easing {
-        if (self.flags & FLAG_EASE_OUT_CUBIC) != 0 {
-            Easing::EaseOutCubic
-        } else {
-            Easing::Linear
-        }
+        Easing::from_id(
+            ((self.ext_flags >> 12) as u8) << 1 | ((self.flags & FLAG_EASE_OUT_CUBIC) != 0) as u8,
+        )
     }
 
     #[inline]
@@ -1354,6 +1561,28 @@ impl StoredProps {
     }
 
     #[inline]
+    pub(crate) fn key_payload(&self) -> Key {
+        Key(unpack_payload(self.min, self.max))
+    }
+    pub(crate) fn initial_scroll(&self) -> i32 {
+        if self.step == SCROLL_OFFSET_PRESENT {
+            unpack_payload(self.min, self.max) as i32
+        } else {
+            0
+        }
+    }
+    pub fn tab_layout(&self) -> TabLayout {
+        if self.grid_cols() > 0 {
+            TabLayout::Columns(self.grid_cols())
+        } else if self.max > 1 {
+            TabLayout::Wrap {
+                max_rows: self.max as u8,
+            }
+        } else {
+            TabLayout::Scroll
+        }
+    }
+
     pub const fn grid_cols(&self) -> u8 {
         self.series
     }
@@ -1511,6 +1740,8 @@ impl Default for SparklinePool {
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct DraftNode {
+    pub(crate) motion: MotionBinding,
+    pub(crate) motion_ms: u16,
     pub key: Key,
     pub kind: NodeKind,
     pub props: StoredProps,
@@ -1522,6 +1753,8 @@ pub struct DraftNode {
 
 impl DraftNode {
     pub const EMPTY: Self = Self {
+        motion: MotionBinding::EMPTY,
+        motion_ms: 0,
         key: Key(0),
         kind: NodeKind::Label,
         props: StoredProps::ZERO,
@@ -1533,6 +1766,7 @@ impl DraftNode {
 }
 
 pub struct ViewDraft {
+    pub(crate) curves: crate::view::CurvePalette,
     pub effects: crate::effects::Effects,
     pub part_styles: crate::part_style::PartStyles,
     pub layout_extras: crate::part_style::LayoutExtras,
@@ -1548,8 +1782,18 @@ pub struct ViewDraft {
 }
 
 impl ViewDraft {
+    pub fn part_style(&self, key: Key) -> &crate::part_style::WidgetPartStyle {
+        self.nodes[..usize::from(self.count)]
+            .iter()
+            .position(|n| n.key == key)
+            .map_or(&crate::part_style::WidgetPartStyle::ZERO, |i| {
+                self.part_styles.get(i)
+            })
+    }
+
     pub const ZERO: Self = Self {
         effects: crate::effects::Effects::EMPTY,
+        curves: [None; crate::capacity::MAX_ANIMATIONS],
         part_styles: crate::part_style::PartStyles::EMPTY,
         layout_extras: crate::part_style::LayoutExtras::EMPTY,
         #[cfg(feature = "inspector")]
@@ -1576,6 +1820,7 @@ impl ViewDraft {
         self.text_len = 0;
         self.sparklines.reset();
         self.effects = crate::effects::Effects::EMPTY;
+        self.curves = [None; crate::capacity::MAX_ANIMATIONS];
         self.part_styles = crate::part_style::PartStyles::EMPTY;
         self.layout_extras = crate::part_style::LayoutExtras::EMPTY;
         self.root = SlotLink::NONE;
@@ -1707,12 +1952,15 @@ impl<'a, 'b> Children<'a, 'b> {
         key: Key,
         style: crate::part_style::WidgetPartStyle,
     ) -> Result<(), BuildError> {
-        self.ensure_key(key)?;
-        self.builder
-            .draft
-            .part_styles
-            .set(key, style)
-            .map_err(|err| self.builder.fail(err))
+        let b = &mut self.builder;
+        b.operation_key = Some(key);
+        let Some(i) = b.draft.nodes[..usize::from(b.draft.count)]
+            .iter()
+            .position(|n| n.key == key)
+        else {
+            return Err(b.fail(BuildError::InvalidRange));
+        };
+        b.draft.part_styles.merge(i, style).map_err(|e| b.fail(e))
     }
 
     /// Apply a signed layout pixel offset on any declared child (clipped by its parent container).
@@ -1723,6 +1971,41 @@ impl<'a, 'b> Children<'a, 'b> {
             .layout_extras
             .set_offset(key, dx, dy)
             .map_err(|err| self.builder.fail(err))
+    }
+
+    /// Translate relative to the real parent viewport and resize around the child's centre.
+    pub fn set_layout_motion(
+        &mut self,
+        key: Key,
+        motion: crate::part_style::LayoutMotion,
+    ) -> Result<(), BuildError> {
+        self.ensure_key(key)?;
+        self.builder
+            .draft
+            .layout_extras
+            .set_motion(key, motion)
+            .map_err(|err| self.builder.fail(err))
+    }
+
+    /// Compose opacity and a Y-axis turn with the node's declared surface.
+    pub fn animate_layer(&mut self, key: Key, opacity: u8, turn: u8) -> Result<(), BuildError> {
+        self.ensure_key(key)?;
+        if opacity > 15 {
+            return Err(self.builder.fail(BuildError::InvalidRange));
+        }
+        #[cfg(feature = "layers")]
+        {
+            self.builder
+                .draft
+                .effects
+                .animate_layer(key, opacity, turn)
+                .map_err(|err| self.builder.fail(err))
+        }
+        #[cfg(not(feature = "layers"))]
+        {
+            let _ = turn;
+            Ok(())
+        }
     }
 
     /// Set a clean invalidation revision token for custom/overridden widgets.
@@ -1808,6 +2091,42 @@ impl<'a, 'b> Children<'a, 'b> {
     {
         self.builder
             .scoped_container(key, NodeKind::Stack, props, f)
+    }
+
+    #[inline]
+    pub fn tab_bar<F>(
+        &mut self,
+        key: Key,
+        layout: TabLayout,
+        mut props: NodeProps,
+        f: F,
+    ) -> Result<(), BuildError>
+    where
+        F: FnOnce(&mut Children<'a, '_>) -> Result<(), BuildError>,
+    {
+        (props.max, props.grid_cols) = match layout {
+            TabLayout::Scroll => (1, 0),
+            TabLayout::Wrap { max_rows } => (i16::from(max_rows.max(1)), 0),
+            TabLayout::Columns(n) => (1, n.max(1)),
+        };
+        self.builder
+            .scoped_container(key, NodeKind::TabBar, props, f)
+    }
+
+    pub fn tab_panel<F>(
+        &mut self,
+        key: Key,
+        active_tab: Key,
+        mut props: NodeProps,
+        f: F,
+    ) -> Result<(), BuildError>
+    where
+        F: FnOnce(&mut Children<'a, '_>) -> Result<(), BuildError>,
+    {
+        // Panels have no numeric range. Reuse that space for a full-width stable key.
+        (props.min, props.max) = pack_payload(active_tab.0);
+        self.builder
+            .scoped_container(key, NodeKind::TabPanel, props, f)
     }
 
     #[inline]
@@ -2168,7 +2487,29 @@ impl<'a> ViewBuilder<'a> {
         let Some(link) = SlotLink::from_slot(count) else {
             return Err(self.fail(BuildError::Nodes));
         };
+        let mut curve_slot = 0;
+        if props.motion_state != MotionState::None
+            && props.motion_ms > 0
+            && let Some(curve) = props.motion_curve
+        {
+            let curves = &mut self.draft.curves;
+            let Some(i) = curves
+                .iter()
+                .position(|c| *c == Some(curve))
+                .or_else(|| curves.iter().position(Option::is_none))
+            else {
+                return Err(self.fail(BuildError::MotionCurves));
+            };
+            curves[i] = Some(curve);
+            curve_slot = i as u8 + 1;
+        }
+        self.draft
+            .part_styles
+            .merge(count, props.parts)
+            .map_err(|e| self.fail(e))?;
         self.draft.nodes[count] = DraftNode {
+            motion: MotionBinding::new(props.motion_state, curve_slot),
+            motion_ms: props.motion_ms,
             key,
             kind,
             props: StoredProps::from_props(props),

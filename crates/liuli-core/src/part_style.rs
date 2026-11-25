@@ -1,9 +1,10 @@
-use crate::capacity::BuildError;
-use crate::geometry::Rgb565;
+use crate::capacity::{BuildError, MAX_NODES};
+use crate::geometry::{Rect, Rgb565, Size};
 use crate::view::Key;
 
-/// Maximum per-node part style overrides per scene graph.
+/// Maximum distinct part styles per scene. Identical styles share one entry.
 pub const MAX_PART_STYLES: usize = 12;
+const _: () = assert!(MAX_PART_STYLES <= 15 && MAX_NODES <= u8::MAX as usize);
 
 /// Maximum per-node layout offsets / custom revisions per scene graph.
 pub const MAX_LAYOUT_EXTRAS: usize = 12;
@@ -19,6 +20,73 @@ pub enum WidgetPart {
     Knob = 3,
     Content = 4,
     FocusRing = 5,
+}
+
+/// The selection decoration occupies the control or follows its measured content.
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
+pub enum IndicatorSpan {
+    #[default]
+    Control,
+    Content,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
+pub enum IndicatorShape {
+    #[default]
+    Bottom,
+    Top,
+    Fill,
+    Hidden,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
+pub enum IndicatorMotion {
+    #[default]
+    Reveal,
+    Fade,
+    Slide,
+    Instant,
+}
+
+/// Paint geometry only. Neither sizing nor hit testing uses the decoration.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub struct IndicatorLayout {
+    pub shape: IndicatorShape,
+    pub span: IndicatorSpan,
+    pub thickness: u8,
+    pub edge_offset: u8,
+}
+
+impl IndicatorLayout {
+    pub const UNDERLINE: Self = Self {
+        shape: IndicatorShape::Bottom,
+        span: IndicatorSpan::Control,
+        thickness: 3,
+        edge_offset: 0,
+    };
+
+    /// Both rectangles use the same coordinate space. Insets reduce the horizontal span.
+    pub fn bounds(self, control: Rect, content: Rect, inset: u8) -> Rect {
+        let span = match self.span {
+            IndicatorSpan::Control => control,
+            IndicatorSpan::Content => content.intersect(control),
+        };
+        let area =
+            Rect::new(span.x, control.y, span.w, control.h).inset(inset.into(), 0, inset.into(), 0);
+        let offset = u32::from(self.edge_offset).min(area.h);
+        let h = u32::from(self.thickness).min(area.h - offset);
+        match self.shape {
+            IndicatorShape::Top => Rect::new(area.x, area.y + offset as i32, area.w, h),
+            IndicatorShape::Bottom => Rect::new(
+                area.x,
+                (area.bottom64() - i64::from(h + offset)) as i32,
+                area.w,
+                h,
+            ),
+            IndicatorShape::Fill => area.inset(0, offset, 0, offset),
+            IndicatorShape::Hidden => Rect::ZERO,
+        }
+    }
 }
 
 /// Interactive visual state flags for state-aware styling.
@@ -77,9 +145,22 @@ const HAS_CHECKED_BG: u32 = 1 << 22;
 const HAS_CHECKED_FG: u32 = 1 << 23;
 const HAS_HIDE_SCROLLBAR: u32 = 1 << 24;
 const HAS_SPARKLINE_WIDTH: u32 = 1 << 25;
+const HAS_INDICATOR_LAYOUT: u32 = 1 << 26;
+const HAS_INDICATOR_MOTION: u32 = 1 << 27;
+
+/// Part dimensions available during intrinsic measurement. Paint-only properties
+/// such as selection decorations cannot accidentally become layout dependencies.
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
+pub struct PartMetrics {
+    pub icon_size: Option<u8>,
+    pub icon_gap: Option<u8>,
+    pub icon_position: Option<IconPosition>,
+    pub knob_size: Option<(u8, u8)>,
+    pub track_thickness: Option<u8>,
+}
 
 /// Sparse per-part and per-state style overrides stored in static scene tables.
-#[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct WidgetPartStyle {
     pub present: u32,
     pub track_color: Rgb565,
@@ -109,9 +190,23 @@ pub struct WidgetPartStyle {
     pub icon_pos: IconPosition,
     pub sparkline_width: u8,
     pub hide_scrollbar: bool,
+    indicator_geometry: IndicatorLayout,
+    pub indicator_transition: IndicatorMotion,
 }
 
-const _: () = assert!(core::mem::size_of::<WidgetPartStyle>() <= 44);
+impl Default for IndicatorLayout {
+    fn default() -> Self {
+        Self::UNDERLINE
+    }
+}
+
+impl Default for WidgetPartStyle {
+    fn default() -> Self {
+        Self::ZERO
+    }
+}
+
+const _: () = assert!(core::mem::size_of::<WidgetPartStyle>() <= 52);
 
 impl WidgetPartStyle {
     pub const ZERO: Self = Self {
@@ -143,6 +238,11 @@ impl WidgetPartStyle {
         icon_pos: IconPosition::Left,
         sparkline_width: 0,
         hide_scrollbar: false,
+        indicator_geometry: IndicatorLayout {
+            thickness: 0,
+            ..IndicatorLayout::UNDERLINE
+        },
+        indicator_transition: IndicatorMotion::Reveal,
     };
 
     #[inline]
@@ -150,9 +250,74 @@ impl WidgetPartStyle {
         Self::ZERO
     }
 
+    pub const fn with_indicator_layout(mut self, layout: IndicatorLayout) -> Self {
+        self.present |= HAS_INDICATOR_LAYOUT;
+        self.indicator_geometry = layout;
+        self
+    }
+
+    pub const fn indicator_layout(&self) -> IndicatorLayout {
+        if self.present & HAS_INDICATOR_LAYOUT != 0 {
+            self.indicator_geometry
+        } else {
+            IndicatorLayout::UNDERLINE
+        }
+    }
+
+    pub const fn with_indicator_motion(mut self, motion: IndicatorMotion) -> Self {
+        self.present |= HAS_INDICATOR_MOTION;
+        self.indicator_transition = motion;
+        self
+    }
+
+    pub fn foreground(&self, state: VisualState, fallback: Rgb565) -> Rgb565 {
+        self.state_color(
+            state,
+            self.disabled_fg(),
+            self.pressed_fg(),
+            self.checked_fg(),
+        )
+        .unwrap_or(fallback)
+    }
+
+    pub fn background(&self, state: VisualState) -> Option<Rgb565> {
+        self.state_color(
+            state,
+            self.disabled_bg(),
+            self.pressed_bg(),
+            self.checked_bg(),
+        )
+    }
+
+    fn state_color(
+        &self,
+        state: VisualState,
+        disabled: Option<Rgb565>,
+        pressed: Option<Rgb565>,
+        checked: Option<Rgb565>,
+    ) -> Option<Rgb565> {
+        [
+            (VisualState::DISABLED, disabled),
+            (VisualState::PRESSED, pressed),
+            (VisualState::CHECKED, checked),
+        ]
+        .into_iter()
+        .find_map(|(flag, color)| color.filter(|_| state.contains(flag)))
+    }
+
     #[inline]
     pub const fn is_empty(&self) -> bool {
         self.present == 0
+    }
+
+    pub const fn metrics(&self) -> PartMetrics {
+        PartMetrics {
+            icon_size: self.icon_size(),
+            icon_gap: self.icon_gap(),
+            icon_position: self.icon_pos(),
+            knob_size: self.knob_size(),
+            track_thickness: self.track_thickness(),
+        }
     }
 
     #[inline]
@@ -238,6 +403,14 @@ impl WidgetPartStyle {
         self.knob_width = width;
         self.knob_height = height;
         self
+    }
+
+    pub(crate) fn slider_knob_size(&self, size: Size) -> (u32, u32) {
+        let (w, h) = self.knob_size().unwrap_or((12, 20));
+        (
+            size.width.min(u32::from(w.max(2))),
+            size.height.min(u32::from(h.max(2))),
+        )
     }
 
     #[inline]
@@ -575,6 +748,12 @@ impl WidgetPartStyle {
             return self;
         }
         self.present |= p;
+        if p & HAS_INDICATOR_LAYOUT != 0 {
+            self.indicator_geometry = over.indicator_geometry;
+        }
+        if p & HAS_INDICATOR_MOTION != 0 {
+            self.indicator_transition = over.indicator_transition;
+        }
         if (p & HAS_TRACK_COLOR) != 0 {
             self.track_color = over.track_color;
         }
@@ -660,70 +839,110 @@ impl WidgetPartStyle {
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct PartStyles {
-    items: [(Key, WidgetPartStyle); MAX_PART_STYLES],
-    len: u8,
+    bindings: [u8; MAX_NODES.div_ceil(2)],
+    styles: [WidgetPartStyle; MAX_PART_STYLES],
+    references: [u8; MAX_PART_STYLES],
 }
 
 impl PartStyles {
     pub const EMPTY: Self = Self {
-        items: [(Key(0), WidgetPartStyle::ZERO); MAX_PART_STYLES],
-        len: 0,
+        bindings: [0; MAX_NODES.div_ceil(2)],
+        styles: [WidgetPartStyle::ZERO; MAX_PART_STYLES],
+        references: [0; MAX_PART_STYLES],
     };
 
     #[inline]
-    pub fn get(&self, key: Key) -> WidgetPartStyle {
-        self.get_ref(key).copied().unwrap_or(WidgetPartStyle::ZERO)
+    fn id(&self, node: usize) -> u8 {
+        (self.bindings[node / 2] >> ((node % 2) * 4)) & 15
     }
 
-    #[inline]
-    pub fn get_ref(&self, key: Key) -> Option<&WidgetPartStyle> {
-        for item in &self.items[..usize::from(self.len)] {
-            if item.0 == key {
-                return Some(&item.1);
-            }
-        }
-        None
+    fn bind(&mut self, node: usize, id: u8) {
+        let shift = (node % 2) * 4;
+        let packed = &mut self.bindings[node / 2];
+        *packed = (*packed & !(15 << shift)) | (id << shift);
     }
 
-    /// Compare per-node part overrides by reference without copying `WidgetPartStyle` onto caller frames.
-    #[inline(never)]
-    pub fn diff_key(old: &Self, new: &Self, key: Key) -> (bool, bool) {
-        match (old.get_ref(key), new.get_ref(key)) {
-            (None, None) => (false, false),
-            (Some(o), Some(n)) => (o != n, o.affects_button_measure(n)),
-            (Some(o), None) => (
-                !o.is_empty(),
-                o.affects_button_measure(&WidgetPartStyle::ZERO),
-            ),
-            (None, Some(n)) => (
-                !n.is_empty(),
-                WidgetPartStyle::ZERO.affects_button_measure(n),
-            ),
+    pub(crate) fn copy_from_draft(&mut self, draft: &Self, slots: &[u8]) {
+        self.styles = draft.styles;
+        self.references = draft.references;
+        self.bindings.fill(0);
+        for (i, &slot) in slots.iter().enumerate() {
+            self.bind(usize::from(slot), draft.id(i));
         }
     }
 
-    pub fn set(&mut self, key: Key, style: WidgetPartStyle) -> Result<(), BuildError> {
-        if style.is_empty() {
+    pub(crate) fn get(&self, node: usize) -> &WidgetPartStyle {
+        self.id(node)
+            .checked_sub(1)
+            .map_or(&WidgetPartStyle::ZERO, |s| &self.styles[usize::from(s)])
+    }
+
+    pub(crate) fn merge(&mut self, node: usize, over: WidgetPartStyle) -> Result<(), BuildError> {
+        if over.is_empty() {
             return Ok(());
         }
-        let used = usize::from(self.len);
-        for item in &mut self.items[..used] {
-            if item.0 == key {
-                item.1 = item.1.merge(style);
-                return Ok(());
-            }
+        let id = self.id(node);
+        let old = id.checked_sub(1).map(usize::from);
+        let merged = self.get(node).merge(over);
+        let slot = (0..MAX_PART_STYLES)
+            .find(|&s| self.references[s] > 0 && self.styles[s] == merged)
+            .or_else(|| old.filter(|&s| self.references[s] == 1))
+            .or_else(|| self.references.iter().position(|&n| n == 0))
+            .ok_or(BuildError::PartStyles)?;
+        if let Some(s) = old {
+            self.references[s] -= 1;
         }
-        let entry = self.items.get_mut(used).ok_or(BuildError::Effects)?;
-        *entry = (key, style);
-        self.len += 1;
+        self.styles[slot] = merged;
+        self.references[slot] += 1;
+        self.bind(node, slot as u8 + 1);
         Ok(())
     }
 }
 
+/// Translation as a fraction of the parent's content box and centred resizing of the
+/// child's arranged box, in thousandths. Siblings keep their original layout slots.
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
+pub struct LayoutMotion {
+    pub x: i16,
+    pub y: i16,
+    /// Change relative to normal size. Zero keeps the assigned size.
+    pub grow: i16,
+}
+impl LayoutMotion {
+    pub const IDENTITY: Self = Self {
+        x: 0,
+        y: 0,
+        grow: 0,
+    };
+    pub(crate) fn arrange(
+        self,
+        rect: crate::geometry::Rect,
+        parent: crate::geometry::Rect,
+    ) -> crate::geometry::Rect {
+        if self == Self::IDENTITY {
+            return rect;
+        }
+        let scale = (1000 + i64::from(self.grow)).max(0);
+        let axis = |origin, extent, space, offset| {
+            let length = (i64::from(extent) * scale / 1000).min(i64::from(u32::MAX));
+            let position = i64::from(origin)
+                + (i64::from(extent) - length) / 2
+                + i64::from(space) * i64::from(offset) / 1000;
+            (
+                position.clamp(i32::MIN.into(), i32::MAX.into()) as i32,
+                length as u32,
+            )
+        };
+        let (x, w) = axis(rect.x, rect.w, parent.w, self.x);
+        let (y, h) = axis(rect.y, rect.h, parent.h, self.y);
+        crate::geometry::Rect::new(x, y, w, h)
+    }
+}
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
 pub struct LayoutExtra {
     pub offset_x: i16,
     pub offset_y: i16,
+    pub motion: LayoutMotion,
     pub custom_rev: u32,
     /// Minimum width constraint in px (`0` = unconstrained).
     pub min_w: u16,
@@ -738,9 +957,30 @@ pub struct LayoutExtra {
 }
 
 impl LayoutExtra {
+    /// Centre a capped control in an allocated track. Its parent can compress it further.
+    pub(crate) fn fit_slot(self, rect: Rect) -> Rect {
+        let w = if self.max_w > 0 {
+            rect.w.min(self.max_w.into())
+        } else {
+            rect.w
+        };
+        let h = if self.max_h > 0 {
+            rect.h.min(self.max_h.into())
+        } else {
+            rect.h
+        };
+        Rect::new(
+            rect.x + ((rect.w - w) / 2) as i32,
+            rect.y + ((rect.h - h) / 2) as i32,
+            w,
+            h,
+        )
+    }
+
     pub const ZERO: Self = Self {
         offset_x: 0,
         offset_y: 0,
+        motion: LayoutMotion::IDENTITY,
         custom_rev: 0,
         min_w: 0,
         max_w: 0,
@@ -757,6 +997,9 @@ impl LayoutExtra {
     #[inline]
     pub const fn is_zero(&self) -> bool {
         self.offset_x == 0
+            && self.motion.x == 0
+            && self.motion.y == 0
+            && self.motion.grow == 0
             && self.offset_y == 0
             && self.custom_rev == 0
             && !self.has_bounds()
@@ -813,6 +1056,10 @@ impl LayoutExtras {
             e.offset_x = dx;
             e.offset_y = dy;
         })
+    }
+
+    pub fn set_motion(&mut self, key: Key, motion: LayoutMotion) -> Result<(), BuildError> {
+        self.upsert(key, |e| e.motion = motion)
     }
 
     pub fn set_custom_rev(&mut self, key: Key, rev: u32) -> Result<(), BuildError> {

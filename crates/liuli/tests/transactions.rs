@@ -70,6 +70,52 @@ enum FaultMsg {
 
 struct FaultApp;
 
+#[test]
+fn custom_animation_accepts_overdue_absolute_deadlines() {
+    struct Alarm(Option<InstantMs>);
+    impl Animation for Alarm {
+        fn next_wakeup(&self, _: InstantMs) -> NextWakeup {
+            self.0.map_or(NextWakeup::OnEvent, NextWakeup::At)
+        }
+        fn advance(&mut self, _: InstantMs) -> bool {
+            self.0.take().is_some()
+        }
+        fn cancel(&mut self, _: InstantMs) {
+            self.0 = None;
+        }
+    }
+    struct TimedApp;
+    impl App for TimedApp {
+        type Model = Alarm;
+        type Msg = ();
+        fn animations(m: &mut Alarm, bind: &mut dyn FnMut(Key, &mut dyn Animation)) {
+            bind(Key(1), m);
+        }
+        fn view(_: &Alarm, ui: &mut ViewBuilder<'_>) -> Result<(), BuildError> {
+            ui.root(Key(1), NodeProps::new(), |_| Ok(()))
+        }
+        fn update(_: &mut Alarm, (): (), _: InstantMs) -> Change {
+            Change::Unchanged
+        }
+        fn on_action(_: &Alarm, _: UiAction) -> Option<()> {
+            None
+        }
+    }
+    let mut storage = Storage::new();
+    let mut app = Engine::<TimedApp>::new_in_place(
+        &mut storage,
+        Alarm(Some(InstantMs(20))),
+        Lf4Font::from_bytes(SETTINGS_LF4).unwrap(),
+        Rect::new(0, 0, 80, 40),
+        InstantMs(0),
+    )
+    .unwrap();
+    app.tick(InstantMs(12)).unwrap();
+    assert_eq!(app.model().0, Some(InstantMs(20)));
+    app.tick(InstantMs(49)).unwrap();
+    assert_eq!(app.model().0, None);
+}
+
 impl App for FaultApp {
     type Model = FaultModel;
     type Msg = FaultMsg;
@@ -943,6 +989,139 @@ fn long_press_repeat_timing_bounding_and_cancellation() {
         .try_message(RepeatMsg::OpenModal, InstantMs(12_050), false)
         .unwrap();
     assert!(!engine.repeat().is_active());
+}
+
+#[test]
+fn nested_focus_notifies_each_viewport_and_restores_the_declared_key() {
+    #[derive(Default)]
+    struct Model {
+        page: u8,
+        outer: i32,
+        inner: i32,
+        saved: PageRestore,
+    }
+    #[derive(Debug)]
+    enum Msg {
+        Scroll(Key, i32),
+        Switch(u8),
+    }
+    struct Pages;
+    impl App for Pages {
+        type Model = Model;
+        type Msg = Msg;
+        fn page_id(m: &Model) -> u8 {
+            m.page
+        }
+        fn update(m: &mut Model, msg: Msg, _: InstantMs) -> Change {
+            match msg {
+                Msg::Scroll(Key(2), y) => m.outer = y,
+                Msg::Scroll(Key(4), x) => m.inner = x,
+                Msg::Scroll(_, _) => unreachable!(),
+                Msg::Switch(page) => m.page = page,
+            }
+            Change::View
+        }
+        fn view(m: &Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildError> {
+            out.root(Key(1), NodeProps::new(), |ui| {
+                if m.page == 1 {
+                    return ui.label(Key(9), NodeProps::new());
+                }
+                ui.scroll_y(
+                    Key(2),
+                    NodeProps::new()
+                        .width(Length::Fill(1))
+                        .height(Length::Fill(1)),
+                    |outer| {
+                        outer.label(Key(3), NodeProps::new().height(Length::Px(40)))?;
+                        outer.scroll_x(
+                            Key(4),
+                            NodeProps::new()
+                                .width(Length::Fill(1))
+                                .height(Length::Px(40)),
+                            |inner| {
+                                for k in 5..8 {
+                                    inner.button(
+                                        Key(k),
+                                        NodeProps::new()
+                                            .width(Length::Px(80))
+                                            .height(Length::Px(34))
+                                            .focusable(true),
+                                    )?;
+                                }
+                                Ok(())
+                            },
+                        )
+                    },
+                )
+            })
+        }
+        fn on_action(_: &Model, _: UiAction) -> Option<Msg> {
+            None
+        }
+        fn on_scroll(_: &Model, key: Key, offset: i32) -> Option<Msg> {
+            Some(Msg::Scroll(key, offset))
+        }
+        fn page_restore(m: &Model, page: u8) -> PageRestore {
+            if page == 0 {
+                PageRestore {
+                    scroll_key: Some(Key(4)),
+                    ..m.saved
+                }
+            } else {
+                PageRestore::default()
+            }
+        }
+        fn on_page_committed(
+            m: &mut Model,
+            old: u8,
+            focus: Option<Key>,
+            scroll: Option<Key>,
+            offset: i32,
+        ) {
+            if old == 0 {
+                m.saved = PageRestore {
+                    focus_key: focus,
+                    scroll_key: scroll,
+                    scroll_y: offset,
+                };
+            }
+        }
+    }
+    let mut storage = Box::new(Storage::new());
+    let mut engine = Engine::<Pages>::new_in_place(
+        &mut storage,
+        Model::default(),
+        Lf4Font::from_bytes(SETTINGS_LF4).unwrap(),
+        Rect::new(0, 0, 120, 60),
+        InstantMs(0),
+    )
+    .unwrap();
+    engine
+        .try_dispatch(RawInput::Nav(NavDir::Next), InstantMs(1), false)
+        .unwrap();
+    let y = engine.active_tree().node_by_key(Key(2)).unwrap().scroll_y;
+    let x = engine.active_tree().node_by_key(Key(4)).unwrap().scroll_y;
+    assert!(x > 0 && y > 0);
+    assert_eq!((engine.model().outer, engine.model().inner), (y, x));
+    engine
+        .try_message(Msg::Switch(1), InstantMs(2), false)
+        .unwrap();
+    assert_eq!(
+        engine.model().saved,
+        PageRestore {
+            focus_key: Some(Key(6)),
+            scroll_key: Some(Key(4)),
+            scroll_y: x
+        }
+    );
+    engine
+        .try_message(Msg::Switch(0), InstantMs(3), false)
+        .unwrap();
+    assert_eq!(
+        engine.active_tree().node_by_key(Key(4)).unwrap().scroll_y,
+        x
+    );
+    assert_eq!(engine.focus().focused_key(), Some(Key(6)));
 }
 
 #[test]

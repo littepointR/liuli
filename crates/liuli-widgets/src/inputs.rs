@@ -2,6 +2,14 @@ use liuli::prelude::*;
 
 use crate::Theme;
 
+fn checked_progress(props: &StoredProps, state: PaintState) -> i32 {
+    if props.has_state_motion() {
+        state.anim_progress
+    } else {
+        i32::from(state.checked) * 1000
+    }
+}
+
 /// Paint a checkbox box, checkmark stroke, and label onto a `WidgetCanvas`.
 pub fn paint_checkbox(
     props: &StoredProps,
@@ -9,27 +17,45 @@ pub fn paint_checkbox(
     canvas: &mut WidgetCanvas<'_>,
 ) -> Result<(), BuildError> {
     let sz = canvas.size();
-    let box_sz = 18u32.min(sz.height.saturating_sub(4)).max(8);
+    let parts = *canvas.parts();
+    let accent = parts.indicator_color().unwrap_or(props.accent);
+    let box_sz = u32::from(parts.track_thickness().unwrap_or(18))
+        .min(sz.height.saturating_sub(4))
+        .max(8);
     let by = ((sz.height.saturating_sub(box_sz)) / 2) as i32;
     let bx = 2i32;
-    let fill = if state.checked {
-        props.accent
-    } else {
-        props.bg().unwrap_or(Rgb565::new(4, 8, 4))
-    };
+    let progress = checked_progress(props, state);
+    let fill = liuli::core::paint::blend_rgb565_scale(
+        parts
+            .track_color()
+            .or(canvas.background())
+            .unwrap_or(Rgb565::new(4, 8, 4)),
+        accent,
+        progress,
+        1000,
+    );
     let border = if state.focused {
-        props.focus_color
+        parts.focused_border().unwrap_or(props.focus_color)
     } else if state.checked {
-        props.accent
+        accent
     } else {
-        props.fg
+        canvas.foreground()
     };
-    canvas.rounded_rect(Rect::new(bx, by, box_sz, box_sz), fill, 4, Some(border), 1)?;
-    if state.checked {
+    canvas.rounded_rect(
+        Rect::new(bx, by, box_sz, box_sz),
+        fill,
+        parts.track_radius().unwrap_or(4),
+        Some(parts.track_border_color().unwrap_or(border)),
+        parts.track_border_width().unwrap_or(1),
+    )?;
+    if progress >= 500 {
         let p0 = Point::new(bx + (box_sz as i32) / 4, by + (box_sz as i32) / 2);
         let p1 = Point::new(bx + (box_sz as i32 * 5) / 11, by + (box_sz as i32 * 3) / 4);
         let p2 = Point::new(bx + (box_sz as i32 * 4) / 5, by + (box_sz as i32) / 4);
-        let tick = props.bg().unwrap_or(Rgb565::new(31, 63, 31));
+        let tick = parts
+            .icon_color()
+            .or(props.bg())
+            .unwrap_or(Rgb565::new(31, 63, 31));
         canvas.line(p0, p1, tick, 2, true)?;
         canvas.line(p1, p2, tick, 2, true)?;
     }
@@ -39,8 +65,8 @@ pub fn paint_checkbox(
         canvas.node_text(
             Rect::new(tx, 0, tw, sz.height),
             props,
-            if state.enabled {
-                props.fg
+            if state.enabled || parts.disabled_fg().is_some() {
+                canvas.foreground()
             } else {
                 Rgb565::new(14, 28, 14)
             },
@@ -63,6 +89,7 @@ pub fn checkbox(
     ui.custom(
         key,
         NodeProps::new()
+            .with_parts(theme.parts.resolve(crate::WidgetClass::CHECKBOX))
             .width(Length::Fill(1))
             .height(Length::Px(u32::from(h)))
             .bg(theme.surface_alt)
@@ -70,6 +97,7 @@ pub fn checkbox(
             .accent(theme.accent)
             .font(theme.font)
             .text(label)
+            .state_motion(theme.motion.state(MotionState::Checked, None))
             .checked(checked)
             .focusable(true)
             .clickable(true),
@@ -83,20 +111,28 @@ pub fn paint_radio(
     canvas: &mut WidgetCanvas<'_>,
 ) -> Result<(), BuildError> {
     let sz = canvas.size();
+    let parts = *canvas.parts();
+    let accent = parts.indicator_color().unwrap_or(props.accent);
     let rad = (sz.height.saturating_sub(8) / 2).clamp(5, 10) as u16;
     let cy = (sz.height / 2) as i32;
     let cx = i32::from(rad) + 3;
     let border = if state.focused {
-        props.focus_color
+        parts.focused_border().unwrap_or(props.focus_color)
     } else if state.checked {
-        props.accent
+        accent
     } else {
-        props.fg
+        canvas.foreground()
     };
-    canvas.circle(Point::new(cx, cy), rad, props.bg(), Some(border), 2)?;
-    if state.checked {
-        let dot_r = (rad / 2).max(2);
-        canvas.circle(Point::new(cx, cy), dot_r, Some(props.accent), None, 0)?;
+    canvas.circle(
+        Point::new(cx, cy),
+        rad,
+        parts.track_color().or(canvas.background()),
+        Some(parts.track_border_color().unwrap_or(border)),
+        parts.track_border_width().unwrap_or(2),
+    )?;
+    let dot_r = (i32::from((rad / 2).max(2)) * checked_progress(props, state) / 1000) as u16;
+    if dot_r > 0 {
+        canvas.circle(Point::new(cx, cy), dot_r, Some(accent), None, 0)?;
     }
     let tx = cx + i32::from(rad) + 8;
     let tw = sz.width.saturating_sub(tx as u32);
@@ -104,7 +140,7 @@ pub fn paint_radio(
         canvas.node_text(
             Rect::new(tx, 0, tw, sz.height),
             props,
-            props.fg,
+            canvas.foreground(),
             TextAlign::Start,
         )?;
     }
@@ -124,6 +160,7 @@ pub fn radio(
     ui.custom(
         key,
         NodeProps::new()
+            .with_parts(theme.parts.resolve(crate::WidgetClass::RADIO))
             .width(Length::Fill(1))
             .height(Length::Px(u32::from(h)))
             .bg(theme.surface_alt)
@@ -131,6 +168,7 @@ pub fn radio(
             .accent(theme.accent)
             .font(theme.font)
             .text(label)
+            .state_motion(theme.motion.state(MotionState::Checked, None))
             .checked(selected)
             .focusable(true)
             .clickable(true),

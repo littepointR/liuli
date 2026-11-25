@@ -143,12 +143,10 @@ pub fn arc_knob_from_pointer(ev: PointerEvent, min: i16, max: i16, step: i16) ->
         deg_q4 - 135 * 16
     };
 
-    let step = i64::from(step.max(1));
     let span = i64::from(max) - i64::from(min);
     let max_rel_q4 = 270i64 * 16;
     let raw_offset = (span * i64::from(rel_q4) + max_rel_q4 / 2) / max_rel_q4;
-    let stepped = ((raw_offset + step / 2) / step) * step;
-    (i64::from(min) + stepped).clamp(i64::from(min), i64::from(max)) as i16
+    liuli::core::input::snap_stepped_value(min, max, step, (i64::from(min) + raw_offset) as i16)
 }
 
 /// Layer-2 `paint_override` helper that adds tick marks and a circular vector thumb to `NodeKind::Slider`.
@@ -162,8 +160,8 @@ pub fn paint_ticked_slider(
     if size.width < 12 || size.height < 6 {
         return Ok(PaintOverride::Default);
     }
-    let pad_x = 6i32;
-    let usable_w = size.width.saturating_sub(12);
+    let (pad_x, end_x) = canvas.slider_track_span();
+    let usable_w = end_x - pad_x;
     let tick_count = ticks.max(2);
     if usable_w > 0 {
         let y0 = (size.height as i32 / 2) + 4;

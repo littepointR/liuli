@@ -7,6 +7,8 @@ pub mod ime;
 pub mod inputs;
 mod pinyin_dict;
 pub mod style;
+pub mod tabs;
+pub use tabs::{TabLayout, TabPage, Tabs, tab_strip, tabs, tabs_in_columns};
 pub mod theme;
 pub mod tokens;
 pub mod transition;
@@ -34,10 +36,12 @@ pub use style::{ButtonVariant, Compositor, Elevation, Material, ResolvedSurface,
 pub use theme::{Style, Theme, ThemePreset};
 pub use tokens::{
     ColorScheme, ComponentParts, Density, EffectTier, EffectsConfig, ElevationLevel,
-    ElevationScale, GlassStyle, InteractionStyle, Motion, Shape, Typography, contrast_ratio_x10,
-    rgb8,
+    ElevationScale, GlassStyle, InteractionStyle, Motion, PartRule, Shape, Typography, WidgetClass,
+    contrast_ratio_x10, rgb8,
 };
-pub use transition::{PageTransition, TransitionKind};
+pub use transition::{
+    PageTransition, TransitionFrame, TransitionKind, TransitionRole, TransitionStyle,
+};
 pub use ui::ThemedUi;
 
 /// Typed route stack. Route variants carry parameters and per-page state.
@@ -167,7 +171,7 @@ pub fn virtual_list(
         align_cross: Align::Stretch,
         ..NodeProps::new()
     };
-    ui.scroll_y(keys[0], props, |list| {
+    ui.scroll_y(keys[0], props.initial_scroll_offset(y as i32), |list| {
         let spacer = |height| NodeProps {
             height: Length::Px(height),
             width: Length::Px(1),
@@ -184,13 +188,19 @@ pub fn virtual_list(
 /// A threshold meter rendered entirely through the public custom-widget API.
 pub fn paint_meter(props: &StoredProps, canvas: &mut WidgetCanvas<'_>) -> Result<(), BuildError> {
     let size = canvas.size();
-    canvas.fill(Rect::new(0, 0, size.width, size.height), props.bg_raw)?;
+    let track = canvas
+        .parts()
+        .track_color()
+        .or(canvas.background())
+        .unwrap_or(props.bg_raw);
+    canvas.fill(Rect::new(0, 0, size.width, size.height), track)?;
     let range = i32::from(props.max) - i32::from(props.min);
     if range > 0 {
         let filled = (u64::from(size.width)
             * (i32::from(props.value) - i32::from(props.min)).clamp(0, range) as u64
             / range as u64) as u32;
-        canvas.fill(Rect::new(0, 0, filled, size.height), props.accent)?;
+        let color = canvas.parts().indicator_color().unwrap_or(props.accent);
+        canvas.fill(Rect::new(0, 0, filled, size.height), color)?;
     }
     Ok(())
 }
@@ -234,23 +244,6 @@ pub fn selector(
             ..NodeProps::new()
         },
         |choices| choice_buttons(choices, items, selected, theme),
-    )
-}
-pub fn tabs(
-    ui: &mut Children<'_, '_>,
-    key: Key,
-    items: &[(Key, TextRef)],
-    selected: Key,
-    theme: Theme,
-) -> Result<(), BuildError> {
-    ui.row(
-        key,
-        NodeProps {
-            width: Length::Fill(1),
-            gap: theme.spacing,
-            ..NodeProps::new()
-        },
-        |bar| choice_buttons(bar, items, selected, theme),
     )
 }
 fn choice_buttons(
@@ -445,16 +438,47 @@ mod tests {
         .unwrap();
         vb.finish().unwrap();
 
-        assert!(draft.part_styles.get(Key(2)).is_empty());
-        assert_eq!(draft.part_styles.get(Key(3)).knob_radius(), Some(7));
+        assert!(draft.part_style(Key(2)).is_empty());
+        assert_eq!(draft.part_style(Key(3)).knob_radius(), Some(7));
         assert_eq!(
-            draft.part_styles.get(Key(3)).track_color(),
+            draft.part_style(Key(3)).track_color(),
             Some(rgb8(30, 40, 50))
         );
         assert_eq!(
-            draft.part_styles.get(Key(4)).pressed_bg(),
+            draft.part_style(Key(4)).pressed_bg(),
             Some(rgb8(200, 20, 20))
         );
+    }
+
+    #[test]
+    fn text_box_taps_follow_scrolled_preedit_and_password_glyphs() {
+        for password in [false, true] {
+            let mut editor = FixedTextEditor::<32>::from_text("a界bc").with_password(password);
+            for _ in 0..3 {
+                editor.apply(TextInput::Left);
+            }
+            editor.apply(TextInput::Compose("1234"));
+            // With 24 px of inner width, the caret after a1234 is scrolled left by 19 px.
+            // Tap the middle of the visible composition, then immediately after the first suffix glyph.
+            let down = |x| PointerEvent {
+                phase: PointerPhase::Down,
+                local: Point::new(x, 14),
+                delta: Point::zero(),
+                size: Size::new(40, 28),
+            };
+            assert!(text_box_on_pointer(&mut editor, down(15), None));
+            assert_eq!(editor.cursor(), 1);
+            assert_eq!(editor.preedit(), "");
+            editor.apply(TextInput::Compose("1234"));
+            // Wide viewport exposes the trailing text without scrolling.
+            let after = 8 + 40 + if password { 8 } else { 16 };
+            let event = PointerEvent {
+                size: Size::new(100, 28),
+                ..down(after)
+            };
+            assert!(text_box_on_pointer(&mut editor, event, None));
+            assert_eq!(editor.cursor(), "a界".len());
+        }
     }
 
     #[test]
@@ -469,6 +493,7 @@ mod tests {
         assert_eq!(arc_knob_from_pointer(ev(15, 85), 0, 100, 1), 0);
         assert_eq!(arc_knob_from_pointer(ev(50, 10), 0, 100, 1), 50);
         assert_eq!(arc_knob_from_pointer(ev(85, 85), 0, 100, 1), 100);
+        assert_eq!(arc_knob_from_pointer(ev(85, 85), -5, 8, 4), 8);
         assert_eq!(arc_knob_from_pointer(ev(45, 95), 0, 100, 1), 0);
         assert_eq!(arc_knob_from_pointer(ev(55, 95), 0, 100, 1), 100);
         assert_eq!(arc_knob_from_pointer(ev(50, 10), 0, 100, 25), 50);
