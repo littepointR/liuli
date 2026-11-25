@@ -38,15 +38,35 @@ const TAN_Q12: [u16; 46] = [
 
 /// Exact integer floor(sqrt(n)) without floating point.
 #[inline]
-pub fn isqrt_u64(n: u64) -> u64 {
+pub fn isqrt_u32(n: u32) -> u32 {
     if n < 2 {
         return n;
     }
     let mut x = n;
-    let mut bit = 1u64 << 62;
-    while bit > x {
+    let shift = (31 - n.leading_zeros()) & !1;
+    let mut bit = 1u32 << shift;
+    let mut res = 0u32;
+    while bit != 0 {
+        if x >= res + bit {
+            x -= res + bit;
+            res = (res >> 1) + bit;
+        } else {
+            res >>= 1;
+        }
         bit >>= 2;
     }
+    res
+}
+
+/// Exact integer floor(sqrt(n)) without floating point.
+#[inline]
+pub fn isqrt_u64(n: u64) -> u64 {
+    if n <= u64::from(u32::MAX) {
+        return u64::from(isqrt_u32(n as u32));
+    }
+    let mut x = n;
+    let shift = (63 - n.leading_zeros()) & !1;
+    let mut bit = 1u64 << shift;
     let mut res = 0u64;
     while bit != 0 {
         if x >= res + bit {
@@ -81,8 +101,8 @@ pub fn sin_cos_q12(deg: i32) -> (i32, i32) {
 /// Returns angle in Q4 degrees `[0..5760)` for screen vector `(dx, dy)` (`0` = +X, `1440` = +Y).
 #[inline]
 pub fn atan2_deg_q4(dy: i32, dx: i32) -> i32 {
-    let ax = i64::from(dx).abs();
-    let ay = i64::from(dy).abs();
+    let ax = dx.unsigned_abs();
+    let ay = dy.unsigned_abs();
     if ax == 0 && ay == 0 {
         return 0;
     }
@@ -91,7 +111,11 @@ pub fn atan2_deg_q4(dy: i32, dx: i32) -> i32 {
     } else {
         (ay, ax, true)
     };
-    let ratio = ((min_v << 12) / maj).min(4096) as u16;
+    let ratio = if min_v <= (u32::MAX >> 12) {
+        ((min_v << 12) / maj).min(4096) as u16
+    } else {
+        (((u64::from(min_v) << 12) / u64::from(maj)).min(4096)) as u16
+    };
     let mut lo = 0usize;
     let mut hi = 45usize;
     while lo < hi {
@@ -168,6 +192,9 @@ pub fn draw_line<S: PixelSink>(
     let len_sq = vx * vx + vy * vy;
     let len_q4 = isqrt_u64((len_sq as u64).saturating_mul(256)).max(1) as i64;
     let half_w_q4 = i64::from(width) * 8;
+    let bound_q4 = if aa { half_w_q4 + 8 } else { half_w_q4 + 1 };
+    let bound_sq = bound_q4 * bound_q4;
+    let cross_limit = bound_q4.saturating_mul(len_q4);
 
     let gx0 = eff.x;
     let gx1 = eff.x + eff.w as i32;
@@ -182,19 +209,36 @@ pub fn draw_line<S: PixelSink>(
             let wx = i64::from(gx) - i64::from(p0.x);
             let dist_q4 = if len_sq == 0 {
                 let d2 = (wx * 16) * (wx * 16) + (wy * 16) * (wy * 16);
+                if d2 >= bound_sq {
+                    continue;
+                }
                 isqrt_u64(d2 as u64) as i64
             } else {
                 let dot = wx * vx + wy * vy;
                 if dot <= 0 {
                     let d2 = (wx * 16) * (wx * 16) + (wy * 16) * (wy * 16);
+                    if d2 >= bound_sq {
+                        continue;
+                    }
                     isqrt_u64(d2 as u64) as i64
                 } else if dot >= len_sq {
                     let wx1 = i64::from(gx) - i64::from(p1.x);
                     let d2 = (wx1 * 16) * (wx1 * 16) + (wy1 * 16) * (wy1 * 16);
+                    if d2 >= bound_sq {
+                        continue;
+                    }
                     isqrt_u64(d2 as u64) as i64
                 } else {
                     let cross = (wx * vy - wy * vx).abs();
-                    (cross * 256) / len_q4
+                    let scaled = cross.saturating_mul(256);
+                    if scaled >= cross_limit {
+                        continue;
+                    }
+                    if scaled <= i64::from(u32::MAX) && len_q4 <= i64::from(u32::MAX) {
+                        i64::from((scaled as u32) / (len_q4 as u32))
+                    } else {
+                        scaled / len_q4
+                    }
                 }
             };
             let cov = if aa {
@@ -245,6 +289,7 @@ pub fn draw_circle<S: PixelSink>(
     let stride = buf_rect.w as usize;
     let r_outer_q4 = i64::from(radius) * 16;
     let r_inner_q4 = (i64::from(radius) - i64::from(bw)) * 16;
+    let r_outer_max_sq = (r_outer_q4 + 8) * (r_outer_q4 + 8);
     let fill_u16 = fill.map(rgb565_to_u16);
     let border_u16 = border_color.filter(|_| bw > 0).map(rgb565_to_u16);
 
@@ -259,7 +304,11 @@ pub fn draw_circle<S: PixelSink>(
         let dy2 = dy_q4 * dy_q4;
         for gx in gx0..gx1 {
             let dx_q4 = i64::from(gx - center.x) * 16;
-            let dist_q4 = isqrt_u64((dx_q4 * dx_q4 + dy2) as u64) as i64;
+            let dist_sq = dx_q4 * dx_q4 + dy2;
+            if dist_sq >= r_outer_max_sq {
+                continue;
+            }
+            let dist_q4 = isqrt_u64(dist_sq as u64) as i64;
             let cov_outer = (r_outer_q4 + 8 - dist_q4).clamp(0, 15) as u8;
             if cov_outer == 0 {
                 continue;
@@ -322,6 +371,12 @@ pub fn draw_arc<S: PixelSink>(
     let stride = buf_rect.w as usize;
     let r_q4 = i64::from(radius) * 16;
     let half_w_q4 = i64::from(width) * 8;
+    let r_max_q4 = r_q4 + half_w_q4 + 10;
+    let r_max_sq = r_max_q4 * r_max_q4;
+    let r_min_q4 = (r_q4 - half_w_q4 - 10).max(0);
+    let r_min_sq = r_min_q4 * r_min_q4;
+    let cap_max_q4 = half_w_q4 + 8;
+    let cap_max_sq = cap_max_q4 * cap_max_q4;
     let full_ring = i32::from(sweep_deg).abs() >= 360;
 
     let (norm_start_deg, norm_sweep_deg) = if sweep_deg < 0 {
@@ -360,7 +415,11 @@ pub fn draw_arc<S: PixelSink>(
         for gx in gx0..gx1 {
             let dx = gx - center.x;
             let dx_q4 = i64::from(dx) * 16;
-            let dist_q4 = isqrt_u64((dx_q4 * dx_q4 + dy2) as u64) as i64;
+            let dist_sq = dx_q4 * dx_q4 + dy2;
+            if dist_sq > r_max_sq || (r_min_q4 > 0 && dist_sq < r_min_sq) {
+                continue;
+            }
+            let dist_q4 = isqrt_u64(dist_sq as u64) as i64;
             let radial_diff_q4 = (dist_q4 - r_q4).abs();
             let radial_cov = (half_w_q4 + 8 - radial_diff_q4).clamp(0, 15) as u8;
             if radial_cov == 0 && !cap_round {
@@ -370,7 +429,10 @@ pub fn draw_arc<S: PixelSink>(
                 true
             } else {
                 let th_q4 = atan2_deg_q4(dy, dx);
-                let rel_q4 = (th_q4 - start_q4).rem_euclid(360 * 16);
+                let mut rel_q4 = th_q4 - start_q4;
+                if rel_q4 < 0 {
+                    rel_q4 += 360 * 16;
+                }
                 rel_q4 <= sweep_q4
             };
             let cov = if in_sector {
@@ -382,6 +444,9 @@ pub fn draw_arc<S: PixelSink>(
                 let dex = gx_q4 - p_end_x_q4;
                 let dey = gy_q4 - p_end_y_q4;
                 let d_cap_sq = (dsx * dsx + dsy * dsy).min(dex * dex + dey * dey);
+                if d_cap_sq >= cap_max_sq {
+                    continue;
+                }
                 let d_cap_q4 = isqrt_u64(d_cap_sq as u64) as i64;
                 (half_w_q4 + 8 - d_cap_q4).clamp(0, 15) as u8
             } else {

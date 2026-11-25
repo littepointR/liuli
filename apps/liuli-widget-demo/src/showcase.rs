@@ -10,8 +10,8 @@ use liuli_widgets::{
     rich_text, roller, spinner,
 };
 
-pub const SHOWCASE_BODY_LF4: &[u8] = include_bytes!("../../liuli-settings/assets/settings.lf4");
-pub const SHOWCASE_SMALL_LF4: &[u8] = include_bytes!("../../liuli-settings/assets/small12.lf4");
+pub const SHOWCASE_BODY_LF4: &[u8] = include_bytes!("../assets/showcase_body.lf4");
+pub const SHOWCASE_SMALL_LF4: &[u8] = include_bytes!("../assets/showcase_small.lf4");
 
 pub fn showcase_fonts() -> Result<FontSet<'static>, liuli::text::FontError> {
     let body = Lf4Font::from_bytes(SHOWCASE_BODY_LF4)?;
@@ -93,37 +93,37 @@ pub const EN_ENTRIES: &[&str] = &[
     "Load: {0}% | Temp: {1}C | MaxNodes: {2}",
 ];
 
-const ZH_ENTRIES_SAFE: &[&str] = &[
-    "liuli M1-M6 状态",
+pub const ZH_ENTRIES: &[&str] = &[
+    "琉璃 M1-M6 演示",
     "主仪表盘",
-    "选择编辑",
-    "数据波形",
-    "排列状态",
+    "表单输入",
+    "数据图表",
+    "网格布局",
     "中文 / EN",
     "深色/浅色",
     "实时采样",
-    "亮度开启",
-    "诊断开启",
-    "切换: SlideLeft",
-    "切换: SlideUp",
-    "切换: Fade",
+    "自动亮度",
+    "诊断日志",
+    "左滑切换",
+    "上滑切换",
+    "淡入淡出",
     "暂停采样",
     "开启采样",
-    "切换形态",
+    "切换动效",
     "+ 文本",
     "+ 新行",
-    "取消",
+    "删除",
     "恢复默认",
-    "负载: {0}% | 温度: {1}°C | MAX: {2}",
+    "负载: {0}% | 温度: {1}°C | 节点上限: {2}",
 ];
 
 pub const LOCALES: [LocaleTable; 2] = [
     LocaleTable::new("en", EN_ENTRIES),
-    LocaleTable::new("zh", ZH_ENTRIES_SAFE),
+    LocaleTable::new("zh", ZH_ENTRIES),
 ];
 
 pub fn verify_locale_entries() -> [&'static [&'static str]; 2] {
-    [EN_ENTRIES, ZH_ENTRIES_SAFE]
+    [EN_ENTRIES, ZH_ENTRIES]
 }
 
 const DRIVER_OPTIONS: &[&str] = &["ST7789 SPI", "ILI9341 8080", "GC9A01 Round", "RM67162 QSPI"];
@@ -305,10 +305,13 @@ impl ShowcaseModel {
         if self.tab != tab {
             self.tab = tab;
             self.dropdown.open = false;
-            self.transition.start(self.trans_kind, now, 260);
+            self.transition.start(self.trans_kind, now, 200);
         }
     }
 }
+
+const ANIM_PERIOD_MS: u64 = 32;
+const SAMPLE_PERIOD_MS: u64 = 320;
 
 impl Default for ShowcaseModel {
     fn default() -> Self {
@@ -387,7 +390,7 @@ impl App for ShowcaseApp {
                     TransitionKind::SlideUp => TransitionKind::Fade,
                     _ => TransitionKind::SlideLeft,
                 };
-                model.transition.start(model.trans_kind, now, 260);
+                model.transition.start(model.trans_kind, now, 200);
                 Change::View
             }
             ShowcaseMsg::ToggleBright => {
@@ -546,7 +549,7 @@ impl App for ShowcaseApp {
             NextWakeup::OnEvent => {}
         }
         if model.live_sample {
-            let step = InstantMs(now.0.saturating_add(160));
+            let step = InstantMs(((now.0 / ANIM_PERIOD_MS) + 1).saturating_mul(ANIM_PERIOD_MS));
             earliest = Some(earliest.map_or(step, |e| if step < e { step } else { e }));
         }
         earliest
@@ -558,14 +561,18 @@ impl App for ShowcaseApp {
         if model.transition.is_active(now) || model.transition.is_active(prev_now) {
             dirty = true;
         }
-        if model.live_sample && (now.0 / 160) != (prev_now.0 / 160) {
-            model.now = now;
-            model.push_sample();
-            dirty = true;
-        } else if dirty {
-            model.now = now;
+        if model.live_sample {
+            let sample_due = (now.0 / SAMPLE_PERIOD_MS) != (prev_now.0 / SAMPLE_PERIOD_MS);
+            let anim_due = (now.0 / ANIM_PERIOD_MS) != (prev_now.0 / ANIM_PERIOD_MS);
+            if sample_due {
+                model.push_sample();
+                dirty = true;
+            } else if anim_due {
+                dirty = true;
+            }
         }
         if dirty {
+            model.now = now;
             Change::View
         } else {
             Change::Unchanged
@@ -604,7 +611,16 @@ impl App for ShowcaseApp {
         canvas: &mut WidgetCanvas<'_>,
     ) -> Result<(), BuildError> {
         match key.0 {
-            15 | 131 => paint_spinner(model.now, props, canvas),
+            15 => paint_spinner(
+                if model.tab == ShowcaseTab::Overview {
+                    InstantMs(0)
+                } else {
+                    model.now
+                },
+                props,
+                canvas,
+            ),
+            131 => paint_spinner(model.now, props, canvas),
             100 => paint_gradient_banner(model, props, canvas),
             110 => paint_gauge(model.load_gauge(), props, canvas),
             120 => paint_gauge(model.temp_gauge(), props, canvas),
@@ -678,7 +694,7 @@ fn tab_btn(
     ui.button(
         key,
         NodeProps::new()
-            .width(Length::Px(96))
+            .width(Length::Px(88))
             .height(Length::Px(34))
             .bg(bg)
             .fg(fg)
@@ -727,18 +743,23 @@ fn build_topbar(
             .width(Length::Fill(1))
             .height(Length::Px(46))
             .padding(EdgeInsets::symmetric(8, 5))
-            .gap(6)
+            .gap(5)
             .justify(Justify::SpaceBetween)
             .align_cross(Align::Center)
             .bg(theme.surface)
             .border(theme.border, 1)
             .radius(8),
         |bar| {
-            spinner(bar, Key(15), 26, model.now, theme)?;
+            let bar_spinner_now = if model.tab == ShowcaseTab::Overview {
+                InstantMs(0)
+            } else {
+                model.now
+            };
+            spinner(bar, Key(15), 26, bar_spinner_now, theme)?;
             bar.label(
                 Key(18),
                 NodeProps::new()
-                    .width(Length::Px(134))
+                    .width(Length::Px(144))
                     .height(Length::Content)
                     .fg(theme.text)
                     .font(FontId::Body16)
@@ -776,7 +797,7 @@ fn build_topbar(
                 bar,
                 Key(16),
                 model.tr(i18n_keys::BTN_LANG),
-                Length::Px(82),
+                Length::Px(90),
                 theme.surface_alt,
                 theme.accent,
                 theme,
@@ -785,7 +806,7 @@ fn build_topbar(
                 bar,
                 Key(17),
                 model.tr(i18n_keys::BTN_THEME),
-                Length::Px(82),
+                Length::Px(90),
                 theme.surface_alt,
                 theme.text,
                 theme,
@@ -973,7 +994,7 @@ fn build_tab_overview(
             .border(theme.border, 1)
             .radius(8),
         |box_ui| {
-            rich_text(box_ui, Key(140), Length::Fill(1), 46, theme)?;
+            rich_text(box_ui, Key(140), Length::Fill(1), 54, theme)?;
             box_ui.set_custom_rev(Key(140), model.rich_rev)
         },
     )
@@ -985,7 +1006,7 @@ fn build_tab_forms(
     ui: &mut Children<'_, '_>,
 ) -> Result<(), BuildError> {
     let chk_theme = Theme {
-        control_height: 30,
+        control_height: 28,
         ..theme
     };
     ui.row(
@@ -1000,8 +1021,8 @@ fn build_tab_forms(
                 NodeProps::new()
                     .width(Length::Fill(1))
                     .height(Length::Fill(1))
-                    .padding(EdgeInsets::all(10))
-                    .gap(6)
+                    .padding(EdgeInsets::all(8))
+                    .gap(4)
                     .bg(theme.surface)
                     .border(theme.border, 1)
                     .radius(8),
@@ -1242,10 +1263,8 @@ fn build_tab_charts(
                     .width(Length::Fill(1))
                     .height(Length::Content)
                     .fg(theme.text)
-                    .font(FontId::Small12)
-                    .text(TextRef::Static(
-                        "BarChart + MultiLineChart + DataTable (tap rows)",
-                    )),
+                    .font(FontId::Body16)
+                    .text(TextRef::Static("BarChart + MultiLineChart + DataTable")),
             )
         },
     )?;
@@ -1327,7 +1346,7 @@ fn build_tab_layout(
                         .bg(c)
                         .fg(rgb8(250, 252, 255))
                         .radius(6)
-                        .font(FontId::Small12)
+                        .font(FontId::Body16)
                         .text(TextRef::Static(["P1", "P2", "P3", "P4"][i]))
                         .text_align(TextAlign::Center),
                 )?;
@@ -1441,7 +1460,7 @@ fn build_footer(
         Key(20),
         NodeProps::new()
             .width(Length::Fill(1))
-            .height(Length::Px(28))
+            .height(Length::Px(32))
             .padding(EdgeInsets::symmetric(10, 4))
             .justify(Justify::SpaceBetween)
             .align_cross(Align::Center)
@@ -1468,7 +1487,7 @@ fn build_footer(
             ft.label(
                 Key(22),
                 NodeProps::new()
-                    .width(Length::Px(220))
+                    .width(Length::Px(190))
                     .height(Length::Content)
                     .fg(theme.accent)
                     .font(FontId::Small12)

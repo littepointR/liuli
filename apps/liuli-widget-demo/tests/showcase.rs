@@ -40,17 +40,28 @@ fn tap(app: &mut AppSession<'_, '_, ShowcaseApp>, clock: &mut u64, key: u32) {
 #[test]
 fn all_locale_entries_exist_in_embedded_font() {
     let font = Lf4Font::from_bytes(SHOWCASE_BODY_LF4).unwrap();
+    let mut cjk_min_h = u16::MAX;
+    let mut cjk_max_h = 0u16;
     for (loc_idx, entries) in verify_locale_entries().iter().enumerate() {
         for (entry_idx, text) in entries.iter().enumerate() {
             for ch in text.chars() {
-                assert!(
-                    font.lookup_exact(ch).is_some(),
-                    "missing glyph '{ch}' (U+{:04X}) in locale {loc_idx} entry {entry_idx} ({text:?})",
-                    ch as u32
-                );
+                let glyph = font.lookup_exact(ch).unwrap_or_else(|| {
+                    panic!(
+                        "missing glyph '{ch}' (U+{:04X}) in locale {loc_idx} entry {entry_idx} ({text:?})",
+                        ch as u32
+                    )
+                });
+                if ch >= '\u{4E00}' {
+                    cjk_min_h = cjk_min_h.min(glyph.metrics.height);
+                    cjk_max_h = cjk_max_h.max(glyph.metrics.height);
+                }
             }
         }
     }
+    assert!(
+        cjk_max_h >= cjk_min_h && (cjk_max_h - cjk_min_h) <= 3,
+        "showcase CJK glyph heights must be uniform (min={cjk_min_h}, max={cjk_max_h})"
+    );
 }
 
 #[test]
