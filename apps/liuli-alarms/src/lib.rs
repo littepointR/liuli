@@ -2,7 +2,7 @@
 #![forbid(unsafe_code)]
 use core::num::NonZeroU16;
 use liuli::prelude::*;
-use liuli_widgets::{Navigator, Theme, paint_meter, virtual_list};
+use liuli_widgets::{Navigator, Theme, paint_meter, virtual_list_with_policy};
 const LIST: Key = Key(10);
 const METER: Key = Key(20);
 const FIRST: u32 = 100;
@@ -114,13 +114,14 @@ impl App for Alarms {
                     match m.routes.current() {
                         Page::List => {
                             ui.button(Key(3), button("告警 / 主题"))?;
-                            virtual_list(
+                            virtual_list_with_policy(
                                 ui,
                                 [LIST, Key(11), Key(12)],
                                 COUNT,
                                 NonZeroU16::new(ROW).unwrap(),
                                 m.offset,
                                 m.viewport,
+                                t.scroll_policy(ScrollPolicy::FREE),
                                 |list, id| {
                                     let text = list.text_fmt(format_args!("告警 {:04}", id + 1))?;
                                     list.button(

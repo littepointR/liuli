@@ -7,7 +7,7 @@ use liuli_core::capacity::{
 use liuli_core::damage::DamageSet;
 use liuli_core::focus::{
     CaptureKind, FocusState, PointerState, RepeatSource, RepeatState, adjust_slider_by_steps_pub,
-    dispatch_input_ext, is_interactive_leaf_or_row, is_valid_repeat_target,
+    dispatch_input_with_scroll, is_interactive_leaf_or_row, is_valid_repeat_target,
     pointer_hits_id_in_scope,
 };
 use liuli_core::geometry::Rect;
@@ -111,6 +111,7 @@ pub struct Engine<'s, 'f, A: App, F: FontProvider + TextMeasurer = FontSet<'f>> 
     view_pending: bool,
     timer_pending_after_dma: bool,
     animation_wake: NextWakeup,
+    scroll: crate::scroll::TouchScroll,
     last_build_error: Option<BuildError>,
     build_key: Option<Key>,
     last_metrics: FrameMetrics,
@@ -309,6 +310,7 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
             pair: Default::default(),
             has_committed_once: false,
             animation_wake: NextWakeup::OnEvent,
+            scroll: crate::scroll::TouchScroll::default(),
             active_page,
             last_content_focus: None,
             _font_lt: core::marker::PhantomData,
@@ -591,6 +593,15 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
     }
     #[inline]
     fn commit_view_inner(&mut self, now: InstantMs) -> Result<(), BuildError> {
+        // A jump or a kinetic step may change the materialized rows. Build the
+        // candidate with the new window, just as for a direct drag.
+        if self.has_committed_once && A::page_id(&self.model) == self.active_page {
+            self.scroll.notify_offsets::<A>(
+                &self.storage.trees[self.storage.active_tree_idx as usize],
+                &mut self.model,
+                now,
+            );
+        }
         #[cfg(feature = "enhanced")]
         let previous = self.pair.owner().and_then(|id| {
             let tree = self.storage.active_tree();
@@ -621,9 +632,8 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
     }
 
     fn sync_animations(&mut self, now: InstantMs, advance: bool) -> bool {
-        let tree = self.storage.active_tree();
-        let mut changed = false;
-        let mut wake = NextWakeup::OnEvent;
+        let tree = &self.storage.trees[self.storage.active_tree_idx as usize];
+        let (mut changed, mut wake) = self.scroll.sample::<A>(tree, &mut self.model, now, advance);
         A::animations(&mut self.model, &mut |key, animation| {
             let due = animation.next_wakeup(now);
             if due == NextWakeup::OnEvent {
@@ -644,6 +654,24 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
         });
         self.animation_wake = wake;
         changed
+    }
+
+    // Keep the application's view-builder temporaries off the reconciliation stack.
+    #[inline(never)]
+    fn build_draft(&mut self) -> Result<(), BuildError> {
+        let mut vb = ViewBuilder::new(&mut self.storage.draft);
+        if let Err(err) = A::view(&self.model, &mut vb) {
+            self.build_key = vb.operation_key();
+            self.view_pending = true;
+            self.last_build_error = Some(err);
+            return Err(err);
+        }
+        if let Err(err) = vb.finish() {
+            self.view_pending = true;
+            self.last_build_error = Some(err);
+            return Err(err);
+        }
+        Ok(())
     }
 
     fn commit_view_once(&mut self, now: InstantMs) -> Result<(), BuildError> {
@@ -684,20 +712,7 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
             (None, None, 0)
         };
 
-        {
-            let mut vb = ViewBuilder::new(&mut self.storage.draft);
-            if let Err(err) = A::view(&self.model, &mut vb) {
-                self.build_key = vb.operation_key();
-                self.view_pending = true;
-                self.last_build_error = Some(err);
-                return Err(err);
-            }
-            if let Err(err) = vb.finish() {
-                self.view_pending = true;
-                self.last_build_error = Some(err);
-                return Err(err);
-            }
-        }
+        self.build_draft()?;
 
         self.storage.cand_anims.copy_from(&self.storage.anims);
         let mut cand_focus = self.storage.focus;
@@ -752,9 +767,14 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
             let node = &cand_tree.nodes[idx];
             if node.occupied
                 && let Some(limit) = node.scroll_limit()
-                && let Some(controller) = A::scroll_controller(&mut self.model, node.key)
+                && !page_switched
+                && active_tree.modal == cand_tree.modal
+                && !outcome.revealed_tab_bars.get(idx)
+                && let Some((controller, origin)) =
+                    self.scroll
+                        .controller::<A>(&mut self.model, node.id(idx as u16), node.key)
             {
-                let offset = controller.offset().clamp(0, limit);
+                let offset = controller.offset().saturating_add(origin).clamp(0, limit);
                 if offset != node.scroll_y {
                     self.storage.cand_damage.add(node.visible_rect, self.screen);
                     cand_tree.nodes[idx].scroll_y = offset;
@@ -884,17 +904,13 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
         self.storage.focus = cand_focus;
         self.storage.pointer = cand_pointer;
         self.storage.repeat = cand_repeat;
-        for node in &cand_tree.nodes {
-            if node.occupied
-                && let Some(limit) = node.scroll_limit()
-                && let Some(controller) = A::scroll_controller(&mut self.model, node.key)
-            {
-                controller.set_bounds(0, limit);
-                if controller.offset() != node.scroll_y || controller.is_overscrolled() {
-                    controller.set_offset(node.scroll_y);
-                }
-            }
-        }
+        self.scroll.did_commit::<A>(
+            &mut self.model,
+            active_tree,
+            cand_tree,
+            page_switched,
+            outcome.revealed_tab_bars,
+        );
         for &r in self.storage.cand_damage.as_slice() {
             self.storage.damage.add(r, self.screen);
         }
@@ -1121,6 +1137,7 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
                 Delivery::Gesture(id, gesture) => {
                     let key = tree.nodes[id.slot() as usize].key;
                     if gesture.phase == liuli_core::input::GesturePhase::Begin {
+                        self.scroll.stop::<A>(&mut self.model);
                         self.storage.pointer.clear(
                             &mut self.storage.trees[active_t_idx],
                             &mut self.storage.damage,
@@ -1162,30 +1179,44 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
         }
         self.storage.cand_damage.clear();
 
-        let (consumed, action, pointer_ev) = dispatch_input_ext(
+        let saved_scroll = self.scroll;
+        if matches!(input, RawInput::PointerDown { .. }) && saved_pointer.active_id().is_none() {
+            self.scroll.pressed_at = now;
+        } else if matches!(input, RawInput::Nav(_)) && saved_pointer.active_id().is_none() {
+            self.scroll.stop::<A>(&mut self.model);
+        }
+        let (consumed, action, pointer_ev) = dispatch_input_with_scroll(
             &mut self.storage.trees[active_t_idx],
             &mut self.storage.focus,
             &mut self.storage.pointer,
             input,
             self.screen,
             &mut self.storage.cand_damage,
+            |id, node, gesture| {
+                self.scroll
+                    .input::<A>(&mut self.model, id, node, gesture, now)
+            },
         );
 
         let cur_tree = &self.storage.trees[active_t_idx];
-        let touched_scroll = match (input, self.storage.pointer.capture) {
-            (RawInput::PointerDown { id, .. }, CaptureKind::ScrollCandidate { scroll, .. })
-                if self.storage.pointer.active_id() == Some(id) =>
-            {
-                Some(scroll.slot() as usize)
+        let interrupt_at = match input {
+            RawInput::PointerDown { id, .. } if self.storage.pointer.active_id() == Some(id) => {
+                self.storage.pointer.captured_slot()
             }
+            RawInput::Nav(_) => self.storage.focus.focused_slot(cur_tree),
             _ => None,
         };
         for (idx, node) in cur_tree.nodes.iter().enumerate() {
+            let interrupt = node.kind.is_scroll_view()
+                && interrupt_at.is_some_and(|slot| cur_tree.is_descendant_of(slot, idx as u16));
             if node.occupied
-                && (saved_scroll_y[idx] != node.scroll_y || touched_scroll == Some(idx))
-                && let Some(controller) = A::scroll_controller(&mut self.model, node.key)
+                && (saved_scroll_y[idx] != node.scroll_y || interrupt)
+                && let Some((controller, origin)) =
+                    self.scroll
+                        .controller::<A>(&mut self.model, node.id(idx as u16), node.key)
+                && (interrupt || controller.offset().saturating_add(origin) != node.scroll_y)
             {
-                controller.set_offset(node.scroll_y);
+                controller.set_offset(node.scroll_y - origin);
             }
         }
         match input {
@@ -1354,6 +1385,7 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
                             self.sync_toggle_anim_rects(active_t_idx);
                             self.flush_cand_damage();
                         } else {
+                            self.scroll = saved_scroll;
                             self.rollback_fast_path(
                                 active_t_idx,
                                 saved_focus,
@@ -1373,6 +1405,7 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
 
         if had_local_damage {
             if let Err(err) = self.reemit_commands_inner() {
+                self.scroll = saved_scroll;
                 self.rollback_fast_path(
                     active_t_idx,
                     saved_focus,

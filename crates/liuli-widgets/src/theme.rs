@@ -133,6 +133,11 @@ impl Default for Theme {
 }
 
 impl Theme {
+    /// Resolve local scroll behavior against the theme's reduced-motion preference.
+    pub const fn scroll_policy(&self, mut local: ScrollPolicy) -> ScrollPolicy {
+        local.inertia &= !self.motion.reduced;
+        local
+    }
     pub const DARK: Self = Self::from_parts(
         StyleSource::named("Theme::DARK"),
         ThemePreset::Liuli,

@@ -187,6 +187,8 @@ fn exercise_from(app: &mut Session<'_>, dir: Option<&Path>, start_ms: u64) -> Re
                         pos: Point::new(120, 110),
                     },
                 )?;
+                // Hold at the intended offset before lifting to select and restore this row.
+                clock += 140;
                 input(
                     app,
                     &mut clock,

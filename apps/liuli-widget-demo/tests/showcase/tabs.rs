@@ -239,6 +239,35 @@ fn intrinsic_tracks_wrap_at_the_measured_pixel_and_clip_tools_and_text() {
     }
 }
 #[test]
+fn overflowing_tab_bar_coasts_without_selecting_a_page() {
+    let mut storage = Storage::new();
+    let mut app = session(&mut storage, 84, TabLayout::Scroll, false);
+    let id = PointerId(1);
+    let mut now = 0;
+    let pos = |x| Point::new(x, 16);
+    for event in [
+        RawInput::PointerDown { id, pos: pos(60) },
+        RawInput::PointerMove { id, pos: pos(50) },
+        RawInput::PointerMove { id, pos: pos(36) },
+        RawInput::PointerUp { id, pos: pos(36) },
+    ] {
+        input(&mut app, &mut now, event);
+    }
+    let offset = |app: &AppSession<'_, '_, _>| {
+        app.engine()
+            .active_tree()
+            .node_by_key(Key(3))
+            .unwrap()
+            .scroll_y
+    };
+    let release = offset(&app);
+    now += 16;
+    app.step(InstantMs(now), None, true).unwrap();
+    assert!(offset(&app) > release);
+    verify_panel(&app, 0);
+}
+
+#[test]
 fn scroll_does_not_select_and_touch_keyboard_and_encoder_mount_one_page() {
     let mut s = Storage::new();
     let mut app = session(&mut s, 84, TabLayout::Scroll, false);

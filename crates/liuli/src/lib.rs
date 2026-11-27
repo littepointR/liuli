@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 
 pub mod engine;
+mod scroll;
 pub mod storage;
 #[cfg(feature = "enhanced")]
 pub use liuli_enhanced as enhanced;
@@ -72,8 +73,8 @@ pub mod prelude {
     pub use liuli_core::view::{
         Align, App, Change, Children, EdgeInsets, FocusRingStyle, FontId, IconKind, Justify, Key,
         Length, MotionState, NodeKind, NodeProps, PageRestore, PaintMode, PressFeedback,
-        SampleRing, StackAlign, StateMotion, StoredProps, SubpixelOrder, TextAlign, TextGamma,
-        TextRef, TextStyleFlags, ViewBuilder, WrapMode,
+        SampleRing, ScrollPolicy, StackAlign, StateMotion, StoredProps, SubpixelOrder, TextAlign,
+        TextGamma, TextRef, TextStyleFlags, ViewBuilder, WrapMode,
     };
     pub use liuli_render::{
         AlignedBand, BandMeta, BandSlot, BufferTooSmall, ByteOrder, ByteWindowBus, ByteWindowSink,

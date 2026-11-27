@@ -130,6 +130,10 @@ impl<'a, 'b, 'p> ThemedUi<'a, 'b, 'p> {
     {
         let t = self.theme;
         let props = NodeProps {
+            scroll: props
+                .scroll
+                .or(t.motion.reduced.then_some(ScrollPolicy::DIRECT))
+                .map(|p| t.scroll_policy(p)),
             parts: t
                 .parts
                 .resolve(crate::WidgetClass::SCROLLBAR)
@@ -147,6 +151,10 @@ impl<'a, 'b, 'p> ThemedUi<'a, 'b, 'p> {
     {
         let t = self.theme;
         let props = NodeProps {
+            scroll: props
+                .scroll
+                .or(t.motion.reduced.then_some(ScrollPolicy::DIRECT))
+                .map(|p| t.scroll_policy(p)),
             parts: t
                 .parts
                 .resolve(crate::WidgetClass::SCROLLBAR)

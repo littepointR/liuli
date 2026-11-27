@@ -771,6 +771,8 @@ pub struct ScrollPhysics {
     /// Maximum rubber-band overscroll distance in pixels (`0` disables bounce).
     pub bounce_px: u16,
     last_step_ms: Option<InstantMs>,
+    sample_offset_q8: i32,
+    snap_target_q8: Option<i32>,
     dragging: bool,
 }
 
@@ -778,6 +780,11 @@ impl ScrollPhysics {
     const Q_SHIFT: i32 = 8;
     const Q_ONE: i32 = 1 << Self::Q_SHIFT;
     const STEP_MS: u64 = 16;
+    // No fresh displacement for this long is a hold, even if no Move was emitted.
+    const RELEASE_WINDOW_MS: u64 = 100;
+    // Fraction of velocity retained after each fixed step.
+    const FRICTION_NUM: i64 = 235;
+    const FRICTION_DEN: i64 = 256;
 
     pub const ZERO: Self = Self {
         offset_q8: 0,
@@ -787,6 +794,8 @@ impl ScrollPhysics {
         snap_step: 0,
         bounce_px: 0,
         last_step_ms: None,
+        sample_offset_q8: 0,
+        snap_target_q8: None,
         dragging: false,
     };
 
@@ -810,6 +819,9 @@ impl ScrollPhysics {
         self
     }
 
+    /// On release, approach the snap stop nearest the projected resting position.
+    /// Stops are spaced from the minimum offset and include the maximum offset,
+    /// even if the last interval is shorter. A new drag interrupts the motion.
     #[inline]
     pub const fn with_snap(mut self, snap_step: u16) -> Self {
         self.snap_step = snap_step;
@@ -818,11 +830,12 @@ impl ScrollPhysics {
 
     #[inline]
     pub fn offset(&self) -> i32 {
-        (self.offset_q8 + (Self::Q_ONE / 2)).div_euclid(Self::Q_ONE)
+        ((i64::from(self.offset_q8) + i64::from(Self::Q_ONE / 2)) >> Self::Q_SHIFT) as i32
     }
 
     #[inline]
     pub fn set_offset(&mut self, offset_px: i32) {
+        self.dragging = false;
         self.offset_q8 = offset_px
             .clamp(
                 self.min_offset.saturating_sub(i32::from(self.bounce_px)),
@@ -830,12 +843,25 @@ impl ScrollPhysics {
             )
             .saturating_mul(Self::Q_ONE);
         self.velocity_q8 = 0;
+        self.snap_target_q8 = None;
     }
 
     pub fn set_bounds(&mut self, min_offset: i32, max_offset: i32) {
+        let max_offset = max_offset.max(min_offset);
+        let changed = (self.min_offset, self.max_offset) != (min_offset, max_offset);
         self.min_offset = min_offset;
-        self.max_offset = max_offset.max(min_offset);
-        if !self.dragging && self.velocity_q8 == 0 && !self.is_overscrolled() {
+        self.max_offset = max_offset;
+        if changed && let Some(target) = self.snap_target_q8 {
+            let clamped = target.clamp(
+                min_offset.saturating_mul(Self::Q_ONE),
+                max_offset.saturating_mul(Self::Q_ONE),
+            );
+            self.snap_target_q8 = (clamped != self.offset_q8).then_some(clamped);
+            if self.snap_target_q8.is_none() {
+                self.velocity_q8 = 0;
+            }
+        }
+        if !self.dragging && !self.is_active() {
             let clamped = self.offset().clamp(self.min_offset, self.max_offset);
             self.offset_q8 = clamped.saturating_mul(Self::Q_ONE);
         }
@@ -850,7 +876,8 @@ impl ScrollPhysics {
 
     #[inline]
     pub fn is_active(&self) -> bool {
-        !self.dragging && (self.velocity_q8 != 0 || self.is_overscrolled())
+        !self.dragging
+            && (self.snap_target_q8.is_some() || self.velocity_q8 != 0 || self.is_overscrolled())
     }
 
     #[inline]
@@ -873,12 +900,18 @@ impl ScrollPhysics {
 
     pub fn begin_drag(&mut self, now: InstantMs) {
         self.dragging = true;
+        self.snap_target_q8 = None;
         self.velocity_q8 = 0;
+        self.sample_offset_q8 = self.offset_q8;
         self.last_step_ms = Some(now);
     }
 
     pub fn drag_by(&mut self, delta_px: i32, now: InstantMs) -> i32 {
+        if !self.dragging {
+            self.sample_offset_q8 = self.offset_q8;
+        }
         self.dragging = true;
+        self.snap_target_q8 = None;
         let min_q8 = self.min_offset.saturating_mul(Self::Q_ONE);
         let max_q8 = self.max_offset.saturating_mul(Self::Q_ONE);
         let bounce_q8 = i32::from(self.bounce_px).saturating_mul(Self::Q_ONE);
@@ -894,29 +927,126 @@ impl ScrollPhysics {
             min_q8.saturating_sub(bounce_q8),
             max_q8.saturating_add(bounce_q8),
         );
-        let dt_ms = self
+        let elapsed = self
             .last_step_ms
             .map(|prev| now.0.saturating_sub(prev.0))
-            .unwrap_or(Self::STEP_MS)
-            .clamp(4, 64) as i32;
-        let inst_v = (effective_q8.saturating_mul(Self::STEP_MS as i32)) / dt_ms;
+            .unwrap_or(Self::STEP_MS);
+        // Coalesced reports may share a timestamp. Accumulate displacement until
+        // there is a measurable interval instead of manufacturing a high velocity.
+        if elapsed < 4 {
+            return self.offset();
+        }
+        let travel = i64::from(self.offset_q8) - i64::from(self.sample_offset_q8);
+        self.sample_offset_q8 = self.offset_q8;
+        let inst_v = (travel * Self::STEP_MS as i64 / elapsed.clamp(1, i32::MAX as u64) as i64)
+            .clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+        if elapsed >= Self::RELEASE_WINDOW_MS || self.velocity_q8.signum() != inst_v.signum() {
+            self.velocity_q8 = 0;
+        }
         self.velocity_q8 = (self.velocity_q8 / 2).saturating_add(inst_v / 2);
         self.last_step_ms = Some(now);
         self.offset()
     }
 
     pub fn release(&mut self, now: InstantMs) {
+        let age = self
+            .last_step_ms
+            .map_or(Self::RELEASE_WINDOW_MS, |last| now.saturating_sub(last));
+        let fresh = Self::RELEASE_WINDOW_MS.saturating_sub(age);
+        self.velocity_q8 =
+            (i64::from(self.velocity_q8) * fresh as i64 / Self::RELEASE_WINDOW_MS as i64) as i32;
         self.dragging = false;
         self.last_step_ms = Some(now);
+        self.plan_release();
     }
 
     pub fn release_with_velocity(&mut self, velocity_px_per_sec: i32, now: InstantMs) {
-        self.dragging = false;
         self.velocity_q8 =
             ((i64::from(velocity_px_per_sec) * i64::from(Self::Q_ONE) * Self::STEP_MS as i64)
                 / 1000)
                 .clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+        self.dragging = false;
         self.last_step_ms = Some(now);
+        self.plan_release();
+    }
+
+    /// Finish direct manipulation immediately, honoring the nearest configured snap stop.
+    pub fn settle_immediately(&mut self, now: InstantMs) {
+        if self.snap_target_q8.is_none() {
+            self.release_with_velocity(0, now);
+        }
+        let stop = self
+            .snap_target_q8
+            .map_or(self.offset(), |q| q.div_euclid(Self::Q_ONE));
+        self.set_offset(stop.clamp(self.min_offset, self.max_offset));
+    }
+
+    /// Move to a content coordinate. Repeated commands retarget from the displayed position.
+    pub fn scroll_to(&mut self, target: i32, now: InstantMs, animated: bool) {
+        let target = target.clamp(self.min_offset, self.max_offset);
+        if !animated {
+            self.set_offset(target);
+            return;
+        }
+        self.dragging = false;
+        self.velocity_q8 = 0;
+        self.last_step_ms = Some(now);
+        let q8 = target.saturating_mul(Self::Q_ONE);
+        self.snap_target_q8 = (q8 != self.offset_q8).then_some(q8);
+    }
+
+    /// Move one snap interval in the requested direction, including a partial final interval.
+    pub fn scroll_by_stop(&mut self, direction: i32, now: InstantMs, animated: bool) {
+        if direction == 0 || self.snap_step == 0 {
+            return;
+        }
+        let from = self
+            .snap_target_q8
+            .map_or(self.offset(), |q| q.div_euclid(Self::Q_ONE));
+        let rel = i64::from(from) - i64::from(self.min_offset);
+        let step = i64::from(self.snap_step);
+        let index = if direction > 0 {
+            rel.div_euclid(step) + 1
+        } else {
+            (rel - 1).div_euclid(step)
+        };
+        let target = (i64::from(self.min_offset) + index * step)
+            .clamp(i64::from(self.min_offset), i64::from(self.max_offset));
+        self.scroll_to(target as i32, now, animated);
+    }
+
+    // Choose the stop before the first frame, so a fling never has to jump back
+    // to its anchor after friction has already brought it to rest.
+    fn plan_release(&mut self) {
+        self.snap_target_q8 = None;
+        if self.snap_step <= 1 || self.is_overscrolled() {
+            return;
+        }
+        let min = i64::from(self.min_offset) * i64::from(Self::Q_ONE);
+        let max = i64::from(self.max_offset) * i64::from(Self::Q_ONE);
+        // Sum of the free fling's geometrically decaying steps.
+        let projected = i64::from(self.offset_q8)
+            + i64::from(self.velocity_q8) * Self::FRICTION_DEN
+                / (Self::FRICTION_DEN - Self::FRICTION_NUM);
+        if self.bounce_px > 0 && !(min..=max).contains(&projected) {
+            return;
+        }
+        let stop = projected.clamp(min, max);
+        let spacing = i64::from(self.snap_step) * i64::from(Self::Q_ONE);
+        let lower = min + (stop - min) / spacing * spacing;
+        // The final partial interval ends at the actual content edge.
+        let upper = (lower + spacing).min(max);
+        let target = if stop - lower < upper - stop {
+            lower
+        } else {
+            upper
+        }
+        .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+        if target == self.offset_q8 {
+            self.velocity_q8 = 0;
+        } else {
+            self.snap_target_q8 = Some(target);
+        }
     }
 
     /// Advance inertia/bounce physics using wall-clock timestamp; returns `true` when offset changed.
@@ -960,6 +1090,25 @@ impl ScrollPhysics {
     }
 
     fn tick_one(&mut self) {
+        if self.dragging {
+            return;
+        }
+        if let Some(target) = self.snap_target_q8 {
+            let remaining = i64::from(target) - i64::from(self.offset_q8);
+            // Apply the same decay to the remaining distance. A half-pixel
+            // minimum step finishes the subpixel tail in bounded time.
+            let speed = (remaining.abs() * (Self::FRICTION_DEN - Self::FRICTION_NUM)
+                / Self::FRICTION_DEN)
+                .max(i64::from(Self::Q_ONE / 2))
+                .min(remaining.abs());
+            self.velocity_q8 = (remaining.signum() * speed) as i32;
+            self.offset_q8 += self.velocity_q8;
+            if self.offset_q8 == target {
+                self.snap_target_q8 = None;
+                self.velocity_q8 = 0;
+            }
+            return;
+        }
         let min_q8 = self.min_offset.saturating_mul(Self::Q_ONE);
         let max_q8 = self.max_offset.saturating_mul(Self::Q_ONE);
         let bounce_q8 = i32::from(self.bounce_px).saturating_mul(Self::Q_ONE);
@@ -992,21 +1141,13 @@ impl ScrollPhysics {
                     -(self.velocity_q8 / 4)
                 };
             } else {
-                self.velocity_q8 = (i64::from(self.velocity_q8) * 235 / 256) as i32;
+                self.velocity_q8 =
+                    (i64::from(self.velocity_q8) * Self::FRICTION_NUM / Self::FRICTION_DEN) as i32;
             }
 
             if self.velocity_q8.abs() < 32 && !self.is_overscrolled() {
                 self.velocity_q8 = 0;
-                // Both ends are valid stops, including a final partial snap interval.
-                if self.snap_step > 1 && self.offset_q8 > min_q8 && self.offset_q8 < max_q8 {
-                    let step = i32::from(self.snap_step);
-                    let cur = self.offset();
-                    let rel = cur - self.min_offset;
-                    let snapped = self.min_offset + ((rel + step / 2) / step) * step;
-                    self.offset_q8 = snapped
-                        .clamp(self.min_offset, self.max_offset)
-                        .saturating_mul(Self::Q_ONE);
-                }
+                self.plan_release();
             }
         }
     }

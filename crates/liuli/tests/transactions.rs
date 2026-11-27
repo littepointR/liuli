@@ -1122,6 +1122,59 @@ fn nested_focus_notifies_each_viewport_and_restores_the_declared_key() {
         x
     );
     assert_eq!(engine.focus().focused_key(), Some(Key(6)));
+
+    // Horizontal and vertical drags start in the same nested viewport.
+    // Only the winner may move after release, including after a page is remounted.
+    let id = PointerId(1);
+    let offsets = |e: &Engine<'_, '_, Pages>| {
+        let tree = e.active_tree();
+        (
+            tree.node_by_key(Key(2)).unwrap().scroll_y,
+            tree.node_by_key(Key(4)).unwrap().scroll_y,
+        )
+    };
+    let gesture = |engine: &mut Engine<'_, '_, Pages>, time, horizontal: bool| {
+        let r = engine
+            .active_tree()
+            .node_by_key(Key(4))
+            .unwrap()
+            .visible_rect;
+        let start = Point::new(r.x + 60, r.y + 3);
+        let end = if horizontal {
+            Point::new(start.x - 16, start.y)
+        } else {
+            Point::new(start.x, start.y + 8)
+        };
+        engine
+            .handle_input(RawInput::PointerDown { id, pos: start }, InstantMs(time))
+            .unwrap();
+        engine
+            .handle_input(RawInput::PointerMove { id, pos: end }, InstantMs(time + 16))
+            .unwrap();
+        engine
+            .handle_input(RawInput::PointerUp { id, pos: end }, InstantMs(time + 20))
+            .unwrap();
+    };
+    gesture(&mut engine, 20, true);
+    let horizontal = offsets(&engine);
+    engine.tick(InstantMs(56)).unwrap();
+    assert_eq!(offsets(&engine).0, horizontal.0);
+    assert!(offsets(&engine).1 > horizontal.1);
+    // Reveal the bottom of the outer viewport before dragging back toward the top.
+    engine
+        .handle_input(RawInput::Nav(NavDir::Next), InstantMs(60))
+        .unwrap();
+    gesture(&mut engine, 80, false);
+    let vertical = offsets(&engine);
+    engine.tick(InstantMs(116)).unwrap();
+    assert!(offsets(&engine).0 < vertical.0);
+    assert_eq!(offsets(&engine).1, vertical.1);
+    engine.send(Msg::Switch(1), InstantMs(120)).unwrap();
+    engine.tick(InstantMs(280)).unwrap();
+    engine.send(Msg::Switch(0), InstantMs(300)).unwrap();
+    let restored = offsets(&engine);
+    engine.tick(InstantMs(400)).unwrap();
+    assert_eq!(offsets(&engine), restored);
 }
 
 #[test]

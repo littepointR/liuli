@@ -142,14 +142,13 @@ pub trait App {
         None
     }
 
-    /// Update a virtualized viewport after the router changes its scroll offset.
+    /// Update virtual content when dragging, focus navigation or scroll animation changes its offset.
     fn on_scroll(_model: &Self::Model, _key: Key, _offset: i32) -> Option<Self::Msg> {
         None
     }
 
-    /// Bind a model's animation to the native ScrollX/ScrollY position. The engine supplies
-    /// the measured bounds and synchronizes direct manipulation. Advance the controller
-    /// from the app timer and return `Change::View` when its position changes.
+    /// Optionally bind a controller for programmatic commands. The engine supplies measured
+    /// bounds, drag samples, release, animation ticks and wakeups automatically.
     fn scroll_controller(
         _model: &mut Self::Model,
         _key: Key,
@@ -847,8 +846,32 @@ pub(crate) type CurvePalette =
     [Option<&'static crate::animation::StyleCurve>; crate::capacity::MAX_ANIMATIONS];
 const _: () = assert!(crate::capacity::MAX_ANIMATIONS < 32);
 
+/// Interaction policy for a horizontal or vertical viewport, including a scrolling tab bar.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub struct ScrollPolicy {
+    pub inertia: bool,
+    pub snap_step: u16,
+}
+impl ScrollPolicy {
+    pub const FREE: Self = Self {
+        inertia: true,
+        snap_step: 0,
+    };
+    pub const DIRECT: Self = Self {
+        inertia: false,
+        snap_step: 0,
+    };
+    pub const fn snap(step: u16) -> Self {
+        Self {
+            snap_step: step,
+            ..Self::FREE
+        }
+    }
+}
+
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct NodeProps {
+    pub scroll: Option<ScrollPolicy>,
     pub style_source: crate::style_source::StyleSource,
     /// Declarative part defaults and local overrides, interned by the scene builder.
     pub parts: crate::part_style::WidgetPartStyle,
@@ -917,6 +940,7 @@ impl NodeProps {
     #[cfg_attr(feature = "inspector", track_caller)]
     pub const fn new() -> Self {
         Self {
+            scroll: None,
             style_source: crate::style_source::StyleSource::named("NodeProps").declared(),
             parts: crate::part_style::WidgetPartStyle::ZERO,
             width: Length::Content,
@@ -987,6 +1011,11 @@ impl NodeProps {
     pub fn initial_scroll_offset(mut self, offset: i32) -> Self {
         self.step = SCROLL_OFFSET_PRESENT;
         (self.min, self.max) = pack_payload(offset.max(0) as u32);
+        self
+    }
+
+    pub const fn scroll_policy(mut self, policy: ScrollPolicy) -> Self {
+        self.scroll = Some(policy);
         self
     }
 
@@ -1239,6 +1268,22 @@ pub struct StoredProps {
 }
 
 impl StoredProps {
+    /// Viewports reuse the value and line-count payloads, which only leaves consume.
+    pub fn scroll_policy(&self) -> Option<ScrollPolicy> {
+        (self.max_lines != 0).then_some(ScrollPolicy {
+            inertia: self.max_lines == 2,
+            snap_step: self.value as u16,
+        })
+    }
+
+    fn for_kind(kind: NodeKind, props: NodeProps) -> Self {
+        let mut stored = Self::from_props(props);
+        if kind.is_scroll_view() {
+            stored.max_lines = props.scroll.map_or(0, |p| if p.inertia { 2 } else { 1 });
+            stored.value = props.scroll.map_or(0, |p| p.snap_step as i16);
+        }
+        stored
+    }
     pub const ZERO: Self = Self {
         width: Length::Content,
         height: Length::Content,
@@ -2512,7 +2557,7 @@ impl<'a> ViewBuilder<'a> {
             motion_ms: props.motion_ms,
             key,
             kind,
-            props: StoredProps::from_props(props),
+            props: StoredProps::for_kind(kind, props),
             parent: parent_link,
             first_child: SlotLink::NONE,
             last_child: SlotLink::NONE,

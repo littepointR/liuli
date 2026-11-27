@@ -649,6 +649,42 @@ pub fn dispatch_input_ext(
     screen: Rect,
     damage: &mut DamageSet,
 ) -> (bool, Option<UiAction>, Option<(Key, PointerEvent)>) {
+    dispatch_input_with_scroll(
+        tree,
+        focus,
+        pointer,
+        input,
+        screen,
+        damage,
+        |_, _, event| event.offset,
+    )
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub enum ScrollPhase {
+    Begin,
+    Move,
+    Release,
+    Cancel,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct ScrollGesture {
+    pub phase: ScrollPhase,
+    pub offset: i32,
+}
+
+/// Route a drag to its winning viewport. The host supplies the displayed offset
+/// so input, layout and subsequent animation share one position.
+pub fn dispatch_input_with_scroll(
+    tree: &mut RetainedTree,
+    focus: &mut FocusState,
+    pointer: &mut PointerState,
+    input: RawInput,
+    screen: Rect,
+    damage: &mut DamageSet,
+    mut scroll_input: impl FnMut(NodeId, &crate::node::RetainedNode, ScrollGesture) -> i32,
+) -> (bool, Option<UiAction>, Option<(Key, PointerEvent)>) {
     focus.ensure_valid(tree);
     focus.remember_panel_focus(tree);
     let Some(scope_root) = active_scope_root(tree) else {
@@ -1143,13 +1179,15 @@ pub fn dispatch_input_ext(
                             start_pos,
                             start_offset,
                         };
-                        apply_scroll_drag(
-                            tree,
-                            owner,
-                            start_offset.saturating_sub(axis_delta),
-                            screen,
-                            damage,
+                        let offset = scroll_input(
+                            node.id(owner),
+                            node,
+                            ScrollGesture {
+                                phase: ScrollPhase::Begin,
+                                offset: start_offset.saturating_sub(axis_delta),
+                            },
                         );
+                        apply_scroll_drag(tree, owner, offset, screen, damage);
                         return (true, None, None);
                     }
 
@@ -1177,13 +1215,16 @@ pub fn dispatch_input_ext(
                     } else {
                         pos.y.saturating_sub(start_pos.y)
                     };
-                    apply_scroll_drag(
-                        tree,
-                        scroll_slot,
-                        start_offset.saturating_sub(axis_delta),
-                        screen,
-                        damage,
+                    let node = &tree.nodes[scroll_slot as usize];
+                    let offset = scroll_input(
+                        scroll,
+                        node,
+                        ScrollGesture {
+                            phase: ScrollPhase::Move,
+                            offset: start_offset.saturating_sub(axis_delta),
+                        },
                     );
+                    apply_scroll_drag(tree, scroll_slot, offset, screen, damage);
                     (true, None, None)
                 }
             }
@@ -1258,8 +1299,27 @@ pub fn dispatch_input_ext(
                         (false, None, None)
                     }
                 }
-                CaptureKind::Scrolling { scroll, .. } => {
-                    if capture_id_in_scope(tree, scroll, scope_root).is_some() {
+                CaptureKind::Scrolling {
+                    scroll,
+                    start_pos,
+                    start_offset,
+                } => {
+                    if let Some(slot) = capture_id_in_scope(tree, scroll, scope_root) {
+                        let node = &tree.nodes[slot as usize];
+                        let delta = if node.kind.scrolls_x() {
+                            pos.x.saturating_sub(start_pos.x)
+                        } else {
+                            pos.y.saturating_sub(start_pos.y)
+                        };
+                        let offset = scroll_input(
+                            scroll,
+                            node,
+                            ScrollGesture {
+                                phase: ScrollPhase::Release,
+                                offset: start_offset.saturating_sub(delta),
+                            },
+                        );
+                        apply_scroll_drag(tree, slot, offset, screen, damage);
                         (true, None, None)
                     } else {
                         (false, None, None)
@@ -1270,6 +1330,18 @@ pub fn dispatch_input_ext(
         RawInput::PointerCancel { id } => {
             if pointer.active_id() != Some(id) {
                 return (false, None, None);
+            }
+            if let CaptureKind::Scrolling { scroll, .. } = pointer.capture
+                && let Some(node) = tree.node_by_id(scroll)
+            {
+                scroll_input(
+                    scroll,
+                    node,
+                    ScrollGesture {
+                        phase: ScrollPhase::Cancel,
+                        offset: node.scroll_y,
+                    },
+                );
             }
             let cancel_ev = if let CaptureKind::CustomPointer {
                 id: target_id,

@@ -1,6 +1,6 @@
 use super::*;
 use core::num::NonZeroU16;
-use liuli_widgets::{ButtonVariant, SurfaceSpec, ThemedUi, virtual_list};
+use liuli_widgets::{ButtonVariant, SurfaceSpec, ThemedUi, virtual_list_with_policy};
 
 pub(super) const LIST: Key = Key(12);
 pub(super) const ICONS: &[(IconKind, &str)] = &[
@@ -203,13 +203,14 @@ fn tape_rows(ui: &mut ThemedUi<'_, '_, '_>, m: &Model, viewport: u16) -> Result<
         studio::link(r, Page::Text, "Notebook", ButtonVariant::Secondary)?;
         Ok(())
     })?;
-    virtual_list(
+    virtual_list_with_policy(
         ui.raw(),
         [LIST, Key(13), Key(14)],
         m.deck.count(),
         NonZeroU16::new(t.control_height).unwrap(),
         m.offset,
         viewport.saturating_sub(t.control_height + 8),
+        t.scroll_policy(ScrollPolicy::FREE),
         |rows, id| {
             let take = m.deck.row(id);
             let key = take.key;

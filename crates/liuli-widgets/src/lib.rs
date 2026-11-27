@@ -152,6 +152,29 @@ pub fn virtual_list(
     row_height: core::num::NonZeroU16,
     offset: i32,
     viewport: u16,
+    row: impl FnMut(&mut Children<'_, '_>, u32) -> Result<(), BuildError>,
+) -> Result<(), BuildError> {
+    virtual_list_with_policy(
+        ui,
+        keys,
+        count,
+        row_height,
+        offset,
+        viewport,
+        ScrollPolicy::FREE,
+        row,
+    )
+}
+
+/// A virtual list with a local or theme-resolved scrolling policy.
+pub fn virtual_list_with_policy(
+    ui: &mut Children<'_, '_>,
+    keys: [Key; 3],
+    count: u32,
+    row_height: core::num::NonZeroU16,
+    offset: i32,
+    viewport: u16,
+    policy: ScrollPolicy,
     mut row: impl FnMut(&mut Children<'_, '_>, u32) -> Result<(), BuildError>,
 ) -> Result<(), BuildError> {
     let h = u32::from(row_height.get());
@@ -166,6 +189,7 @@ pub fn virtual_list(
         .saturating_add(1)
         .min(count);
     let props = NodeProps {
+        scroll: Some(policy),
         width: Length::Fill(1),
         height: Length::Px(viewport.into()),
         align_cross: Align::Stretch,

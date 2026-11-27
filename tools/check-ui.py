@@ -35,7 +35,8 @@ def check(screenshots):
     run(*demo, "--studio", "--size", "800x480", *landscape)
     run(*demo, "--size", "240x536", "--headless")
     run(*demo, "--showcase", *landscape)
-    for size, trace in (("800x480", "h743-widgets.trace"), ("240x536", "portrait-widgets.trace")):
+    for size, trace in (("800x480", "h743-widgets.trace"), ("240x536", "portrait-widgets.trace"),
+                        ("800x480", "h743-strip-fling.trace")):
         run(*demo, "--size", size, "--replay", str(catalog / "tests/fixtures" / trace))
 
     run("cargo", "test", "--offline", "--locked", "--release", "--manifest-path",

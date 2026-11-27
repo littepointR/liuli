@@ -287,7 +287,7 @@ impl ShowcaseModel {
             selected_row: Some(0),
             justify: Justify::SpaceBetween,
             grid_selected: 0,
-            scroll_physics: ScrollPhysics::ZERO.with_snap(CARD_WIDTH + CARD_GAP),
+            scroll_physics: ScrollPhysics::ZERO,
             sample_phase: 0,
             chart_rev: 1,
             banner_rev: 1,
@@ -418,7 +418,7 @@ pub enum ShowcaseMsg {
     SelectRow(usize),
     SetJustify(Justify),
     SelectGrid(usize),
-    FlingScroll(i32),
+    StepScroll(i32),
 }
 
 pub struct ShowcaseApp;
@@ -429,7 +429,6 @@ impl App for ShowcaseApp {
 
     fn animations(model: &mut Self::Model, bind: &mut dyn FnMut(Key, &mut dyn Animation)) {
         bind(Key(50), &mut model.transition);
-        bind(Key(450), &mut model.scroll_physics);
         bind(Key(475), &mut model.preview);
     }
 
@@ -600,17 +599,10 @@ impl App for ShowcaseApp {
                 model.grid_selected = idx;
                 Change::View
             }
-            ShowcaseMsg::FlingScroll(vel) => {
-                if model.motion.reduced {
-                    let x = model.scroll_physics.offset()
-                        + vel.signum() * i32::from(CARD_WIDTH + CARD_GAP);
-                    model.scroll_physics.set_offset(x.clamp(
-                        model.scroll_physics.min_offset,
-                        model.scroll_physics.max_offset,
-                    ));
-                } else {
-                    model.scroll_physics.release_with_velocity(vel, now);
-                }
+            ShowcaseMsg::StepScroll(direction) => {
+                model
+                    .scroll_physics
+                    .scroll_by_stop(direction, now, !model.motion.reduced);
                 Change::View
             }
         }
@@ -702,8 +694,8 @@ impl App for ShowcaseApp {
             471 => Some(ShowcaseMsg::Preview(-1)),
             472 => Some(ShowcaseMsg::Preview(0)),
             473 => Some(ShowcaseMsg::Preview(1)),
-            448 => Some(ShowcaseMsg::FlingScroll(-1100)),
-            449 => Some(ShowcaseMsg::FlingScroll(1100)),
+            448 => Some(ShowcaseMsg::StepScroll(-1)),
+            449 => Some(ShowcaseMsg::StepScroll(1)),
             _ if model.tab == ShowcaseTab::Charts && k >= 420 && (k - 420).is_multiple_of(16) => {
                 let row = ((k - 420) / 16) as usize;
                 (row < TABLE_ROWS.len()).then_some(ShowcaseMsg::SelectRow(row))
@@ -1588,6 +1580,7 @@ fn scroll_strip(theme: Theme, ui: &mut Children<'_, '_>) -> Result<(), BuildErro
             strip.scroll_x(
                 Key(450),
                 NodeProps::new()
+                    .scroll_policy(theme.scroll_policy(ScrollPolicy::snap(CARD_WIDTH + CARD_GAP)))
                     .width(Length::Fill(1))
                     .height(Length::Fill(1))
                     .padding(EdgeInsets::all(4))
@@ -2032,6 +2025,7 @@ fn compact_forms(
     ui.scroll_y(
         Key(228),
         NodeProps::new()
+            .scroll_policy(theme.scroll_policy(ScrollPolicy::FREE))
             .width(Length::Fill(1))
             .height(Length::Fill(1))
             .accent(theme.accent),

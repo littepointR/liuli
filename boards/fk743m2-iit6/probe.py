@@ -153,7 +153,7 @@ def depth_scroll(commander, uid, trace, demo):
         link.close()
 
 
-def showcase_trace(commander, uid, trace, reference, page, label):
+def showcase_trace(commander, uid, trace, reference, page, label, observe=None):
     """Replay raw touch through the board mailbox and compare the complete settled content pane."""
     from urllib.parse import parse_qsl
     from jlink import expand_snapshot, compare_pixels
@@ -174,11 +174,14 @@ def showcase_trace(commander, uid, trace, reference, page, label):
         for seq, line in enumerate(rows[1:], 1):
             millis, query = line.split(" ", 1)
             time.sleep(max(0, started + int(millis)/1000 - time.monotonic()))
-            if query == "tick":
-                continue
-            event = dict(parse_qsl(query, strict_parsing=True))
-            action = {"down":1, "up":2, "move":3}[event["kind"]]
-            issue(link, seq, action, int(event["x"]) | int(event["y"]) << 16)
+            kind = "tick"
+            if query != "tick":
+                event = dict(parse_qsl(query, strict_parsing=True))
+                kind = event["kind"]
+                action = {"down":1, "up":2, "move":3, "cancel":4}[kind]
+                issue(link, seq, action, int(event["x"]) | int(event["y"]) << 16)
+            if observe is not None:
+                observe(link, kind)
         snap = issue(link, len(rows)+1, 6)
         if snap[8] != page or snap[9] & 6 or not 0 < snap[14] <= 512*1024:
             raise RuntimeError(f"invalid {label} page or scanout: {snap}")
@@ -190,6 +193,33 @@ def showcase_trace(commander, uid, trace, reference, page, label):
         link.reset(halt=False)
     finally:
         link.close()
+
+
+def strip_fling(commander, uid, trace, reference):
+    """Track the leading edge of the purple card on the published layout-page trajectory."""
+    from jlink import FRONTS
+    dragging = False
+    released = False
+    edges = []
+
+    def observe(link, kind):
+        nonlocal dragging, released
+        if kind == "move":
+            dragging = True
+        elif dragging and kind == "up":
+            released = True
+        if released:
+            front, = link.memory_read32(0x2400000c, 1)
+            if front not in FRONTS:
+                raise RuntimeError(f"invalid scanout address {front:#x}")
+            row = link.memory_read16(front + 2*(274*800 + 70), 660)
+            color = (116 >> 3) << 11 | (76 >> 2) << 5 | (176 >> 3)
+            edges.append(70 + row.index(color))
+
+    showcase_trace(commander, uid, trace, reference, 3, "Layout fling", observe)
+    if len(set(edges)) < 3 or edges != sorted(edges, reverse=True):
+        raise RuntimeError(f"card did not continue scrolling left after release: {edges}")
+    print(f"Card edge after release (pixels): {edges}")
 
 
 def motion_gallery(commander, uid, reference):

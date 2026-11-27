@@ -124,6 +124,7 @@ impl<'a, Id: Copy + Eq, M> Tabs<'a, Id, M> {
 
 fn bar_props(t: Theme) -> NodeProps {
     NodeProps {
+        scroll: Some(t.scroll_policy(ScrollPolicy::FREE)),
         width: Length::Fill(1),
         height: Length::Content,
         gap: t.spacing,

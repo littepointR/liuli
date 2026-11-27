@@ -37,6 +37,13 @@ cargo run --release -p liuli-widget-demo --features desktop,enhanced -- --replay
 python boards/fk743m2-iit6/jlink.py --speed 12000 --widget-samples apps/liuli-widget-demo/tests/fixtures/h743-widgets.trace target/widgets.rgb565
 ~~~
 
+布局页的 `h743-strip-fling.trace` 在横滚区中段松手。下面的实板回放自动注入触摸，从 LTDC 帧缓冲采样松手后的卡片边缘，并将停止后的内容区与桌面逐像素比较。
+
+~~~sh
+cargo run --release -p liuli-widget-demo --features desktop,enhanced -- --replay apps/liuli-widget-demo/tests/fixtures/h743-strip-fling.trace --scanout target/fling.rgb565
+python boards/fk743m2-iit6/jlink.py --speed 12000 --strip-fling apps/liuli-widget-demo/tests/fixtures/h743-strip-fling.trace target/fling.rgb565
+~~~
+
 ## Spool 便携录音台
 
 使用 `--studio` 打开这个独立产品风格的例子。

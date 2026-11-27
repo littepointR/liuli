@@ -12,7 +12,7 @@ liuli-trace 1
 1610 kind=down&v=1&x=400&y=311
 1650 kind=move&v=1&x=400&y=236
 1690 kind=move&v=1&x=400&y=161
-1730 kind=up&v=1&x=400&y=161
+1830 kind=up&v=1&x=400&y=161
 1870 kind=down&v=1&x=400&y=221
 1910 kind=up&v=1&x=400&y=221
 2110 kind=down&v=1&x=400&y=66

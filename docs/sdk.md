@@ -303,7 +303,11 @@ try_message、try_dispatch 和 try_advance 提供事务结果。Busy 会交还�
 - **扩展容器与排版**：`Justify::{Start, Center, End, SpaceBetween, SpaceAround, SpaceEvenly}` 控制主轴分配；`Children::grid(key, cols, props, ...)` 构建固定列数网格；`Children::scroll_x(key, props, ...)` 支持横向滚动容器。
 - **2D 方向导航与物理滚动**：`NavDir` 在树中执行几何方向焦点移动；`ScrollPhysics` 提供 Q8 定点滑动惯性、阻力衰减、越界回弹（`with_bounce`）和刻度吸附（`with_snap`）。
 
-当按钮和拖动操作同一个滚动容器时，可通过 `App::scroll_controller` 按容器键返回模型中的 `ScrollPhysics`。引擎按实际内容和视口尺寸设置范围，并把拖动结果同步给控制器。按钮可以启动惯性动画，由应用定时器推进。容器会按合法范围绘制一次偏移，子行使用正常布局坐标。M1–M6 演示的网格页使用这个接口。
+`scroll_x`、`scroll_y` 和可横滚的 Tabs 默认支持跟手拖动与抬手惯性。引擎在拖动超过阈值时按方向选择一个视口，从带单调时间的输入估算速度。停住手指后再松开会消除旧速度，新的触摸可以截停滑行。按键或旋钮移动焦点时，布局优先保证焦点可见。
+
+容器可以用 `NodeProps::scroll_policy(ScrollPolicy::snap(158))` 按 158 像素间隔吸附，也可以用 `ScrollPolicy::DIRECT` 仅跟手滚动。主题化容器和 Tabs 继承减少动态效果偏好。自定义控件可用 `theme.scroll_policy(local)` 解析同一偏好。配置吸附的容器在减少动态效果时直接对齐最近的停靠点。虚拟列表通过 `App::on_scroll` 接收拖动和滑行的偏移，按需构建可见行；`virtual_list_with_policy` 支持局部策略。
+
+需要按钮控制时，通过 `App::scroll_controller` 按容器键返回一个模型中的 `ScrollPhysics`。按钮可调用 `scroll_by_stop(1, now, true)` 前往下一项，或用 `scroll_to(offset, now, true)` 前往指定内容坐标。引擎提供测量边界、输入、动画时钟和唤醒调度。旧应用可移除这个控制器在 `App::animations` 或应用定时器中的重复注册。
 
 ### 3. 扩展控件、表单、图表与转场
 `liuli_widgets` 新增高阶组件，全部保持 `#![no_std]` 与有界内存：

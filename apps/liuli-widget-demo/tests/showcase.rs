@@ -97,7 +97,12 @@ fn gallery_navigation_and_widget_samples_replay_on_both_panels() {
                 pos: end,
             },
         ] {
-            now += 16;
+            // Hold the strip still before releasing to select a specific visible row.
+            now += if matches!(event, RawInput::PointerUp { .. }) {
+                160
+            } else {
+                16
+            };
             app.step(InstantMs(now), Some(event), true).unwrap();
         }
         assert!(app.engine().model().samples.offset >= 100);
@@ -447,30 +452,97 @@ fn all_locale_entries_exist_in_embedded_font() {
 }
 
 // Every step checks incremental rendering against the full-frame reference.
-fn settle_strip(app: &mut AppSession<'_, '_, ShowcaseApp>, clock: &mut u64) {
+fn settle_strip(app: &mut AppSession<'_, '_, ShowcaseApp>, clock: &mut u64, direction: i32) {
+    let card_x = |app: &AppSession<'_, '_, ShowcaseApp>| {
+        app.engine()
+            .active_tree()
+            .node_by_key(Key(452))
+            .unwrap()
+            .layout_rect
+            .x
+    };
+    let initial = app.engine().model().scroll_physics.offset();
+    let origin = card_x(app) + initial;
+    let mut previous = initial;
+    let mut previous_speed = i32::MAX;
     for _ in 0..128 {
         if !app.engine().model().scroll_physics.is_active() {
             return;
         }
         *clock += 16;
         app.step(InstantMs(*clock), None, true).unwrap();
+        let offset = app.engine().model().scroll_physics.offset();
+        assert_eq!(card_x(app), origin - offset);
+        let speed = (offset - previous) * direction;
+        assert!(
+            (0..=previous_speed.saturating_add(1)).contains(&speed),
+            "arrow from {initial} at {clock} ms: {previous} -> {offset}, previous step {previous_speed} px"
+        );
+        if !app.engine().model().scroll_physics.is_active() {
+            assert!(speed <= 1, "last frame moved {speed} px");
+        }
+        previous = offset;
+        previous_speed = speed;
     }
     panic!("strip animation did not settle");
 }
 
 #[test]
+fn strip_continues_after_a_fast_finger_release_in_mid_content() {
+    use liuli_sim::preview::replay_trace;
+    let trace = include_str!("fixtures/h743-strip-fling.trace");
+    let (drag, ticks) = trace.split_once("588 tick").unwrap();
+    for reduced in [false, true] {
+        let mut storage = Storage::new();
+        let size = Size::new(800, 480);
+        let mut model = ShowcaseModel::for_size(size);
+        model.motion.reduced = reduced;
+        let mut app = AppSession::<ShowcaseApp>::new(
+            &mut storage,
+            model,
+            showcase_fonts().unwrap(),
+            size,
+            InstantMs(0),
+            true,
+        )
+        .unwrap();
+        replay_trace(&mut app, drag).unwrap();
+        let offset = |app: &AppSession<'_, '_, ShowcaseApp>| {
+            app.engine()
+                .active_tree()
+                .node_by_key(Key(450))
+                .unwrap()
+                .scroll_y
+        };
+        let released = offset(&app);
+        app.step(InstantMs(588), None, true).unwrap();
+        if reduced {
+            assert_eq!(released, 158);
+            assert_eq!(offset(&app), released);
+        } else {
+            assert_eq!(released, 205);
+            assert!(offset(&app) > released);
+        }
+        replay_trace(&mut app, &format!("liuli-trace 1{ticks}")).unwrap();
+        assert_eq!(offset(&app), if reduced { 158 } else { 288 });
+        assert!(!app.engine().model().scroll_physics.is_active());
+    }
+}
+
+#[test]
 fn layout_strip_drag_and_arrow_share_bounds_and_pixels() {
-    for width in [800, 1040, 1120] {
+    for (width, height) in [(800, 480), (1040, 480), (1120, 480), (240, 536)] {
+        let size = Size::new(width, height);
         let mut storage = Storage::new();
         let model = ShowcaseModel {
             live_sample: false,
-            ..ShowcaseModel::new()
+            ..ShowcaseModel::for_size(size)
         };
         let mut app = AppSession::<ShowcaseApp>::new(
             &mut storage,
             model,
             showcase_fonts().unwrap(),
-            Size::new(width, 480),
+            size,
             InstantMs(0),
             true,
         )
@@ -520,19 +592,23 @@ fn layout_strip_drag_and_arrow_share_bounds_and_pixels() {
             *clock += 16;
             app.step(InstantMs(*clock), Some(event), true).unwrap();
         };
-        for ev in [
-            down,
-            RawInput::PointerMove { id, pos: end },
-            RawInput::PointerUp { id, pos: end },
-        ] {
-            step(&mut app, &mut clock, ev);
+        let drag_distance = start.x - end.x;
+        for _ in 0..(limit / drag_distance + 1) {
+            for ev in [
+                down,
+                RawInput::PointerMove { id, pos: end },
+                RawInput::PointerUp { id, pos: end },
+            ] {
+                step(&mut app, &mut clock, ev);
+            }
         }
         check(&app, limit);
         let dragged = snapshot(&app);
+        let snap_step = i32::from(app.engine().model().scroll_physics.snap_step);
         for (button, expected) in [(448, 0), (449, limit), (449, limit)] {
-            for _ in 0..3 {
+            for _ in 0..=(limit / snap_step + 1) {
                 tap(&mut app, &mut clock, button);
-                settle_strip(&mut app, &mut clock);
+                settle_strip(&mut app, &mut clock, if button == 448 { -1 } else { 1 });
             }
             check(&app, expected);
             assert_eq!(

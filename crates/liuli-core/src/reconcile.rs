@@ -17,6 +17,8 @@ pub struct ReconcileOutcome {
     pub focus_target_invalidated: bool,
     pub capture_target_invalidated: bool,
     pub modal_changed: bool,
+    /// Viewports whose selected tab is being revealed by layout this commit.
+    pub revealed_tab_bars: NodeMask,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -456,6 +458,7 @@ pub fn reconcile_into(
             && candidate.nodes[parent].kind == NodeKind::TabBar
         {
             candidate.nodes[parent].scroll_y = -1;
+            outcome.revealed_tab_bars.set(parent);
             candidate.nodes[parent].dirty_measure = true;
         }
     }

@@ -483,13 +483,14 @@ impl Samples {
             self.selected + 1
         ))?;
         ui.label(Key(724), t.paragraph().text(summary))?;
-        widgets::virtual_list(
+        widgets::virtual_list_with_policy(
             ui,
             [LIST, Key(721), Key(722)],
             RECORDS,
             NonZeroU16::new(30).unwrap(),
             self.offset,
             246,
+            t.scroll_policy(ScrollPolicy::FREE),
             |rows, id| {
                 let style = if id == self.selected {
                     ButtonVariant::Primary

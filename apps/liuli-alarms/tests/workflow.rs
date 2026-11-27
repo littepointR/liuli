@@ -4,6 +4,60 @@ use liuli_sim::preview::replay_trace;
 use liuli_sim::session::AppSession;
 
 #[test]
+fn virtual_list_tracks_inertia_and_stops_on_touch_hold_reverse_and_cancel() {
+    let font = Lf4Font::from_bytes(include_bytes!("../assets/body.lf4")).unwrap();
+    let mut storage = Storage::new();
+    let mut app = AppSession::<Alarms>::new(
+        &mut storage,
+        Model::new(536),
+        FontSet::single(font),
+        Size::new(240, 536),
+        InstantMs(0),
+        true,
+    )
+    .unwrap();
+    let id = PointerId(1);
+    let p = |y| Point::new(120, y);
+    let down = |y| RawInput::PointerDown { id, pos: p(y) };
+    let mv = |y| RawInput::PointerMove { id, pos: p(y) };
+    let up = |y| RawInput::PointerUp { id, pos: p(y) };
+    let mut step = |ms, event| {
+        app.step(InstantMs(ms), event, true).unwrap();
+        let offset = app.engine().model().offset;
+        let tree = app.engine().active_tree();
+        assert_eq!(tree.node_by_key(Key(10)).unwrap().scroll_y, offset);
+        assert!(tree.node_by_key(Key(100 + offset as u32 / 32)).is_some());
+        assert!(tree.active_count <= 6 + 504u16.div_ceil(32) + 1 + 2);
+        offset
+    };
+    step(10, Some(down(400)));
+    step(26, Some(mv(376)));
+    step(42, Some(mv(340)));
+    let release = step(46, Some(up(334)));
+    assert_eq!(release, 66); // The lift itself carries six new pixels.
+    let first = step(62, None);
+    assert!(first > release);
+    let next = step(78, None);
+    assert!(next >= first);
+    let stopped = step(82, Some(down(240)));
+    assert_eq!(step(242, None), stopped);
+    step(258, Some(mv(210)));
+    let held = step(420, Some(up(210)));
+    assert_eq!(step(468, None), held);
+    step(500, Some(down(310)));
+    step(516, Some(mv(280)));
+    step(532, Some(mv(250)));
+    step(548, Some(mv(276)));
+    let reversed = step(552, Some(up(276)));
+    assert!(step(568, None) < reversed);
+    step(574, Some(down(280)));
+    step(590, Some(mv(254)));
+    let cancelled = step(594, Some(RawInput::PointerCancel { id }));
+    assert_eq!(step(750, None), cancelled);
+    assert_eq!(app.engine().wakeup(InstantMs(750)), NextWakeup::OnEvent);
+}
+
+#[test]
 fn board_trace_opens_the_held_record_before_the_finger_lifts() {
     let trace = include_str!("fixtures/s3-long-press.trace");
     let font = Lf4Font::from_bytes(include_bytes!("../assets/body.lf4")).unwrap();
@@ -20,7 +74,8 @@ fn board_trace_opens_the_held_record_before_the_finger_lifts() {
     let (before_hold, tail) = trace.split_once("36717 kind=down").unwrap();
     replay_trace(&mut app, before_hold).unwrap();
     assert_eq!(app.engine().model().routes.current(), Page::List);
-    assert_eq!(app.engine().model().offset, 415);
+    // The recorded drags cover 415 pixels; free scrolling also advances after each lift.
+    assert_eq!(app.engine().model().offset, 438);
     let (hold, release) = tail.split_once("37617 kind=up").unwrap();
     // The 900 ms hold has no move events. Only the captured time advances can open detail.
     replay_trace(&mut app, &format!("liuli-trace 1\n36717 kind=down{hold}")).unwrap();
@@ -101,11 +156,11 @@ fn touch_workflow_edits_only_the_selected_record_and_restores_the_list() {
         )
         .unwrap();
     };
-    tap(&mut app, 460, 80);
+    tap(&mut app, 580, 80);
     assert_eq!(app.engine().model().routes.current(), Page::Detail(11));
     assert_eq!(app.engine().model().threshold, 75);
-    tap(&mut app, 500, 92);
-    tap(&mut app, 550, 112);
+    tap(&mut app, 620, 92);
+    tap(&mut app, 670, 112);
     assert_eq!(app.engine().model().routes.current(), Page::Detail(12));
     assert_eq!(app.engine().model().threshold, 50);
 }

@@ -1,0 +1,15 @@
+liuli-trace 1
+40 kind=down&v=1&x=459&y=27
+80 kind=up&v=1&x=459&y=27
+480 tick
+520 kind=down&v=1&x=560&y=293
+536 kind=move&v=1&x=520&y=293
+552 kind=move&v=1&x=450&y=293
+568 kind=move&v=1&x=355&y=293
+572 kind=up&v=1&x=355&y=293
+588 tick
+780 tick
+980 tick
+1180 tick
+1380 tick
+1580 tick

@@ -230,6 +230,8 @@ def main():
     p.add_argument("--themed-motion", nargs=2, type=Path, metavar=("TRACE","SCANOUT"), help="replay the Motion style fixture and compare its full content pane")
     p.add_argument("--widget-samples", nargs=2, type=Path, metavar=("TRACE", "SCANOUT"),
                    help="replay the widget catalog trace and compare its content pane")
+    p.add_argument("--strip-fling", nargs=2, type=Path, metavar=("TRACE", "SCANOUT"),
+                   help="replay h743-strip-fling.trace, sample the moving card after release and compare the settled pane")
     args=p.parse_args()
     if args.speed <= 0:
         p.error("--speed must be a positive SWD frequency in kHz")
@@ -268,6 +270,9 @@ def main():
         if args.widget_samples:
             from probe import showcase_trace
             showcase_trace(c, uid, *args.widget_samples, 5, "Widget samples")
+        if args.strip_fling:
+            from probe import strip_fling
+            strip_fling(c, uid, *args.strip_fling)
 
 
 if __name__=="__main__":
