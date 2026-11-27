@@ -85,6 +85,33 @@ pub struct RetainedNode {
 }
 
 impl RetainedNode {
+    pub(crate) fn focus_outline(
+        &self,
+        part: &crate::part_style::WidgetPartStyle,
+        style: &crate::effects::SurfaceStyle,
+        clip: Rect,
+    ) -> crate::composition::FocusOutline {
+        use crate::composition::{FocusOutline, FocusTarget, body_outline};
+        let (rect, shape) = match self.props.geometry.map(|g| g.focus) {
+            Some(FocusTarget::Part(f)) => (f.bounds.resolve(self.layout_rect, part), f.outline),
+            _ => (
+                self.layout_rect,
+                body_outline(self.props.geometry, style.composition),
+            ),
+        };
+        let clip = if style.layer().is_some_and(|l| l.projection.0 != 0) {
+            clip.intersect(self.layout_rect)
+        } else {
+            clip
+        };
+        FocusOutline::resolve(
+            shape,
+            rect,
+            self.props.radius,
+            self.props.focus_ring(),
+            clip,
+        )
+    }
     pub const EMPTY: Self = Self {
         occupied: false,
         generation: 0,
@@ -214,6 +241,20 @@ impl RetainedTree {
             })
     }
 
+    /// Focus geometry in layout coordinates before ancestor projections. Includes the resolved
+    /// part, available clearance and outer bounds used for damage and painting.
+    pub fn focus_outline(&self, key: Key) -> Option<crate::composition::FocusOutline> {
+        let slot = usize::from(self.find_slot_by_key(key)?);
+        let node = &self.nodes[slot];
+        if !node.props.focusable() || !node.props.focus_ring().enabled {
+            return None;
+        }
+        Some(node.focus_outline(
+            self.part_styles.get(slot),
+            &self.effects.get(key),
+            node.clip_rect,
+        ))
+    }
     /// Visible output of this node, including an ancestor projecting its content alpha.
     pub(crate) fn style_bounds(&self, i: usize) -> Rect {
         let n = &self.nodes[i];

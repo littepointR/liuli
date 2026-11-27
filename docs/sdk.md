@@ -202,6 +202,31 @@ Projection 用 256 个单位表示一整圈，围绕卡片的竖直中心轴投�
 
 增强档默认给每份命令列表 512 KiB 像素预算，两份命令列表用于事务提交。单个图层每个可见像素占 2.5 字节（RGB565 色彩与 2 像素共 1 字节的打包 A4 透明度），启用毛玻璃时还需为含采样边缘的背景区域预留每像素 2 字节（原地盒式模糊与预烘焙透色遮罩，无额外 scratch 缓冲）。可通过 `Engine::set_layer_budget(bytes)` 调整单份预算。超出预算会返回 `BuildError::LayerPixels`，从 `build_failure` 可取得控件键。上一帧继续有效，修正后可通过 `commit_view` 重试。检查器的帧报告列出活动列表的 `layer_pixel_bytes` 和本帧跨帧复用的子树数量 `reused_groups`。
 
+## 控件主体、焦点与命中
+
+触摸设备和通用模拟器默认使用 `InitialFocusRing::OnNavigation`。首帧会选好逻辑焦点，当前页签仍显示选中指示器。首次键盘导航、旋钮步进或确认时显示焦点框，手指按下时隐藏，点空白处也生效。弹窗关闭后会恢复触发控件的焦点，并沿用最近的输入方式。
+
+纯按键产品需要开机提示操作目标时，可以在构建首帧之前选用 `InitialFocusRing::Visible`。板端使用 `Engine::new_in_place_with_focus(storage, model, fonts, screen, now, InitialFocusRing::Visible)`。桌面使用 `AppSession::with_options`，传入 `SessionOptions { initial_focus: InitialFocusRing::Visible, ..Default::default() }`。运行中仍可通过 `try_set_focus_ring_visible` 调整提示。旧版 `.events` 回放显式选择可见策略，以复现已有首帧金图。
+
+在 `NodeProps::geometry` 声明一份静态 `WidgetGeometry`，内置控件、第三方控件和检查器可使用同一份解析结果。主体支持跟随主题圆角的 `Surface`、直角矩形、指定圆角、居中圆盘、胶囊和带填充规则的静态路径。形状随实际布局尺寸解析。例如宽 80、高 40 的圆形按钮在中间占用 40×40 像素，布局仍占 80×40。普通形状可以共享 Flash 中的声明，使用它们的节点无需占用表面效果槽。
+
+```rust
+use liuli::prelude::*;
+
+const CHIP: WidgetGeometry = WidgetGeometry::new(Outline::Capsule);
+let props = NodeProps {
+    width: Length::Px(80),
+    height: Length::Px(32),
+    focusable: true,
+    focus_ring: FocusRingStyle::DEFAULT.with_gap(2),
+    ..NodeProps::new().geometry(&CHIP)
+};
+```
+
+默认焦点围住主体，触摸命中整个布局框。设 `hit: HitArea::Outline` 则按填充后的形状命中，孔洞允许点选后面的元素。旋钮使用完整圆盘，滑块使用手柄可扫过的区域，页签的键盘焦点与当前页指示器各自独立。组合控件可以通过 `FocusTarget::Part(&FocusPart { part, bounds, outline })` 指定部位、边界及轮廓。边界可以取内边距、每轴 0 到 1024 的相对区域，或随主题手柄尺寸变化的滑动范围。自绘回调可从 `canvas.body_outline()` 取主体边界，也可用 `RetainedTree::focus_outline(key)` 检查实际焦点目标与绘制范围。在桌面预览中按住 Shift 点选控件，检查器会列出焦点形状、部位、主体边界、实际外扩量、线宽和命中策略。
+
+`FocusRingStyle::offset` 沿用外沿相对主体的距离；`with_gap` 表达主体到描边内沿的间隙。线宽为 1–3 个逻辑像素，线宽加间隙最多 7 像素。空间不足时统一收紧外扩量。路径外环在布局后的像素坐标中按填充区域作圆盘膨胀或腐蚀，使用 2×2 子像素采样；凹角、孔洞和非等比拉伸遵循同一规则。焦点环只参与绘制，旧、新绘制范围一起失效。未声明几何的控件继续使用原 `radius`、`FocusRingStyle` 和 `SurfaceComposition::outline`。显式圆盘、胶囊或路径优先于旧表面轮廓，`Outline::Surface` 会继承旧表面配置。命中默认继承 `SurfaceComposition::hit_outline`，也可以显式指定 `Bounds` 或 `Outline`。原先直接读取底层 `StoredProps::static_text` 或 `dyn_text` 的代码请改用 `StoredProps::text()`，按返回的 `TextRef` 区分静态和动态文字。直接构造底层 `PaintCmd::MaskGroup` 的后端需传入节点的 `slot`，以便通过 `SceneResources::geometry(slot)` 解析遮罩轮廓。自定义命令解释器还需处理路径焦点环、大圆角及其阴影。
+
 ## 路径、轮廓与子树遮罩
 
 自绘控件使用 `PreparedPath<N>::prepare(verbs, steps)` 定义路径。坐标范围是每轴 0 到 1024，绘制时映射到控件给出的局部矩形。路径支持多段轮廓、直线、二次和三次贝塞尔曲线。填充可选非零环绕或奇偶规则，绘制开放路径时仅填充会自动闭合。描边宽度使用路径坐标单位，端点和接合处为圆形，图元输出裁在目标矩形内。曲线在准备阶段按每段 `steps` 细分，可按最大显示尺寸选择精度；边数超过 `N` 返回 `BuildError::PathEdges`。

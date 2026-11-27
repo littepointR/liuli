@@ -113,6 +113,8 @@ fn changing_focus_geometry_repaints_the_old_and_new_outline() {
         true,
     )
     .unwrap();
+    app.step(InstantMs(1), Some(RawInput::Nav(NavDir::Next)), true)
+        .unwrap();
     let rect = app
         .engine()
         .active_tree()

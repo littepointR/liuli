@@ -680,8 +680,11 @@ fn reference_command(mut cmd: PaintCmd, origin: Rect) -> PaintCmd {
         | PaintCmd::GradientRect { rect, clip, .. }
         | PaintCmd::AlphaMask { rect, clip, .. }
         | PaintCmd::MaskGroup { rect, clip, .. }
+        | PaintCmd::WideRoundShadow { rect, clip, .. }
         | PaintCmd::OutlineShadow { rect, clip, .. }
         | PaintCmd::StaticPath { rect, clip, .. }
+        | PaintCmd::PathRing { rect, clip, .. }
+        | PaintCmd::WideRound { rect, clip, .. }
         | PaintCmd::PathRun { rect, clip, .. } => {
             *rect = rect.translate(dx, dy);
             clip
@@ -715,6 +718,88 @@ fn reference_range_with_source<S: SimTextSource>(
         cursor += 1;
         match *cmd {
             PaintCmd::Empty | PaintCmd::PathEdges { .. } => {}
+            PaintCmd::PathRing {
+                rect,
+                path,
+                outer,
+                inner,
+                rule,
+                color,
+                ..
+            } => {
+                let area = cmd.bounds().intersect(full);
+                for y in area.y..area.bottom64() as i32 {
+                    for x in area.x..area.right64() as i32 {
+                        let inside = |hx: i64, hy: i64| {
+                            let coord = |half: i64, origin: i32, extent: u32| {
+                                ((2 * (half - 2 * i64::from(origin)) + 1) * 1024)
+                                    .div_euclid(i64::from(extent.max(1)))
+                                    .clamp(-65536, 65536) as i32
+                            };
+                            liuli::core::path::contains(
+                                path.edges.iter(),
+                                coord(hx, rect.x, rect.w),
+                                coord(hy, rect.y, rect.h),
+                                liuli::prelude::PathPaint::Fill(rule),
+                            )
+                        };
+                        let displaced = |sx: i64, sy: i64, d: i8| {
+                            let r = 2 * i64::from(d).abs();
+                            for dy in -r..=r {
+                                for dx in -r..=r {
+                                    if dx * dx + dy * dy <= r * r
+                                        && inside(sx + dx, sy + dy) == (d >= 0)
+                                    {
+                                        return d >= 0;
+                                    }
+                                }
+                            }
+                            d < 0
+                        };
+                        let mut n = 0;
+                        for sy in [2 * i64::from(y), 2 * i64::from(y) + 1] {
+                            for sx in [2 * i64::from(x), 2 * i64::from(x) + 1] {
+                                if displaced(sx, sy, outer) && !displaced(sx, sy, inner) {
+                                    n += 1
+                                }
+                            }
+                        }
+                        if n > 0 {
+                            screen.blend_pixel_a4(
+                                y as usize * stride + x as usize,
+                                color.into_storage(),
+                                (n * 15 + 2) / 4,
+                            )
+                        }
+                    }
+                }
+            }
+            PaintCmd::WideRound {
+                rect,
+                clip,
+                radius,
+                width,
+                color,
+            } => {
+                let area = rect.intersect(clip).intersect(full);
+                for y in area.y..area.bottom64() as i32 {
+                    for x in area.x..area.right64() as i32 {
+                        let a = liuli::core::composition::round_band(
+                            rect,
+                            radius,
+                            width,
+                            Point::new(x, y),
+                        );
+                        if a != 0 {
+                            screen.blend_pixel_a4(
+                                y as usize * stride + x as usize,
+                                color.into_storage(),
+                                a,
+                            )
+                        }
+                    }
+                }
+            }
             PaintCmd::StaticPath {
                 rect,
                 clip,
@@ -739,6 +824,14 @@ fn reference_range_with_source<S: SimTextSource>(
                 reference_path(&mut screen, rect, clip, paint, color, edges);
                 cursor = end;
             }
+            PaintCmd::WideRoundShadow {
+                rect,
+                clip,
+                shadow,
+                radius,
+            } => reference_shadow(&mut screen, rect, clip, shadow, |p| {
+                liuli::core::composition::rounded_coverage(rect, radius, p)
+            }),
             PaintCmd::OutlineShadow {
                 rule,
                 path,
@@ -754,6 +847,7 @@ fn reference_range_with_source<S: SimTextSource>(
                 )
             }),
             PaintCmd::MaskGroup {
+                slot,
                 radius,
                 rect,
                 clip,
@@ -777,7 +871,15 @@ fn reference_range_with_source<S: SimTextSource>(
                         let i = y as usize * stride + x as usize;
                         let a = liuli::core::composition::mul_a4(
                             group.alpha.as_ref().unwrap()[i],
-                            composition.coverage(rect, radius, Point::new(x, y)),
+                            composition.coverage_with(
+                                liuli::core::composition::body_outline(
+                                    resources.geometry(slot),
+                                    Some(composition),
+                                ),
+                                rect,
+                                radius,
+                                Point::new(x, y),
+                            ),
                         );
                         if a != 0 {
                             screen.blend_pixel_a4(i, group.pixels[i], a)
@@ -930,7 +1032,12 @@ fn reference_range_with_source<S: SimTextSource>(
                         let original = screen.pixels[i];
                         let a = group_alpha[g_idx];
                         if composition.is_some() || with_alpha {
-                            let inside = corner_distance_2x(rect, radius, p) < radius_thresh;
+                            let inside = composition
+                                .filter(|c| c.outline != liuli::prelude::Outline::Surface)
+                                .map_or_else(
+                                    || corner_distance_2x(rect, radius, p) < radius_thresh,
+                                    |c| c.outline.coverage(rect, radius as u8, p) >= 8,
+                                );
                             let (rgb, alpha) = if inside && blurred.is_some() {
                                 (
                                     blend_rgb565_a4_u16(

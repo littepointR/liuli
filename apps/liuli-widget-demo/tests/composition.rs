@@ -23,6 +23,7 @@ fn bitmap_mask_composites_overlapping_paths_once_at_every_band_height() {
     cmds.screen = screen;
     cmds.root_bg = WHITE;
     cmds.push(PaintCmd::MaskGroup {
+        slot: 0,
         rect,
         clip: screen,
         end: 3,

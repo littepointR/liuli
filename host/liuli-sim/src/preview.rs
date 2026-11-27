@@ -300,7 +300,7 @@ impl<A: App> PreviewSession for AppSession<'_, '_, A> {
                 tree.nodes[id.slot() as usize].key.0.to_string()
             });
         format!(
-            r#"{{"frame_id":{},"now_ms":{},"paused":{},"rate_x":{},"measured_nodes":{},"pixels_sent":{},"damage":{},"band_rects":{},"focus":{focus},"capture":{capture},"text_input":{},"active_nodes":{},"commands":{},"text_bytes":{}}}"#,
+            r#"{{"frame_id":{},"now_ms":{},"paused":{},"rate_x":{},"measured_nodes":{},"pixels_sent":{},"damage":{},"band_rects":{},"focus":{focus},"ring_visible":{},"capture":{capture},"text_input":{},"active_nodes":{},"commands":{},"text_bytes":{}}}"#,
             frame.frame_id,
             frame.now_ms,
             paused,
@@ -309,6 +309,7 @@ impl<A: App> PreviewSession for AppSession<'_, '_, A> {
             frame.pixels_sent,
             rects_to_json(&frame.damage),
             rects_to_json(&frame.band_rects),
+            engine.focus().ring_visible,
             engine.text_target().is_some(),
             tree.active_count,
             engine.active_commands().count,
@@ -552,6 +553,22 @@ fn handle_connection(
             while let Some(slot) = current {
                 let node = &tree.nodes[slot as usize];
                 chain.push(format!("key={} {:?} width={:?} height={:?} measured={:?} layout={:?} clip={:?} visible={:?} font={:?} fg={:?} bg={:?}",node.key.0,node.kind,node.props.width,node.props.height,node.measured_size,node.layout_rect,node.clip_rect,node.visible_rect,node.props.font(),node.props.fg,node.props.bg()));
+                if let Some(ring) = tree.focus_outline(node.key) {
+                    use liuli::prelude::{FocusTarget, HitArea, Outline};
+                    let part = match node.props.geometry.map(|g| g.focus) {
+                        Some(FocusTarget::Part(target)) => Some(target.part),
+                        _ => None,
+                    };
+                    let shape = match ring.shape {
+                        Outline::Path(_, rule) => format!("Path({rule:?})"),
+                        shape => format!("{shape:?}"),
+                    };
+                    let hit = node.props.geometry.map_or(HitArea::Inherit, |g| g.hit);
+                    chain.push(format!(
+                        "  focus_shape={shape} part={part:?} body={:?} focus_bounds={:?} outer={} width={} hit_policy={hit:?}",
+                        ring.body, ring.bounds, ring.outer, node.props.focus_ring().width
+                    ));
+                }
                 if let Some(tab) = node.active_tab() {
                     chain.push(format!("  active_tab={}", tab.0));
                 } else if node.kind == liuli::prelude::NodeKind::Tab {

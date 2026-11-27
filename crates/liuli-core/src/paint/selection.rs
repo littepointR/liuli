@@ -81,7 +81,7 @@ pub(super) fn paint_sliding_indicator(
         if part.indicator_transition != IndicatorMotion::Slide {
             continue;
         }
-        tab_surface(n, part, root_bg, out)?;
+        tab_surface(n, tree.effects.get(n.key).composition, part, root_bg, out)?;
         let p = selection_progress(n, anims);
         if p == 0 && !n.props.checked() {
             continue;
@@ -168,6 +168,7 @@ pub(super) fn paint_selection(
 
 fn tab_surface(
     node: &RetainedNode,
+    composition: Option<&crate::composition::SurfaceComposition>,
     part: &WidgetPartStyle,
     root_bg: Rgb565,
     out: &mut CommandList,
@@ -177,9 +178,12 @@ fn tab_surface(
     if clip.is_empty() {
         return Ok(());
     }
-    if let Some(color) = resolve_state_bg(node, part, root_bg) {
-        out.push(PaintCmd::FillRect { rect, clip, color })?;
-    }
+    super::emit_surface(
+        node,
+        composition,
+        resolve_state_bg(node, part, root_bg),
+        out,
+    )?;
     let divider = u32::from(part.track_thickness().unwrap_or(1)).min(rect.h);
     if divider > 0 {
         out.push(PaintCmd::FillRect {
@@ -205,7 +209,7 @@ pub(super) fn paint_tab(ctx: BuiltinPaintCtx<'_>, out: &mut CommandList) -> Resu
     }
     let content = control_content(node, ctx.part);
     if ctx.part.indicator_transition != IndicatorMotion::Slide || !ctx.in_tab_bar {
-        tab_surface(node, ctx.part, ctx.root_bg, out)?;
+        tab_surface(node, ctx.composition, ctx.part, ctx.root_bg, out)?;
         paint_selection(
             out,
             ctx.part,

@@ -100,6 +100,16 @@ struct ActiveDma {
     scene_version: u32,
 }
 
+/// Focus indication on the first frame. Subsequent inputs control visibility normally.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum InitialFocusRing {
+    /// Keep a logical focus target and reveal its ring on navigation or activation.
+    #[default]
+    OnNavigation,
+    /// Show the initial target before the first input, e.g. for a keypad-only product.
+    Visible,
+}
+
 pub struct Engine<'s, 'f, A: App, F: FontProvider + TextMeasurer = FontSet<'f>> {
     storage: &'s mut Storage,
     model: A::Model,
@@ -285,7 +295,27 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
         screen: Rect,
         now: InstantMs,
     ) -> Result<Self, BuildError> {
+        Self::new_in_place_with_focus(
+            storage,
+            model,
+            fonts,
+            screen,
+            now,
+            InitialFocusRing::default(),
+        )
+    }
+
+    /// Set the startup indication before building the initial view, for any font provider.
+    pub fn new_in_place_with_focus(
+        storage: &'s mut Storage,
+        model: A::Model,
+        fonts: F,
+        screen: Rect,
+        now: InstantMs,
+        initial_focus: InitialFocusRing,
+    ) -> Result<Self, BuildError> {
         storage.init_in_place();
+        storage.focus.ring_visible = initial_focus == InitialFocusRing::Visible;
         let _ = storage.clock.advance_to(now);
         let active_page = A::page_id(&model);
 
@@ -676,6 +706,14 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
 
     fn commit_view_once(&mut self, now: InstantMs) -> Result<(), BuildError> {
         self.build_key = None;
+        self.build_draft()?;
+        self.commit_draft(now)
+    }
+
+    // The application view and reconciliation both need stack scratch. Run them
+    // in separate frames so their peaks do not add up on small MCU targets.
+    #[inline(never)]
+    fn commit_draft(&mut self, now: InstantMs) -> Result<(), BuildError> {
         let old_page = self.active_page;
         let new_page = A::page_id(&self.model);
         let page_switched = self.has_committed_once && old_page != new_page;
@@ -711,8 +749,6 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
         } else {
             (None, None, 0)
         };
-
-        self.build_draft()?;
 
         self.storage.cand_anims.copy_from(&self.storage.anims);
         let mut cand_focus = self.storage.focus;

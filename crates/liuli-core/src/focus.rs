@@ -274,11 +274,8 @@ impl FocusState {
         self.editing = false;
         if self.has_modal_trigger {
             let trigger_key = self.modal_saved_key;
-            let saved_ring = self.modal_saved_ring;
-            self.has_modal_trigger = false;
-            self.modal_saved_key = Key(0);
-            self.modal_saved_ring = false;
-            self.ring_visible = saved_ring;
+            // Restore the target. Input inside the modal may have changed the indication.
+            self.clear_modal_trigger();
 
             if let Some(root_slot) = tree.root.get_u16()
                 && let Some(slot) = tree.find_slot_by_key(trigger_key)
@@ -538,7 +535,6 @@ fn navigate_tabs(
     damage.add(tree.nodes[slot as usize].visible_rect, screen);
     let key = tree.nodes[dest as usize].key;
     focus.set_focused_key(Some(key));
-    focus.ring_visible = true;
     if let Some(s) = ensure_visible(tree, dest, screen) {
         damage.add(tree.nodes[s as usize].visible_rect, screen);
     }
@@ -691,6 +687,25 @@ pub fn dispatch_input_with_scroll(
         return (false, None, None);
     };
 
+    // A navigation action can edit a value without moving the target. A touch
+    // can land on empty space. Both still identify the active input method.
+    let show_ring = match input {
+        RawInput::Nav(_) | RawInput::Activate => true,
+        RawInput::Adjust(steps) if steps != 0 => true,
+        RawInput::PointerDown { pos, .. }
+            if pointer.active_id().is_none() && screen.contains_point(pos) =>
+        {
+            false
+        }
+        _ => focus.ring_visible,
+    };
+    if show_ring != focus.ring_visible {
+        focus.ring_visible = show_ring;
+        if let Some(slot) = focus.focused_slot(tree) {
+            damage.add(tree.nodes[slot as usize].visible_rect, screen);
+        }
+    }
+
     match input {
         RawInput::Nav(dir) => {
             if let Some(slot) = focus.focused_slot(tree)
@@ -749,7 +764,6 @@ pub fn dispatch_input_with_scroll(
             }
 
             let old_slot = focus.focused_slot(tree);
-            let old_ring = focus.ring_visible;
 
             let next_slot = match dir {
                 NavDir::Next | NavDir::Prev => {
@@ -775,10 +789,9 @@ pub fn dispatch_input_with_scroll(
                 next_slot
             };
             focus.set_focused_key(Some(tree.nodes[next_slot as usize].key));
-            focus.ring_visible = true;
 
             if let Some(os) = old_slot
-                && (os != next_slot || !old_ring)
+                && os != next_slot
             {
                 damage.add(tree.nodes[os as usize].visible_rect, screen);
             }
@@ -836,10 +849,6 @@ pub fn dispatch_input_with_scroll(
             let Some(slot) = focus.focused_slot(tree) else {
                 return (false, None, None);
             };
-            if !focus.ring_visible {
-                focus.ring_visible = true;
-                damage.add(tree.nodes[slot as usize].visible_rect, screen);
-            }
             let node = &tree.nodes[slot as usize];
             if node.kind == NodeKind::Tab {
                 focus.editing = !focus.editing;
@@ -962,13 +971,6 @@ pub fn dispatch_input_with_scroll(
                     damage.add(tree.nodes[old_slot as usize].visible_rect, screen);
                 }
                 focus.editing = false;
-            }
-
-            if focus.ring_visible {
-                if let Some(old_slot) = focus.focused_slot(tree) {
-                    damage.add(tree.nodes[old_slot as usize].visible_rect, screen);
-                }
-                focus.ring_visible = false;
             }
 
             let hit_kind = tree.nodes[hit_slot as usize].kind;

@@ -753,11 +753,18 @@ mod layers {
                     let i =
                         (p.y - cache.source.y) as usize * src_w + (p.x - cache.source.x) as usize;
                     let a = get_a4(&group.alpha, i);
-                    let (rgb, alpha) = if card_box.contains(p.x, p.y) && has_backdrop {
+                    let inside = cache
+                        .composition
+                        .filter(|c| c.outline != liuli_core::composition::Outline::Surface)
+                        .map_or_else(
+                            || card_box.contains(p.x, p.y),
+                            |c| c.outline.coverage(rect, cache.radius, p) >= 8,
+                        );
+                    let (rgb, alpha) = if inside && has_backdrop {
                         let bd =
                             (y - cache.capture.y) as usize * cap_w + (x - cache.capture.x) as usize;
                         (blend_a4_u16(group.color[i], backdrop.pixels[bd], a), 15)
-                    } else if card_box.contains(p.x, p.y) && cache.style.tint_alpha > 0 {
+                    } else if inside && cache.style.tint_alpha > 0 {
                         liuli_text::blend_over_rgb565_a4(
                             rgb565_to_u16(cache.style.tint_color),
                             cache.style.tint_alpha,

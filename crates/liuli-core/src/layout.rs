@@ -1520,10 +1520,12 @@ fn arrange_iterative(
             let gap = tree.nodes[slot as usize].props.gap;
 
             {
+                let style = tree.effects.get(tree.nodes[slot as usize].key);
+                let part = tree.part_styles.get(slot as usize);
                 let n = &mut tree.nodes[slot as usize];
                 n.layout_rect = rect;
                 n.clip_rect = own_clip;
-                refresh_node_ink_rect(n);
+                refresh_node_ink_rect_with(n, part, &style);
             }
 
             if !kind.is_container() {
@@ -2056,7 +2058,21 @@ pub fn ensure_visible(tree: &mut RetainedTree, target_slot: u16, screen: Rect) -
     }
 
     let mut ancestor = tree.nodes[target_slot as usize].parent;
-    let mut target = tree.nodes[target_slot as usize].ink_rect;
+    let n = &tree.nodes[usize::from(target_slot)];
+    let mut target = n.ink_rect;
+    if n.props.focusable() && n.props.focus_ring().enabled {
+        // Reveal the space the ring will occupy after scrolling. Its current clipped
+        // footprint can be smaller while the control is entering the viewport.
+        let available = n.layout_rect.expand(u32::from(n.props.focus_ring().offset));
+        target = target.union(
+            n.focus_outline(
+                tree.part_styles.get(usize::from(target_slot)),
+                &tree.effects.get(n.key),
+                available,
+            )
+            .bounds,
+        );
+    }
     let mut outermost_changed = None;
     while let Some(slot) = ancestor.get_u16() {
         let sv = &tree.nodes[slot as usize];
@@ -2141,6 +2157,17 @@ pub fn compute_text_origin(node: &RetainedNode) -> Point {
 }
 
 pub fn refresh_node_ink_rect(node: &mut RetainedNode) {
+    refresh_node_ink_rect_with(
+        node,
+        &crate::part_style::WidgetPartStyle::ZERO,
+        &crate::effects::SurfaceStyle::FLAT,
+    );
+}
+pub(crate) fn refresh_node_ink_rect_with(
+    node: &mut RetainedNode,
+    part: &crate::part_style::WidgetPartStyle,
+    style: &crate::effects::SurfaceStyle,
+) {
     let mut ink = node.layout_rect;
     if node.kind == NodeKind::Label && node.text_cache.valid {
         let origin = compute_text_origin(node);
@@ -2149,7 +2176,7 @@ pub fn refresh_node_ink_rect(node: &mut RetainedNode) {
     if node.props.focusable() {
         let ring = node.props.focus_ring();
         if ring.enabled {
-            ink = ink.expand(u32::from(ring.offset));
+            ink = ink.union(node.focus_outline(part, style, node.clip_rect).bounds);
         }
     }
     node.ink_rect = ink;

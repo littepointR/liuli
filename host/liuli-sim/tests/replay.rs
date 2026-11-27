@@ -33,6 +33,15 @@ fn replay_modal_fixture_passes() {
 }
 
 #[test]
+fn closing_a_modal_keeps_the_latest_touch_indication() {
+    let trace = "0 next\n0 next\n0 next\n0 next\n0 expect focus reset\n\
+                 10 activate\n10 expect modal open\n10 expect ring true\n\
+                 20 down 1 50 50\n30 up 1 50 50\n30 expect ring false\n\
+                 40 back\n40 expect modal closed\n40 expect focus reset\n40 expect ring false\n";
+    run_replay_str(trace, None, ImageFormat::Ppm).unwrap();
+}
+
+#[test]
 fn replay_background_fixture_passes() {
     run_replay_file(&fixture_path("background.events"), None, ImageFormat::Ppm)
         .expect("background.events replay failed");

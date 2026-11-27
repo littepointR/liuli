@@ -1,7 +1,7 @@
 use crate::capacity::{BuildError, MAX_NODES, NodeMask};
 use crate::damage::DamageSet;
 use crate::geometry::Rect;
-use crate::layout::{TextMeasurer, layout_tree, refresh_node_ink_rect};
+use crate::layout::{TextMeasurer, layout_tree, refresh_node_ink_rect_with};
 use crate::node::{RetainedTree, TextCache};
 use crate::time::{ANIM_SCALE, AnimPool, AnimProp, InstantMs, TOGGLE_ANIM_DURATION_MS};
 use crate::view::{NodeKind, SlotLink, ViewDraft};
@@ -224,6 +224,8 @@ pub fn reconcile_into(
 
         let old_part = active.part_styles.get(usize::from(old_slot));
         let new_part = candidate.part_styles.get(c_idx);
+        let old_effect = active.effects.get(old.key);
+        let new_effect = candidate.effects.get(node.key);
         let part_changed = old_part != new_part;
         let part_btn_measure = old_part.affects_button_measure(new_part);
         let old_extra = active.layout_extras.get(node.key);
@@ -344,8 +346,9 @@ pub fn reconcile_into(
             || op.enabled() != np.enabled()
             || op.focusable() != np.focusable()
             || op.clickable() != np.clickable()
-            || active.effects.get(node.key) != candidate.effects.get(node.key)
+            || old_effect != new_effect
             || op.focus_ring_raw != np.focus_ring_raw
+            || op.geometry != np.geometry
             || op.press_feedback_raw != np.press_feedback_raw
             || op.text_style() != np.text_style()
             || op.theme_id != np.theme_id
@@ -369,14 +372,18 @@ pub fn reconcile_into(
             && (!np.enabled() || !np.visible() || !np.focusable());
         let cap_lost = captured_slot == Some(old_slot as u16) && (!np.enabled() || !np.visible());
 
-        let focus_ink_changed =
-            op.focus_ring_raw != np.focus_ring_raw || op.focusable() != np.focusable();
+        let focus_ink_changed = op.focus_ring_raw != np.focus_ring_raw
+            || op.focusable() != np.focusable()
+            || op.geometry != np.geometry
+            || op.radius != np.radius
+            || old_effect != new_effect
+            || (np.geometry.is_some() && (part_changed || op != np));
         let c_node = &mut candidate.nodes[c_idx];
         if let Some(cache) = updated_cache {
             c_node.text_cache = cache;
         }
         if !text_changed_measure && (updated_cache.is_some() || focus_ink_changed) {
-            refresh_node_ink_rect(c_node);
+            refresh_node_ink_rect_with(c_node, new_part, &new_effect);
         }
         if order_changed || structural_changed || text_changed_measure {
             outcome.tree_changed = true;

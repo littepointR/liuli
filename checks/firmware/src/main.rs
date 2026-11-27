@@ -93,15 +93,15 @@ pub extern "C" fn firmware_main() -> ! {
         unsafe { (&mut *storage_ptr, &mut *band_a_ptr, &mut *band_b_ptr) };
 
     let screen = Rect::new(0, 0, DEFAULT_SCREEN_WIDTH, DEFAULT_SCREEN_HEIGHT);
-    let mut engine = Engine::<TerminalApp>::new_in_place_with_fonts(
+    let mut engine = Engine::<TerminalApp>::new_in_place_with_focus(
         storage,
         TerminalModel::new(InstantMs(0)),
         app_fonts(),
         screen,
         InstantMs(0),
+        InitialFocusRing::Visible,
     )
     .expect("init");
-    engine.set_focus_ring_visible(true);
 
     // 1. Synchronous byte-window transport path (full initial Dashboard frame).
     {

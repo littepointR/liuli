@@ -30,7 +30,7 @@ pub struct Backdrop {
 
 pub struct LayerCache {
     pub layout: Rect,
-    pub composition: Option<&'static crate::composition::SurfaceComposition>,
+    pub composition: Option<crate::composition::SurfaceComposition>,
     pub shadow: Option<crate::effects::Shadow>,
     pub key: Key,
     pub style: Layer,
@@ -283,6 +283,7 @@ pub fn reuse_groups(
                 PaintCmd::Sparkline { series, .. } => {
                     old.sparkline(series) == new.sparkline(series)
                 }
+                PaintCmd::MaskGroup { slot, .. } => old.geometry(slot) == new.geometry(slot),
                 PaintCmd::Group { .. } | PaintCmd::Surface { .. } => false,
                 _ => true,
             })

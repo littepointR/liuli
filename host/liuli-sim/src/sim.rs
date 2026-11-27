@@ -8,7 +8,7 @@ use liuli_settings::{
 };
 
 use crate::screen::MemoryScreen;
-use crate::session::rects_to_json;
+use crate::session::{SessionOptions, rects_to_json};
 
 pub use crate::session::{AppSession, FrameLookupError, FrameSnapshot, MAX_PNG_HISTORY};
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
@@ -33,24 +33,40 @@ impl<'s> SimSession<'s> {
         now: InstantMs,
         verify: bool,
     ) -> Result<Self, String> {
+        Self::with_initial_focus(scenario, storage, now, verify, InitialFocusRing::default())
+    }
+    pub(crate) fn with_initial_focus(
+        scenario: SimScenario,
+        storage: &'s mut Storage,
+        now: InstantMs,
+        verify_ref: bool,
+        initial_focus: InitialFocusRing,
+    ) -> Result<Self, String> {
         let size = Size::new(DEFAULT_SCREEN_WIDTH, DEFAULT_SCREEN_HEIGHT);
         match scenario {
-            SimScenario::Settings => Ok(Self::Settings(AppSession::new(
+            SimScenario::Settings => Ok(Self::Settings(AppSession::with_options(
                 storage,
                 SettingsModel::new(now),
                 app_fonts(),
                 size,
                 now,
-                verify,
+                SessionOptions {
+                    initial_focus,
+                    verify_ref,
+                    on_frame: None,
+                },
             )?)),
-            SimScenario::Terminal => Ok(Self::Terminal(AppSession::with_frame_callback(
+            SimScenario::Terminal => Ok(Self::Terminal(AppSession::with_options(
                 storage,
                 TerminalModel::new(now),
                 app_fonts(),
                 size,
                 now,
-                verify,
-                Some(TerminalModel::record_completed_frame),
+                SessionOptions {
+                    initial_focus,
+                    verify_ref,
+                    on_frame: Some(TerminalModel::record_completed_frame),
+                },
             )?)),
         }
     }

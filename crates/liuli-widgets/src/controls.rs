@@ -29,6 +29,7 @@ pub fn arc_knob(
             accent: theme.accent,
             focus_color: theme.focus,
             focus_ring: theme.interaction.focus,
+            geometry: Some(&WidgetGeometry::DIAL),
             font: theme.font,
             min,
             max,
@@ -53,13 +54,14 @@ pub fn paint_arc_knob(
     canvas: &mut WidgetCanvas<'_>,
 ) -> Result<(), BuildError> {
     let size = canvas.size();
-    let min_dim = size.width.min(size.height);
+    let (body, _) = canvas.body_outline();
+    let min_dim = body.w.min(body.h);
     if min_dim < 4 {
         return Ok(());
     }
     let stroke_w = (min_dim / 9).clamp(3, 10) as u8;
-    let cx = (size.width / 2) as i32;
-    let cy = (size.height / 2) as i32;
+    let cx = body.x.saturating_add_unsigned(body.w / 2);
+    let cy = body.y.saturating_add_unsigned(body.h / 2);
     let radius = ((min_dim / 2).saturating_sub(u32::from(stroke_w) / 2 + 2)).max(2) as u16;
     let track_col = props.bg().unwrap_or(Rgb565::new(8, 16, 8));
 

@@ -45,18 +45,15 @@ fn check_focus_outline(app: &Session<'_>) {
     let tree = app.engine().active_tree();
     let key = app.engine().focus().focused_key().unwrap();
     let node = tree.node_by_key(key).unwrap();
-    let clip = node.clip_rect.intersect(app.engine().screen());
-    let (bounds, radius) =
-        node.props
-            .focus_ring()
-            .outline_geometry(node.layout_rect, clip, node.props.radius);
+    let ring = tree.focus_outline(key).unwrap();
+    let bounds = ring.bounds;
     assert_eq!(node.layout_rect, node.layout_rect.intersect(node.clip_rect));
     let width = app.engine().screen().w as usize;
     let color = liuli::core::geometry::rgb565_to_u16(node.props.focus_color);
     let at = |x: i32, y: i32| app.screen().words()[y as usize * width + x as usize];
     let right = bounds.x + bounds.w as i32 - 1;
     let bottom = bounds.y + bounds.h as i32 - 1;
-    let radius = i32::from(radius);
+    let radius = ring.radius as i32;
     for y in bounds.y + radius..=bottom - radius {
         for x in [bounds.x, right] {
             assert_eq!(at(x, y), color, "focus {key:?} at ({x},{y})");
@@ -77,7 +74,6 @@ fn exercise_from(app: &mut Session<'_>, dir: Option<&Path>, start_ms: u64) -> Re
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
     shot(app, dir, "00-home")?;
-    check_focus_outline(app);
     input(app, &mut clock, RawInput::Nav(NavDir::Next))?;
     check_focus_outline(app);
     input(app, &mut clock, RawInput::Nav(NavDir::Prev))?;
@@ -686,9 +682,6 @@ mod tests {
         let light_home = light_app.screen().words().to_vec();
         assert_ne!(dark_home, light_home);
 
-        // Touch hides the focus ring; re-enable rotary focus before running exercise_from.
-        input(&mut light_app, &mut clock, RawInput::Nav(NavDir::Next)).unwrap();
-        input(&mut light_app, &mut clock, RawInput::Nav(NavDir::Prev)).unwrap();
         exercise_from(&mut light_app, None, clock).unwrap();
     }
 }

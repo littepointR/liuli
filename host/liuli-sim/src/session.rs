@@ -111,6 +111,22 @@ pub struct AppSession<'s, 'f, A: App> {
     snapshot: FrameSnapshot,
     on_frame: Option<fn(&mut A::Model, FrameMetrics, InstantMs)>,
 }
+/// Parameters used when presenting a session's first frame.
+pub struct SessionOptions<M> {
+    pub initial_focus: InitialFocusRing,
+    pub verify_ref: bool,
+    pub on_frame: Option<fn(&mut M, FrameMetrics, InstantMs)>,
+}
+impl<M> Default for SessionOptions<M> {
+    fn default() -> Self {
+        Self {
+            initial_focus: InitialFocusRing::default(),
+            verify_ref: false,
+            on_frame: None,
+        }
+    }
+}
+
 impl<'s, 'f, A: App> AppSession<'s, 'f, A> {
     pub fn new(
         storage: &'s mut Storage,
@@ -131,21 +147,40 @@ impl<'s, 'f, A: App> AppSession<'s, 'f, A> {
         verify_ref: bool,
         on_frame: Option<fn(&mut A::Model, FrameMetrics, InstantMs)>,
     ) -> Result<Self, String> {
+        Self::with_options(
+            storage,
+            model,
+            fonts,
+            size,
+            start_now,
+            SessionOptions {
+                verify_ref,
+                on_frame,
+                ..Default::default()
+            },
+        )
+    }
+    pub fn with_options(
+        storage: &'s mut Storage,
+        model: A::Model,
+        fonts: FontSet<'f>,
+        size: Size,
+        start_now: InstantMs,
+        options: SessionOptions<A::Model>,
+    ) -> Result<Self, String> {
         if size.width == 0 || size.height == 0 {
             return Err("display dimensions must be positive".into());
         }
         storage.draft.inspection = Some(Box::default());
-        let mut engine = Engine::new_in_place_with_fonts(
+        let engine = Engine::new_in_place_with_focus(
             storage,
             model,
             fonts,
             Rect::new(0, 0, size.width, size.height),
             start_now,
+            options.initial_focus,
         )
         .map_err(|e| format!("initial view: {e:?}"))?;
-        engine
-            .try_set_focus_ring_visible(true)
-            .map_err(|e| format!("focus: {e:?}"))?;
         let placeholder_snap = FrameSnapshot {
             frame_id: 0,
             now_ms: start_now.0,
@@ -175,9 +210,9 @@ impl<'s, 'f, A: App> AppSession<'s, 'f, A> {
             trigger: "initial".into(),
             peaks: [0; 3],
             snapshot: placeholder_snap,
-            on_frame,
+            on_frame: options.on_frame,
         };
-        session.present_and_record(start_now, verify_ref)?;
+        session.present_and_record(start_now, options.verify_ref)?;
         Ok(session)
     }
     pub fn last_profile(&self) -> FrameProfile {

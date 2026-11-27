@@ -132,6 +132,15 @@ impl Default for Theme {
     }
 }
 
+const SLIDER_GEOMETRY: WidgetGeometry = WidgetGeometry {
+    focus: FocusTarget::Part(&FocusPart {
+        part: WidgetPart::Track,
+        bounds: PartBounds::SliderTravel,
+        outline: Outline::Surface,
+    }),
+    ..WidgetGeometry::SURFACE
+};
+
 impl Theme {
     /// Resolve local scroll behavior against the theme's reduced-motion preference.
     pub const fn scroll_policy(&self, mut local: ScrollPolicy) -> ScrollPolicy {
@@ -899,6 +908,7 @@ impl Theme {
     #[track_caller]
     pub fn slider(self, value: i16) -> NodeProps {
         NodeProps {
+            geometry: Some(&SLIDER_GEOMETRY),
             parts: self.parts.resolve(crate::WidgetClass::SLIDER),
             style_source: self.source.declared(),
             bg: Some(self.surface_alt),

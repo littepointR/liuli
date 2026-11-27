@@ -26,8 +26,8 @@ pub enum PathPaint {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PathEdge {
-    from: (u16, u16),
-    to: (u16, u16),
+    pub(crate) from: (u16, u16),
+    pub(crate) to: (u16, u16),
     fill_only: bool,
 }
 impl PathEdge {

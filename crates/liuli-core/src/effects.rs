@@ -557,36 +557,58 @@ impl RetainedTree {
         self.map_point(slot, point, true)
     }
     fn map_point(&self, slot: u16, point: Point, for_hit: bool) -> Option<Point> {
-        if !self.effects.iter().is_empty() {
-            let mut chain = [0u16; crate::capacity::MAX_DEPTH + 1];
-            let mut count = 0;
-            let mut current = Some(slot);
-            while let Some(index) = current {
-                *chain.get_mut(count)? = index;
-                count += 1;
-                current = self.nodes[usize::from(index)].parent.get_u16();
-            }
-            let mut p = point;
-            for &index in chain[..count].iter().rev() {
-                let n = &self.nodes[usize::from(index)];
-                let effect = self.effects.get(n.key);
-                if let Some(layer) = effect.layer() {
-                    if layer.opacity == 0 || !n.clip_rect.contains_point(p) {
+        use crate::composition::{HitArea, body_outline};
+        if self.effects.iter().is_empty() {
+            if for_hit {
+                let mut current = Some(slot);
+                while let Some(index) = current {
+                    let n = &self.nodes[usize::from(index)];
+                    if let Some(g) = n.props.geometry
+                        && g.hit == HitArea::Outline
+                        && g.outline.coverage(n.layout_rect, n.props.radius, point) < 8
+                    {
                         return None;
                     }
-                    p = layer.projection.unproject(n.layout_rect, p)?;
-                }
-                if for_hit
-                    && let Some(c) = effect.composition
-                    && c.hit_outline
-                    && c.outline.coverage(n.layout_rect, n.props.radius, p) < 8
-                {
-                    return None;
+                    current = n.parent.get_u16();
                 }
             }
-            return Some(p);
+            return Some(point);
         }
-        Some(point)
+        let mut chain = [0u16; crate::capacity::MAX_DEPTH + 1];
+        let mut count = 0;
+        let mut current = Some(slot);
+        while let Some(index) = current {
+            *chain.get_mut(count)? = index;
+            count += 1;
+            current = self.nodes[usize::from(index)].parent.get_u16();
+        }
+        let mut p = point;
+        for &index in chain[..count].iter().rev() {
+            let n = &self.nodes[usize::from(index)];
+            let effect = self.effects.get(n.key);
+            if let Some(layer) = effect.layer() {
+                if layer.opacity == 0 || !n.clip_rect.contains_point(p) {
+                    return None;
+                }
+                p = layer.projection.unproject(n.layout_rect, p)?;
+            }
+            let outline_hit = match n.props.geometry.map(|g| g.hit) {
+                Some(HitArea::Bounds) => false,
+                Some(HitArea::Outline) => true,
+                _ => effect.composition.is_some_and(|c| c.hit_outline),
+            };
+            if for_hit
+                && outline_hit
+                && body_outline(n.props.geometry, effect.composition).coverage(
+                    n.layout_rect,
+                    n.props.radius,
+                    p,
+                ) < 8
+            {
+                return None;
+            }
+        }
+        Some(p)
     }
 }
 

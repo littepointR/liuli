@@ -88,7 +88,14 @@ pub fn run_replay_str(
     }
 
     let mut storage = Box::new(Storage::new());
-    let mut session = SimSession::new(scenario, &mut storage, InstantMs(0), true)?;
+    // v0.2 .events fixtures start with a visible keypad focus, including their first screenshot.
+    let mut session = SimSession::with_initial_focus(
+        scenario,
+        &mut storage,
+        InstantMs(0),
+        true,
+        InitialFocusRing::Visible,
+    )?;
     let mut clock = VirtualClock::new(InstantMs(0));
 
     let mut shots = Vec::new();

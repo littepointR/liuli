@@ -405,6 +405,22 @@ impl WidgetPartStyle {
         self
     }
 
+    /// Local track bounds and the stable area swept by the slider's thumb.
+    pub fn slider_track_bounds(&self, size: Size) -> (Rect, Rect) {
+        let (kw, kh) = self.slider_knob_size(size);
+        let h = self.track_thickness().map_or_else(
+            || size.height.min(6),
+            |v| size.height.min(u32::from(v.max(1))),
+        );
+        let track = Rect::new(
+            (kw / 2) as i32,
+            ((size.height - h) / 2) as i32,
+            size.width - kw,
+            h,
+        );
+        let swept = Rect::new(0, ((size.height - kh) / 2) as i32, size.width, kh);
+        (track, track.union(swept))
+    }
     pub(crate) fn slider_knob_size(&self, size: Size) -> (u32, u32) {
         let (w, h) = self.knob_size().unwrap_or((12, 20));
         (

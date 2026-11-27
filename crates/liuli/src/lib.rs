@@ -11,7 +11,7 @@ pub use liuli_core as core;
 pub use liuli_render as render;
 pub use liuli_text as text;
 
-pub use engine::Engine;
+pub use engine::{Engine, InitialFocusRing};
 pub use storage::Storage;
 
 pub mod prelude {
@@ -42,7 +42,10 @@ pub mod prelude {
         rgb888_to_gray8, rgb888_to_hsl, rgb888_to_hsv, rgb888_to_rgb565_round,
         rgb888_to_rgb565_trunc,
     };
-    pub use liuli_core::composition::{Mask, Outline, ShadowSource, SurfaceComposition};
+    pub use liuli_core::composition::{
+        FocusPart, FocusTarget, HitArea, Mask, Outline, PartBounds, ShadowSource,
+        SurfaceComposition, WidgetGeometry,
+    };
     pub use liuli_core::damage::DamageSet;
     pub use liuli_core::dither::{
         DitherMode, bayer_4x4, gray8_to_gray4_dithered, gray8_to_mono1_dithered,
@@ -97,5 +100,5 @@ pub mod prelude {
         StreamingFont,
     };
 
-    pub use crate::{Engine, Storage};
+    pub use crate::{Engine, InitialFocusRing, Storage};
 }

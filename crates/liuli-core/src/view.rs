@@ -726,6 +726,20 @@ impl FocusRingStyle {
     };
 
     #[inline]
+    /// Set the clear distance between the body and the inner edge of the focus stroke.
+    /// The combined stroke and gap can extend up to seven logical pixels.
+    pub const fn with_gap(mut self, gap: u8) -> Self {
+        let width = if self.width < 1 {
+            1
+        } else if self.width > 3 {
+            3
+        } else {
+            self.width
+        };
+        let outer = width.saturating_add(gap);
+        self.offset = if outer > 7 { 7 } else { outer };
+        self
+    }
     pub const fn to_raw(self) -> u8 {
         if self.enabled && self.width == 2 && self.offset == 2 && self.rounded {
             return 0;
@@ -737,8 +751,12 @@ impl FocusRingStyle {
         } else {
             self.width
         };
-        let o = if self.offset > 3 { 3 } else { self.offset };
-        0x80 | (self.enabled as u8) | (w << 1) | (o << 3) | ((self.rounded as u8) << 5)
+        let o = if self.offset > 7 { 7 } else { self.offset };
+        0x80 | (self.enabled as u8)
+            | (w << 1)
+            | ((o & 3) << 3)
+            | ((o & 4) << 4)
+            | ((self.rounded as u8) << 5)
     }
 
     #[inline]
@@ -749,28 +767,21 @@ impl FocusRingStyle {
         Self {
             enabled: (raw & 0x01) != 0,
             width: (raw >> 1) & 0x03,
-            offset: (raw >> 3) & 0x03,
+            offset: ((raw >> 3) & 3) | ((raw >> 4) & 4),
             rounded: (raw & 0x20) != 0,
         }
     }
 
     /// Outer stroke bounds and radius before clipping to the viewport.
     pub fn outline_geometry(self, rect: Rect, clip: Rect, radius: u8) -> (Rect, u8) {
-        let offset = u32::from(self.offset.min(3));
-        if !self.rounded || radius == 0 {
-            return (rect.union(rect.expand(offset).intersect(clip)), 0);
-        }
-        // All four arcs stay concentric with the button, including at viewport edges.
-        let clearance = (rect.left64() - clip.left64())
-            .min(rect.top64() - clip.top64())
-            .min(clip.right64() - rect.right64())
-            .min(clip.bottom64() - rect.bottom64());
-        let expansion = clearance.clamp(0, i64::from(offset)) as u32;
-        let body_radius = u32::from(radius).min(rect.w / 2).min(rect.h / 2);
-        (
-            rect.expand(expansion),
-            (body_radius + expansion).min(255) as u8,
-        )
+        let shape = crate::composition::FocusOutline::resolve(
+            crate::composition::Outline::Surface,
+            rect,
+            radius,
+            self,
+            clip,
+        );
+        (shape.bounds, shape.radius.min(255) as u8)
     }
 }
 
@@ -871,6 +882,7 @@ impl ScrollPolicy {
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct NodeProps {
+    pub geometry: Option<&'static crate::composition::WidgetGeometry>,
     pub scroll: Option<ScrollPolicy>,
     pub style_source: crate::style_source::StyleSource,
     /// Declarative part defaults and local overrides, interned by the scene builder.
@@ -940,6 +952,7 @@ impl NodeProps {
     #[cfg_attr(feature = "inspector", track_caller)]
     pub const fn new() -> Self {
         Self {
+            geometry: None,
             scroll: None,
             style_source: crate::style_source::StyleSource::named("NodeProps").declared(),
             parts: crate::part_style::WidgetPartStyle::ZERO,
@@ -1011,6 +1024,11 @@ impl NodeProps {
     pub fn initial_scroll_offset(mut self, offset: i32) -> Self {
         self.step = SCROLL_OFFSET_PRESENT;
         (self.min, self.max) = pack_payload(offset.max(0) as u32);
+        self
+    }
+
+    pub const fn geometry(mut self, geometry: &'static crate::composition::WidgetGeometry) -> Self {
+        self.geometry = Some(geometry);
         self
     }
 
@@ -1214,6 +1232,7 @@ const EXT_STACK_ALIGN_MASK: u16 = 0x0F << EXT_STACK_ALIGN_SHIFT;
 const EXT_JUSTIFY_SHIFT: u16 = 9;
 const EXT_JUSTIFY_MASK: u16 = 0b111 << EXT_JUSTIFY_SHIFT;
 
+const FLAG_TEXT_DYN: u16 = 1 << 8;
 const FLAG_HAS_BG: u16 = 1 << 0;
 const FLAG_HAS_BORDER: u16 = 1 << 1;
 const FLAG_ELLIPSIS: u16 = 1 << 2;
@@ -1222,7 +1241,6 @@ const FLAG_FOCUSABLE: u16 = 1 << 4;
 const FLAG_ENABLED: u16 = 1 << 5;
 const FLAG_VISIBLE: u16 = 1 << 6;
 const FLAG_CLICKABLE: u16 = 1 << 7;
-const FLAG_TEXT_DYN: u16 = 1 << 8;
 const FLAG_STATE_MOTION: u16 = 1 << 9;
 const TEXT_ALIGN_SHIFT: u16 = 10;
 const TEXT_ALIGN_MASK: u16 = 0b11 << TEXT_ALIGN_SHIFT;
@@ -1253,8 +1271,8 @@ pub struct StoredProps {
     pub text_style_raw: u8,
     pub letter_spacing: i8,
     pub line_spacing: i8,
-    pub dyn_text: TextRange,
-    pub static_text: Option<&'static str>,
+    pub geometry: Option<&'static crate::composition::WidgetGeometry>,
+    text: TextRef,
     pub max_lines: u8,
     pub value: i16,
     pub min: i16,
@@ -1276,14 +1294,6 @@ impl StoredProps {
         })
     }
 
-    fn for_kind(kind: NodeKind, props: NodeProps) -> Self {
-        let mut stored = Self::from_props(props);
-        if kind.is_scroll_view() {
-            stored.max_lines = props.scroll.map_or(0, |p| if p.inertia { 2 } else { 1 });
-            stored.value = props.scroll.map_or(0, |p| p.snap_step as i16);
-        }
-        stored
-    }
     pub const ZERO: Self = Self {
         width: Length::Content,
         height: Length::Content,
@@ -1304,8 +1314,8 @@ impl StoredProps {
         text_style_raw: 0,
         letter_spacing: 0,
         line_spacing: 0,
-        dyn_text: TextRange { start: 0, len: 0 },
-        static_text: None,
+        geometry: None,
+        text: TextRef::Dynamic(TextRange { start: 0, len: 0 }),
         max_lines: 0,
         value: 0,
         min: 0,
@@ -1319,6 +1329,9 @@ impl StoredProps {
     };
 
     pub fn from_props(p: NodeProps) -> Self {
+        Self::pack(&p, false)
+    }
+    fn pack(p: &NodeProps, scroll_view: bool) -> Self {
         let mut flags = if p.motion_state == MotionState::None {
             0
         } else {
@@ -1376,16 +1389,9 @@ impl StoredProps {
         if p.repeatable {
             flags |= FLAG_REPEATABLE;
         }
-        let (dyn_text, static_text) = match p.text {
-            TextRef::Dynamic(r) => {
-                flags |= FLAG_TEXT_DYN;
-                (r, None)
-            }
-            TextRef::Static(s) => (
-                TextRange { start: 0, len: 0 },
-                if s.is_empty() { None } else { Some(s) },
-            ),
-        };
+        if matches!(p.text, TextRef::Dynamic(_)) {
+            flags |= FLAG_TEXT_DYN;
+        }
         let mut ext_flags = (p.pointer_capture as u16) & EXT_POINTER_CAPTURE_MASK;
         ext_flags |= ((p.anim_easing as u16) >> 1) << 12;
         if p.editable {
@@ -1414,10 +1420,18 @@ impl StoredProps {
             text_style_raw,
             letter_spacing: p.letter_spacing,
             line_spacing: p.line_spacing,
-            dyn_text,
-            static_text,
-            max_lines: p.max_lines,
-            value: p.value,
+            geometry: p.geometry,
+            text: p.text,
+            max_lines: if scroll_view {
+                p.scroll.map_or(0, |s| if s.inertia { 2 } else { 1 })
+            } else {
+                p.max_lines
+            },
+            value: if scroll_view {
+                p.scroll.map_or(0, |s| s.snap_step as i16)
+            } else {
+                p.value
+            },
             min: p.min,
             max: p.max,
             step: p.step,
@@ -1487,12 +1501,9 @@ impl StoredProps {
 
     #[inline]
     pub const fn text(&self) -> TextRef {
-        if (self.flags & FLAG_TEXT_DYN) != 0 {
-            TextRef::Dynamic(self.dyn_text)
-        } else if let Some(s) = self.static_text {
-            TextRef::Static(s)
-        } else {
-            TextRef::Static("")
+        match self.text {
+            TextRef::Dynamic(_) if self.flags & FLAG_TEXT_DYN == 0 => TextRef::Static(""),
+            text => text,
         }
     }
 
@@ -2391,7 +2402,7 @@ impl<'a> ViewBuilder<'a> {
         if !kind.is_container() {
             return Err(self.fail(BuildError::InvalidKind));
         }
-        let idx = self.push_node(key, kind, props)?;
+        let idx = self.push_node(key, kind, &props)?;
         self.stack[self.depth] = idx;
         self.depth += 1;
         Ok(())
@@ -2404,7 +2415,7 @@ impl<'a> ViewBuilder<'a> {
         if kind.is_container() {
             return Err(self.fail(BuildError::InvalidKind));
         }
-        self.push_node(key, kind, props)?;
+        self.push_node(key, kind, &props)?;
         Ok(())
     }
 
@@ -2475,7 +2486,7 @@ impl<'a> ViewBuilder<'a> {
         &mut self,
         key: Key,
         kind: NodeKind,
-        props: NodeProps,
+        props: &NodeProps,
     ) -> Result<SlotLink, BuildError> {
         if self.depth >= MAX_DEPTH {
             return Err(self.fail(BuildError::Depth));
@@ -2552,17 +2563,18 @@ impl<'a> ViewBuilder<'a> {
             .part_styles
             .merge(count, props.parts)
             .map_err(|e| self.fail(e))?;
-        self.draft.nodes[count] = DraftNode {
-            motion: MotionBinding::new(props.motion_state, curve_slot),
-            motion_ms: props.motion_ms,
-            key,
-            kind,
-            props: StoredProps::for_kind(kind, props),
-            parent: parent_link,
-            first_child: SlotLink::NONE,
-            last_child: SlotLink::NONE,
-            next_sibling: SlotLink::NONE,
-        };
+        // All fallible work is complete. Populate the reserved slot directly to
+        // keep an extra draft node off the MCU builder's call stack.
+        let node = &mut self.draft.nodes[count];
+        node.props = StoredProps::pack(props, kind.is_scroll_view());
+        node.motion = MotionBinding::new(props.motion_state, curve_slot);
+        node.motion_ms = props.motion_ms;
+        node.key = key;
+        node.kind = kind;
+        node.parent = parent_link;
+        node.first_child = SlotLink::NONE;
+        node.last_child = SlotLink::NONE;
+        node.next_sibling = SlotLink::NONE;
         #[cfg(feature = "inspector")]
         if let Some(i) = self.draft.inspection.as_mut() {
             i.staging.push((key, props.style_source));

@@ -22,6 +22,7 @@ pub mod node;
 pub mod paint;
 pub mod part_style;
 pub mod path;
+pub mod path_ring;
 pub mod reconcile;
 pub mod style_source;
 pub mod time;

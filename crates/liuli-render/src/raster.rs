@@ -763,6 +763,7 @@ fn paint_mask_tile<R: SceneResources + ?Sized, T: BandTextSource, A: crate::acce
             end,
             radius,
             composition,
+            slot,
         } = cmds.cmds[frame.command]
         else {
             unreachable!()
@@ -816,7 +817,15 @@ fn paint_mask_tile<R: SceneResources + ?Sized, T: BandTextSource, A: crate::acce
                     continue;
                 }
                 let a = liuli_core::composition::mul_a4(
-                    composition.coverage(rect, radius, p),
+                    composition.coverage_with(
+                        liuli_core::composition::body_outline(
+                            resources.geometry(slot),
+                            Some(composition),
+                        ),
+                        rect,
+                        radius,
+                        p,
+                    ),
                     liuli_core::composition::get_a4(&src.alpha, i),
                 );
                 if a != 0 {
@@ -877,6 +886,67 @@ fn paint_flat<R: SceneResources + ?Sized, T: BandTextSource, A: crate::accel::Dr
 
         match *cmd {
             PaintCmd::Empty | PaintCmd::PathEdges { .. } => {}
+            PaintCmd::PathRing {
+                rect,
+                path,
+                rule,
+                outer,
+                inner,
+                color,
+                ..
+            } => {
+                let area = cmd.bounds().intersect(band_rect);
+                for row in 0..area.h {
+                    let y = area.y.saturating_add_unsigned(row);
+                    for dx in (0..area.w).step_by(16) {
+                        let x = area.x.saturating_add_unsigned(dx);
+                        let n = (area.w - dx).min(16) as usize;
+                        let mut a = [0; 16];
+                        liuli_core::path_ring::coverage_span(
+                            *path,
+                            rule,
+                            rect,
+                            Point::new(x, y),
+                            outer,
+                            inner,
+                            &mut a[..n],
+                        );
+                        let start = (y - band_rect.y) as usize * band_rect.w as usize
+                            + (x - band_rect.x) as usize;
+                        for (i, &v) in a[..n].iter().enumerate() {
+                            if v != 0 {
+                                target.blend_pixel_a4(start + i, rgb565_to_u16(color), v)
+                            }
+                        }
+                    }
+                }
+            }
+            PaintCmd::WideRound {
+                rect,
+                clip,
+                radius,
+                width,
+                color,
+            } => {
+                let area = rect.intersect(clip).intersect(band_rect);
+                for row in 0..area.h {
+                    for col in 0..area.w {
+                        let p = Point::new(
+                            area.x.saturating_add_unsigned(col),
+                            area.y.saturating_add_unsigned(row),
+                        );
+                        let a = liuli_core::composition::round_band(rect, radius, width, p);
+                        if a > 0 {
+                            target.blend_pixel_a4(
+                                (p.y - band_rect.y) as usize * band_rect.w as usize
+                                    + (p.x - band_rect.x) as usize,
+                                rgb565_to_u16(color),
+                                a,
+                            )
+                        }
+                    }
+                }
+            }
             PaintCmd::StaticPath {
                 rect,
                 clip,
@@ -901,6 +971,14 @@ fn paint_flat<R: SceneResources + ?Sized, T: BandTextSource, A: crate::accel::Dr
                     });
                 crate::composition::draw_path(target, rect, clip, edges, paint, color)
             }
+            PaintCmd::WideRoundShadow {
+                rect,
+                clip,
+                shadow,
+                radius,
+            } => crate::composition::coverage_shadow(target, rect, clip, shadow, |p| {
+                liuli_core::composition::rounded_coverage(rect, radius, p)
+            }),
             PaintCmd::OutlineShadow {
                 rect,
                 clip,

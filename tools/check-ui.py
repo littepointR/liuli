@@ -36,14 +36,15 @@ def check(screenshots):
     run(*demo, "--size", "240x536", "--headless")
     run(*demo, "--showcase", *landscape)
     for size, trace in (("800x480", "h743-widgets.trace"), ("240x536", "portrait-widgets.trace"),
-                        ("800x480", "h743-strip-fling.trace"), ("800x480", "h743-composition.trace")):
+                        ("800x480", "h743-strip-fling.trace"), ("800x480", "h743-composition.trace"),
+                        ("800x480", "h743-focus-shapes.trace")):
         run(*demo, "--size", size, "--replay", str(catalog / "tests/fixtures" / trace))
 
     run("cargo", "test", "--offline", "--locked", "--release", "--manifest-path",
-        str(catalog / "Cargo.toml"), "--features", "desktop", "--test", "composition")
+        str(catalog / "Cargo.toml"), "--features", "desktop", "--test", "composition", "--test", "geometry")
     run("cargo", "test", "--offline", "--locked", "--release", "--manifest-path",
         str(catalog / "Cargo.toml"), "--features", "desktop,enhanced", "--test", "effects",
-        "--test", "showcase", "--test", "composition")
+        "--test", "showcase", "--test", "composition", "--test", "geometry")
     run("cargo", "test", "--offline", "--locked", "--release", "--manifest-path", manifest,
         "--all-features", "--tests")
     example = ["cargo", "run", "--offline", "--locked", "--manifest-path", manifest, "--example"]

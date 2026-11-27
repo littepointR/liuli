@@ -1,0 +1,11 @@
+liuli-trace 1
+10 kind=down&v=1&x=625&y=27
+50 kind=up&v=1&x=625&y=27
+650 tick
+700 kind=next
+800 kind=next
+900 kind=next
+1000 kind=next
+1100 kind=next
+1200 kind=prev
+1600 tick

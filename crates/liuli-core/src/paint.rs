@@ -176,6 +176,7 @@ pub enum PaintCmd {
         edges: [crate::path::PathEdge; 4],
     } = 21,
     MaskGroup {
+        slot: u8,
         radius: u8,
         end: u16,
         rect: Rect,
@@ -189,6 +190,28 @@ pub enum PaintCmd {
         rect: Rect,
         clip: Rect,
     } = 23,
+    PathRing {
+        rule: crate::path::FillRule,
+        outer: i8,
+        inner: i8,
+        color: Rgb565,
+        path: &'static crate::path::Path<'static>,
+        rect: Rect,
+        clip: Rect,
+    } = 24,
+    WideRound {
+        rect: Rect,
+        clip: Rect,
+        radius: u32,
+        color: Rgb565,
+        width: u8,
+    } = 25,
+    WideRoundShadow {
+        rect: Rect,
+        clip: Rect,
+        shadow: crate::effects::Shadow,
+        radius: u32,
+    } = 26,
     AlphaMask {
         color: Rgb565,
         alpha: u8,
@@ -307,13 +330,20 @@ impl PaintCmd {
     pub fn bounds(&self) -> Rect {
         match *self {
             Self::Empty | Self::PathEdges { .. } => Rect::ZERO,
-            Self::OutlineShadow {
+            Self::WideRoundShadow {
+                rect, clip, shadow, ..
+            }
+            | Self::OutlineShadow {
                 rect, clip, shadow, ..
             } => shadow.bounds(rect).intersect(clip),
             Self::Shadow {
                 rect, clip, shadow, ..
             } => shadow.bounds(rect).intersect(clip),
-            Self::Group { rect, clip, .. }
+            Self::PathRing {
+                rect, clip, outer, ..
+            } => rect.expand(outer.max(0) as u32).intersect(clip),
+            Self::WideRound { rect, clip, .. }
+            | Self::Group { rect, clip, .. }
             | Self::StaticPath { rect, clip, .. }
             | Self::PathRun { rect, clip, .. }
             | Self::MaskGroup { rect, clip, .. }
@@ -497,7 +527,7 @@ impl CommandList {
         index: u8,
     ) -> Option<(
         Rect,
-        Option<&'static crate::composition::SurfaceComposition>,
+        Option<crate::composition::SurfaceComposition>,
         Option<crate::effects::Shadow>,
     )> {
         #[cfg(feature = "layers")]
@@ -556,11 +586,19 @@ impl Default for CommandList {
 }
 
 pub trait SceneResources {
+    fn geometry(&self, _slot: u8) -> Option<&'static crate::composition::WidgetGeometry> {
+        None
+    }
     fn text(&self, id: TextId) -> &str;
     fn sparkline(&self, series: u8) -> &[i16];
 }
 
 impl SceneResources for RetainedTree {
+    fn geometry(&self, slot: u8) -> Option<&'static crate::composition::WidgetGeometry> {
+        self.nodes
+            .get(usize::from(slot))
+            .and_then(|n| n.props.geometry)
+    }
     #[inline]
     fn text(&self, id: TextId) -> &str {
         let idx = id.0 as usize;
@@ -671,6 +709,21 @@ impl WidgetCanvas<'_> {
         self.bounds.size()
     }
 
+    /// The main silhouette's bounding box and outline in widget-local coordinates.
+    pub fn body_outline(&self) -> (Rect, crate::composition::Outline) {
+        let outline =
+            crate::composition::body_outline(self.ctx.node.props.geometry, self.ctx.composition);
+        let size = self.size();
+        (
+            outline
+                .bounds_and_radius(
+                    Rect::new(0, 0, size.width, size.height),
+                    self.ctx.node.props.radius,
+                )
+                .0,
+            outline,
+        )
+    }
     /// The same merged part styles and state colors used by built-in painting.
     pub fn parts(&self) -> &WidgetPartStyle {
         self.ctx.part
@@ -976,7 +1029,7 @@ impl WidgetCanvas<'_> {
                 clip,
                 shadow,
                 projection: crate::effects::Projection(0),
-                radius,
+                radius: radius.into(),
             })?;
         }
         Ok(())
@@ -1306,6 +1359,18 @@ pub fn emit_commands_with_override(
         }
 
         let effect = tree.effects.get(node.key);
+        let outline = crate::composition::body_outline(node.props.geometry, effect.composition);
+        let projected_outline = effect.layer().is_some_and(|l| l.projection.0 != 0)
+            && matches!(
+                outline,
+                crate::composition::Outline::Path(..)
+                    | crate::composition::Outline::Circle
+                    | crate::composition::Outline::Capsule
+            );
+        let shadow_in_group = projected_outline
+            || effect
+                .composition
+                .is_some_and(|c| c.shadow_source == crate::composition::ShadowSource::Content);
         let rect = node.layout_rect;
         #[cfg(feature = "layers")]
         let clip = caster_clips[top].map_or(node.clip_rect, |r| {
@@ -1318,10 +1383,8 @@ pub fn emit_commands_with_override(
         #[cfg(not(feature = "layers"))]
         let clip = node.clip_rect;
         #[cfg(feature = "layers")]
-        let source_clip = if let (Some(shadow), Some(c)) = (effect.shadow, effect.composition)
-            && (c.shadow_source == crate::composition::ShadowSource::Content
-                || (matches!(c.outline, crate::composition::Outline::Path(..))
-                    && effect.layer().is_some_and(|l| l.projection.0 != 0)))
+        let source_clip = if let Some(shadow) = effect.shadow
+            && shadow_in_group
             && shadow.bounds(rect).intersects(clip)
         {
             // Capture the halo on the far side of a scrolling ancestor before clipping the output.
@@ -1374,15 +1437,9 @@ pub fn emit_commands_with_override(
                     l.projection
                 });
                 if !rect.is_empty() && shadow.bounds(rect).intersects(clip) && shadow.opacity > 0 {
-                    if effect.composition.is_some_and(|c| {
-                        c.shadow_source == crate::composition::ShadowSource::Content
-                            || (projection.0 != 0
-                                && matches!(c.outline, crate::composition::Outline::Path(..)))
-                    }) {
+                    if shadow_in_group {
                         composite_shadow = Some(shadow);
-                    } else if let Some(crate::composition::Outline::Path(path, rule)) =
-                        effect.composition.map(|c| c.outline)
-                    {
+                    } else if let crate::composition::Outline::Path(path, rule) = outline {
                         out.push(PaintCmd::OutlineShadow {
                             rule,
                             path,
@@ -1391,13 +1448,24 @@ pub fn emit_commands_with_override(
                             shadow,
                         })?;
                     } else {
-                        out.push(PaintCmd::Shadow {
-                            rect,
-                            clip,
-                            shadow,
-                            projection,
-                            radius: node.props.radius,
-                        })?;
+                        let (rect, radius) = outline.bounds_and_radius(rect, node.props.radius);
+                        if let Ok(radius) = u8::try_from(radius) {
+                            out.push(PaintCmd::Shadow {
+                                rect,
+                                clip,
+                                shadow,
+                                projection,
+                                radius,
+                            })?;
+                        } else {
+                            // Projected circles and capsules use the layer compositor above.
+                            out.push(PaintCmd::WideRoundShadow {
+                                rect,
+                                clip,
+                                shadow,
+                                radius,
+                            })?;
+                        }
                     }
                 }
             }
@@ -1421,7 +1489,15 @@ pub fn emit_commands_with_override(
                         backdrop_end,
                     )?;
                     let cache = &mut out.layers.as_mut().unwrap()[usize::from(out.used_layers) - 1];
-                    cache.composition = effect.composition;
+                    cache.composition = effect
+                        .composition
+                        .copied()
+                        .or_else(|| {
+                            node.props
+                                .geometry
+                                .map(|_| crate::composition::SurfaceComposition::DEFAULT)
+                        })
+                        .map(|c| crate::composition::SurfaceComposition { outline, ..c });
                     cache.shadow = composite_shadow;
                     if let Some(shadow) = composite_shadow
                         && let PaintCmd::Group { rect: bounds, .. } = &mut out.cmds[start]
@@ -1439,6 +1515,7 @@ pub fn emit_commands_with_override(
             {
                 group_at[top] = (out.count + 1) as u16;
                 out.push(PaintCmd::MaskGroup {
+                    slot: frame.slot as u8,
                     rect,
                     clip,
                     composition,
@@ -1618,11 +1695,9 @@ pub fn emit_commands_with_override(
                 // the next overlay sibling (for example a toast or a modal).
                 let mut layer = frame.slot;
                 while let Some(parent) = tree.nodes[usize::from(layer)].parent.get_u16() {
-                    if tree
-                        .effects
-                        .get(tree.nodes[usize::from(layer)].key)
-                        .layer()
-                        .is_some()
+                    let boundary = tree.effects.get(tree.nodes[usize::from(layer)].key);
+                    if boundary.layer().is_some()
+                        || boundary.composition.is_some_and(|c| c.masks_content())
                         || matches!(
                             tree.nodes[usize::from(parent)].kind,
                             NodeKind::Stack | NodeKind::Root | NodeKind::Modal
@@ -1634,13 +1709,14 @@ pub fn emit_commands_with_override(
                 }
                 outline_layer = Some(layer);
             }
+            let children_end = out.count as u16;
             if outline_layer == Some(frame.slot)
                 && let Some(slot) = focus.focused_slot
             {
                 let focused = &tree.nodes[usize::from(slot)];
                 let part = tree.part_styles.get(usize::from(slot));
                 emit_focus_outline(
-                    tree.effects.get(focused.key).composition,
+                    &tree.effects.get(focused.key),
                     focused,
                     part,
                     screen,
@@ -1651,7 +1727,14 @@ pub fn emit_commands_with_override(
             }
             if group_at[top] != 0 {
                 let start = usize::from(group_at[top] - 1);
-                let end = out.count as u16;
+                // The control's own focus decoration is above its content mask. Descendant
+                // decorations remain inside the ancestor group; rotating planes carry their ring.
+                let own_focus = focus.focused_slot == Some(frame.slot);
+                let end = if own_focus && !effect.layer().is_some_and(|l| l.projection.0 != 0) {
+                    children_end
+                } else {
+                    out.count as u16
+                };
                 if let PaintCmd::Group { end: limit, .. } | PaintCmd::MaskGroup { end: limit, .. } =
                     &mut out.cmds[start]
                 {
@@ -2178,15 +2261,11 @@ fn paint_slider_parts(
     if rect.is_empty() {
         return Ok(());
     }
-    let track_h = part
-        .track_thickness()
-        .map(|t| rect.h.min(u32::from(t.max(1))))
-        .unwrap_or_else(|| rect.h.clamp(1, 6));
+    let (track, _) = part.slider_track_bounds(rect.size());
+    let track = track.translate(rect.x, rect.y);
     let (knob_w, knob_h) = part.slider_knob_size(rect.size());
     let pad_x = (knob_w / 2) as i32;
-    let usable_w = rect.w.saturating_sub(knob_w);
-    let track_x = rect.x + pad_x;
-    let track_y = rect.y + ((rect.h.saturating_sub(track_h)) / 2) as i32;
+    let (track_x, track_y, track_h, usable_w) = (track.x, track.y, track.h, track.w);
     let track_bg = part
         .track_color()
         .or_else(|| node.props.bg())
@@ -2344,7 +2423,7 @@ fn emit_path_stroke(
     })
 }
 fn emit_focus_outline(
-    composition: Option<&'static crate::composition::SurfaceComposition>,
+    style: &crate::effects::SurfaceStyle,
     node: &RetainedNode,
     part: &WidgetPartStyle,
     screen: Rect,
@@ -2352,26 +2431,53 @@ fn emit_focus_outline(
     out: &mut CommandList,
 ) -> Result<(), BuildError> {
     let ring = node.props.focus_ring();
-    if !ring.enabled {
+    if !ring.enabled || style.layer().is_some_and(|l| l.opacity == 0) {
         return Ok(());
     }
     let rect = node.layout_rect;
     let ring_clip = node.clip_rect.intersect(screen);
     if !rect.intersect(ring_clip).is_empty() {
         let width = ring.width.clamp(1, 3);
-        let (ring_rect, ring_radius) = ring.outline_geometry(rect, ring_clip, node.props.radius);
+        let geometry = node.focus_outline(part, style, ring_clip);
+        if geometry.body.is_empty() {
+            return Ok(());
+        }
+        let ring_rect = geometry.bounds;
+        let ring_radius = geometry.radius.min(255) as u8;
         let ring_col = part.focused_border().unwrap_or(node.props.focus_color);
-        if let Some(crate::composition::Outline::Path(path, _)) = composition.map(|c| c.outline) {
-            emit_path_stroke(out, path, ring_rect, ring_clip, width, ring_col)?;
+        if let crate::composition::Outline::Path(path, rule) = geometry.shape {
+            let outer = geometry.outer as i8;
+            let stroke = |outer: i8, width: u8, color| PaintCmd::PathRing {
+                path,
+                rule,
+                rect: geometry.body,
+                clip: ring_clip,
+                outer,
+                inner: outer - width as i8,
+                color,
+            };
+            out.push(stroke(outer, width, ring_col))?;
             if editing {
-                emit_path_stroke(
-                    out,
-                    path,
-                    ring_rect.inset(1, 1, 1, 1),
-                    ring_clip,
-                    1,
-                    node.props.accent,
-                )?
+                out.push(stroke(outer - 1, 1, node.props.accent))?;
+            }
+            return Ok(());
+        }
+        if geometry.radius > 255 {
+            out.push(PaintCmd::WideRound {
+                rect: ring_rect,
+                clip: ring_clip,
+                radius: geometry.radius,
+                width,
+                color: ring_col,
+            })?;
+            if editing {
+                out.push(PaintCmd::WideRound {
+                    rect: ring_rect.inset(1, 1, 1, 1),
+                    clip: ring_clip,
+                    radius: geometry.radius - 1,
+                    width: 1,
+                    color: node.props.accent,
+                })?;
             }
             return Ok(());
         }
@@ -2425,17 +2531,24 @@ fn emit_box_fill(
     bg: Option<Rgb565>,
     out: &mut CommandList,
 ) -> Result<(), BuildError> {
-    let node = ctx.node;
+    emit_surface(ctx.node, ctx.composition, bg, out)
+}
+fn emit_surface(
+    node: &RetainedNode,
+    composition: Option<&crate::composition::SurfaceComposition>,
+    bg: Option<Rgb565>,
+    out: &mut CommandList,
+) -> Result<(), BuildError> {
     let rect = node.layout_rect;
     let clip = node.clip_rect;
     if !rect.intersects(clip) {
         return Ok(());
     }
-    if let Some(c) = ctx.composition
-        && let crate::composition::Outline::Path(path, rule) = c.outline
-    {
+    let outline = crate::composition::body_outline(node.props.geometry, composition);
+    let (rect, radius) = outline.bounds_and_radius(rect, node.props.radius);
+    if let crate::composition::Outline::Path(path, rule) = outline {
         if let Some(color) = bg {
-            if c.clip_content {
+            if composition.is_some_and(|c| c.clip_content) {
                 out.push(PaintCmd::FillRect { rect, clip, color })?
             } else {
                 out.push(PaintCmd::StaticPath {
@@ -2454,8 +2567,32 @@ fn emit_box_fill(
         }
         return Ok(());
     }
+    if radius > 255 {
+        if let Some(color) = bg {
+            out.push(PaintCmd::WideRound {
+                rect,
+                clip,
+                radius,
+                width: 0,
+                color,
+            })?;
+        }
+        if let Some(color) = node.props.border_color()
+            && node.props.border_width > 0
+        {
+            out.push(PaintCmd::WideRound {
+                rect,
+                clip,
+                radius,
+                width: node.props.border_width,
+                color,
+            })?;
+        }
+        return Ok(());
+    }
+    let radius = radius as u8;
     if let Some(color) = bg {
-        if node.props.radius > 0
+        if radius > 0
             || (node.props.border_color().is_some()
                 && (node.kind == NodeKind::Button || node.props.border_width > 0))
         {
@@ -2463,7 +2600,7 @@ fn emit_box_fill(
                 rect,
                 clip,
                 color,
-                radius: node.props.radius,
+                radius,
                 border_color: node.props.border_color(),
                 border_width: node.props.border_width,
             })?;
@@ -2473,13 +2610,13 @@ fn emit_box_fill(
     } else if let Some(bc) = node.props.border_color()
         && node.props.border_width > 0
     {
-        if node.props.radius > 0 {
+        if radius > 0 {
             out.push(PaintCmd::StrokeRoundedRect {
                 rect,
                 clip,
                 color: bc,
                 width: node.props.border_width,
-                radius: node.props.radius,
+                radius,
             })?;
         } else {
             out.push(PaintCmd::StrokeRect {
