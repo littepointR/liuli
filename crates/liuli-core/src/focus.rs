@@ -1663,7 +1663,7 @@ fn pointer_hits_slot(tree: &RetainedTree, slot: u16, pos: Point) -> bool {
     n.occupied
         && tree.is_effectively_enabled_and_visible(slot)
         && tree
-            .local_point(slot, pos)
+            .hit_point(slot, pos)
             .is_some_and(|p| n.layout_rect.intersect(n.clip_rect).contains_point(p))
 }
 
@@ -1776,7 +1776,7 @@ pub fn hit_test_in_scope(tree: &RetainedTree, scope_root: u16, pos: Point) -> Op
         }
         let hit_box = n.layout_rect.intersect(n.clip_rect);
         if !tree
-            .local_point(slot as u16, pos)
+            .hit_point(slot as u16, pos)
             .is_some_and(|p| hit_box.contains_point(p))
         {
             continue;

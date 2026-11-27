@@ -157,6 +157,38 @@ pub enum PaintCmd {
         direction: u8,
         radius: u8,
     } = 17,
+    StaticPath {
+        paint: crate::path::PathPaint,
+        color: Rgb565,
+        rect: Rect,
+        clip: Rect,
+        path: &'static crate::path::Path<'static>,
+    } = 19,
+    PathRun {
+        paint: crate::path::PathPaint,
+        color: Rgb565,
+        chunks: u16,
+        rect: Rect,
+        clip: Rect,
+    } = 20,
+    PathEdges {
+        len: u8,
+        edges: [crate::path::PathEdge; 4],
+    } = 21,
+    MaskGroup {
+        radius: u8,
+        end: u16,
+        rect: Rect,
+        clip: Rect,
+        composition: &'static crate::composition::SurfaceComposition,
+    } = 22,
+    OutlineShadow {
+        rule: crate::path::FillRule,
+        shadow: crate::effects::Shadow,
+        path: &'static crate::path::Path<'static>,
+        rect: Rect,
+        clip: Rect,
+    } = 23,
     AlphaMask {
         color: Rgb565,
         alpha: u8,
@@ -274,11 +306,17 @@ impl PaintCmd {
 
     pub fn bounds(&self) -> Rect {
         match *self {
-            Self::Empty => Rect::ZERO,
+            Self::Empty | Self::PathEdges { .. } => Rect::ZERO,
+            Self::OutlineShadow {
+                rect, clip, shadow, ..
+            } => shadow.bounds(rect).intersect(clip),
             Self::Shadow {
                 rect, clip, shadow, ..
             } => shadow.bounds(rect).intersect(clip),
             Self::Group { rect, clip, .. }
+            | Self::StaticPath { rect, clip, .. }
+            | Self::PathRun { rect, clip, .. }
+            | Self::MaskGroup { rect, clip, .. }
             | Self::Surface { rect, clip, .. }
             | Self::Bitmap { rect, clip, .. }
             | Self::FillRect { rect, clip, .. }
@@ -351,6 +389,7 @@ impl PaintCmd {
 }
 
 pub struct CommandList {
+    has_masks: bool,
     pub effect_error_key: Option<crate::view::Key>,
     #[cfg(feature = "layers")]
     pub layers: Option<alloc::vec::Vec<crate::layers::LayerCache>>,
@@ -369,6 +408,7 @@ pub struct CommandList {
 
 impl CommandList {
     pub const ZERO: Self = Self {
+        has_masks: false,
         effect_error_key: None,
         #[cfg(feature = "owned-images")]
         surfaces: None,
@@ -388,7 +428,11 @@ impl CommandList {
         Self::ZERO
     }
 
+    pub fn has_mask_groups(&self) -> bool {
+        self.has_masks
+    }
     pub fn reset(&mut self) {
+        self.has_masks = false;
         self.count = 0;
         self.effect_error_key = None;
         #[cfg(feature = "layers")]
@@ -448,6 +492,36 @@ impl CommandList {
             None
         }
     }
+    pub fn group_composition(
+        &self,
+        index: u8,
+    ) -> Option<(
+        Rect,
+        Option<&'static crate::composition::SurfaceComposition>,
+        Option<crate::effects::Shadow>,
+    )> {
+        #[cfg(feature = "layers")]
+        {
+            let cache = self.layers.as_ref()?.get(usize::from(index))?;
+            Some((cache.layout, cache.composition, cache.shadow))
+        }
+        #[cfg(not(feature = "layers"))]
+        {
+            let _ = index;
+            None
+        }
+    }
+    pub fn group_source(&self, index: u8) -> Option<Rect> {
+        #[cfg(feature = "layers")]
+        {
+            Some(self.layers.as_ref()?.get(usize::from(index))?.source)
+        }
+        #[cfg(not(feature = "layers"))]
+        {
+            let _ = index;
+            None
+        }
+    }
     pub fn group_backdrop_end(&self, index: u8) -> Option<usize> {
         #[cfg(feature = "layers")]
         {
@@ -468,6 +542,7 @@ impl CommandList {
         if self.count >= MAX_COMMANDS {
             return Err(BuildError::Commands);
         }
+        self.has_masks |= matches!(cmd, PaintCmd::MaskGroup { .. });
         self.cmds[self.count] = cmd;
         self.count += 1;
         Ok(())
@@ -565,6 +640,7 @@ pub enum PaintOverride {
 
 #[derive(Copy, Clone)]
 struct BuiltinPaintCtx<'a> {
+    composition: Option<&'static crate::composition::SurfaceComposition>,
     node: &'a RetainedNode,
     anims: &'a AnimPool,
     focus: PaintFocusInfo,
@@ -931,6 +1007,61 @@ impl WidgetCanvas<'_> {
         Ok(())
     }
 
+    /// Submit a prepared flash-resident outline as a single command.
+    pub fn static_path(
+        &mut self,
+        rect: Rect,
+        path: &'static crate::path::Path<'static>,
+        paint: crate::path::PathPaint,
+        color: Rgb565,
+    ) -> Result<(), BuildError> {
+        let rect = self.to_global(rect);
+        let clip = self.current_clip();
+        if !path.edges.is_empty() && rect.intersects(clip) {
+            self.commands.push(PaintCmd::StaticPath {
+                path,
+                rect,
+                clip,
+                paint,
+                color,
+            })?
+        }
+        Ok(())
+    }
+    /// Snapshot a runtime-generated outline into the bounded command list.
+    pub fn path(
+        &mut self,
+        rect: Rect,
+        path: crate::path::Path<'_>,
+        paint: crate::path::PathPaint,
+        color: Rgb565,
+    ) -> Result<(), BuildError> {
+        let rect = self.to_global(rect);
+        let clip = self.current_clip();
+        if path.edges.is_empty() || !rect.intersects(clip) {
+            return Ok(());
+        }
+        let chunks = path.edges.len().div_ceil(4);
+        if chunks >= MAX_COMMANDS - self.commands.count {
+            return Err(BuildError::Commands);
+        }
+        self.commands.push(PaintCmd::PathRun {
+            rect,
+            clip,
+            paint,
+            color,
+            chunks: chunks as u16,
+        })?;
+        for slice in path.edges.chunks(4) {
+            let mut edges = [crate::path::PathEdge::EMPTY; 4];
+            edges[..slice.len()].copy_from_slice(slice);
+            self.commands.push(PaintCmd::PathEdges {
+                len: slice.len() as u8,
+                edges,
+            })?;
+        }
+        Ok(())
+    }
     pub fn circle(
         &mut self,
         center: Point,
@@ -1056,14 +1187,7 @@ impl WidgetCanvas<'_> {
 
     pub fn paint_box_bg(&mut self) -> Result<(), BuildError> {
         let ctx = self.ctx;
-        emit_box_bg_and_border(
-            ctx.node,
-            ctx.part,
-            ctx.node.layout_rect,
-            ctx.node.clip_rect,
-            ctx.root_bg,
-            self.commands,
-        )
+        emit_box_bg_and_border(ctx, self.commands)
     }
 
     pub fn paint_slider_track(&mut self) -> Result<(), BuildError> {
@@ -1169,8 +1293,9 @@ pub fn emit_commands_with_override(
     sp += 1;
 
     let mut outline_layer = None;
+    let mut group_at = [0u16; MAX_DEPTH + 2];
     #[cfg(feature = "layers")]
-    let mut group_at = [None; MAX_DEPTH + 2];
+    let mut caster_clips: [Option<Rect>; MAX_DEPTH + 2] = [None; MAX_DEPTH + 2];
     while sp > 0 {
         let top = sp - 1;
         let frame = stack[top];
@@ -1180,14 +1305,57 @@ pub fn emit_commands_with_override(
             continue;
         }
 
+        let effect = tree.effects.get(node.key);
+        let rect = node.layout_rect;
+        #[cfg(feature = "layers")]
+        let clip = caster_clips[top].map_or(node.clip_rect, |r| {
+            if node.kind.is_scroll_view() {
+                r.intersect(rect)
+            } else {
+                r
+            }
+        });
+        #[cfg(not(feature = "layers"))]
+        let clip = node.clip_rect;
+        #[cfg(feature = "layers")]
+        let source_clip = if let (Some(shadow), Some(c)) = (effect.shadow, effect.composition)
+            && (c.shadow_source == crate::composition::ShadowSource::Content
+                || (matches!(c.outline, crate::composition::Outline::Path(..))
+                    && effect.layer().is_some_and(|l| l.projection.0 != 0)))
+            && shadow.bounds(rect).intersects(clip)
+        {
+            // Capture the halo on the far side of a scrolling ancestor before clipping the output.
+            Some(if effect.layer().is_some_and(|l| l.projection.0 != 0) {
+                rect
+            } else {
+                rect.intersect(
+                    clip.union(
+                        clip.translate(-i32::from(shadow.x), -i32::from(shadow.y))
+                            .expand(u32::from(shadow.blur)),
+                    ),
+                )
+            })
+        } else {
+            caster_clips[top].map(|_| clip)
+        };
+        #[cfg(feature = "layers")]
+        let mut adjusted;
+        #[cfg(feature = "layers")]
+        let node = if let Some(c) = source_clip {
+            adjusted = *node;
+            adjusted.clip_rect = c;
+            adjusted.visible_rect = node.ink_rect.intersect(c);
+            &adjusted
+        } else {
+            node
+        };
         if frame.stage == 0 {
-            let clip = node.clip_rect;
-            let rect = node.layout_rect;
-            let visible = !rect.intersect(clip).is_empty() && !node.visible_rect.is_empty();
+            let visible = rect.intersects(node.clip_rect) && !node.visible_rect.is_empty();
 
             #[cfg(feature = "layers")]
             let backdrop_end = out.count;
-            let effect = tree.effects.get(node.key);
+            group_at[top] = 0;
+            let mut composite_shadow = None;
             if let Some(shadow) = effect.shadow {
                 let mut shadow = if effect.press_depth.is_enabled() {
                     let press = if effect.press_depth.duration_ms() == 0 {
@@ -1206,31 +1374,79 @@ pub fn emit_commands_with_override(
                     l.projection
                 });
                 if !rect.is_empty() && shadow.bounds(rect).intersects(clip) && shadow.opacity > 0 {
-                    out.push(PaintCmd::Shadow {
-                        rect,
-                        clip,
-                        shadow,
-                        projection,
-                        radius: node.props.radius,
-                    })?;
+                    if effect.composition.is_some_and(|c| {
+                        c.shadow_source == crate::composition::ShadowSource::Content
+                            || (projection.0 != 0
+                                && matches!(c.outline, crate::composition::Outline::Path(..)))
+                    }) {
+                        composite_shadow = Some(shadow);
+                    } else if let Some(crate::composition::Outline::Path(path, rule)) =
+                        effect.composition.map(|c| c.outline)
+                    {
+                        out.push(PaintCmd::OutlineShadow {
+                            rule,
+                            path,
+                            rect,
+                            clip,
+                            shadow,
+                        })?;
+                    } else {
+                        out.push(PaintCmd::Shadow {
+                            rect,
+                            clip,
+                            shadow,
+                            projection,
+                            radius: node.props.radius,
+                        })?;
+                    }
                 }
             }
             #[cfg(feature = "layers")]
             {
-                group_at[top] = None;
-                if visible && let Some(layer) = effect.layer {
+                let isolated = effect.layer.is_some()
+                    || composite_shadow.is_some()
+                    || effect
+                        .composition
+                        .is_some_and(|c| !matches!(c.mask, crate::composition::Mask::Opaque));
+                if visible && isolated {
+                    let layer = effect.layer.unwrap_or(crate::effects::Layer::OPAQUE);
                     out.effect_error_key = Some(node.key);
-                    group_at[top] = Some(out.begin_layer(
+                    let start = out.begin_layer(
                         node.key,
                         rect,
                         clip,
+                        rect.intersect(node.clip_rect),
                         layer,
                         node.props.radius,
                         backdrop_end,
-                    )?);
+                    )?;
+                    let cache = &mut out.layers.as_mut().unwrap()[usize::from(out.used_layers) - 1];
+                    cache.composition = effect.composition;
+                    cache.shadow = composite_shadow;
+                    if let Some(shadow) = composite_shadow
+                        && let PaintCmd::Group { rect: bounds, .. } = &mut out.cmds[start]
+                    {
+                        *bounds = rect.union(shadow.bounds(rect))
+                    }
+                    group_at[top] = (start + 1) as u16;
                     out.effect_error_key = None;
                 }
             }
+            if visible
+                && group_at[top] == 0
+                && let Some(composition) = effect.composition
+                && composition.masks_content()
+            {
+                group_at[top] = (out.count + 1) as u16;
+                out.push(PaintCmd::MaskGroup {
+                    rect,
+                    clip,
+                    composition,
+                    radius: node.props.radius,
+                    end: 0,
+                })?;
+            }
+            let _ = composite_shadow;
             if visible || node.kind == NodeKind::Modal {
                 let part = tree.part_styles.get(usize::from(frame.slot));
                 let is_focused = focus.focused_slot == Some(frame.slot);
@@ -1256,9 +1472,10 @@ pub fn emit_commands_with_override(
                     anim_progress,
                 };
                 let root_bg = out.root_bg;
-                let init_clip = clip.intersect(rect);
+                let init_clip = node.clip_rect.intersect(rect);
                 let clip_stack = [init_clip, Rect::ZERO, Rect::ZERO, Rect::ZERO];
                 let ctx = BuiltinPaintCtx {
+                    composition: effect.composition,
                     node,
                     anims,
                     focus,
@@ -1272,6 +1489,7 @@ pub fn emit_commands_with_override(
                             .get()
                             .is_some_and(|i| tree.nodes[i].kind == NodeKind::TabBar),
                 };
+                out.effect_error_key = Some(node.key);
                 if node.kind == NodeKind::Custom || node.props.paint_mode() == PaintMode::Override {
                     let mut canvas = WidgetCanvas {
                         bounds: rect,
@@ -1293,6 +1511,7 @@ pub fn emit_commands_with_override(
                 } else {
                     paint_builtin_node(ctx, out)?;
                 }
+                out.effect_error_key = None;
                 if node.kind == NodeKind::TabBar {
                     paint_sliding_indicator(tree, node, anims, root_bg, out)?;
                 }
@@ -1317,6 +1536,17 @@ pub fn emit_commands_with_override(
                 stack[top].next_child = after_sib;
                 if sp >= stack.len() {
                     return Err(BuildError::Depth);
+                }
+                #[cfg(feature = "layers")]
+                {
+                    caster_clips[sp] = source_clip.map(|c| {
+                        let b = u32::from(node.props.border_width);
+                        if node.kind.is_scroll_view() {
+                            c.intersect(rect)
+                        } else {
+                            c.intersect(rect.inset(b, b, b, b))
+                        }
+                    });
                 }
                 stack[sp] = PaintDepthFrame {
                     slot: ch_idx as u16,
@@ -1409,13 +1639,22 @@ pub fn emit_commands_with_override(
             {
                 let focused = &tree.nodes[usize::from(slot)];
                 let part = tree.part_styles.get(usize::from(slot));
-                emit_focus_outline(focused, part, screen, focus.editing, out)?;
+                emit_focus_outline(
+                    tree.effects.get(focused.key).composition,
+                    focused,
+                    part,
+                    screen,
+                    focus.editing,
+                    out,
+                )?;
                 outline_layer = None;
             }
-            #[cfg(feature = "layers")]
-            if let Some(start) = group_at[top].take() {
+            if group_at[top] != 0 {
+                let start = usize::from(group_at[top] - 1);
                 let end = out.count as u16;
-                if let PaintCmd::Group { end: limit, .. } = &mut out.cmds[start] {
+                if let PaintCmd::Group { end: limit, .. } | PaintCmd::MaskGroup { end: limit, .. } =
+                    &mut out.cmds[start]
+                {
                     *limit = end;
                 }
             }
@@ -1497,9 +1736,7 @@ fn paint_builtin_node(ctx: BuiltinPaintCtx<'_>, out: &mut CommandList) -> Result
         | NodeKind::TabPanel
         | NodeKind::TabBar
         | NodeKind::Wrap
-        | NodeKind::CustomContainer => {
-            emit_box_bg_and_border(node, ctx.part, rect, clip, ctx.root_bg, out)
-        }
+        | NodeKind::CustomContainer => emit_box_bg_and_border(ctx, out),
         NodeKind::Modal => {
             if node.props.overlay_alpha > 0 {
                 out.push(PaintCmd::Overlay {
@@ -1509,10 +1746,10 @@ fn paint_builtin_node(ctx: BuiltinPaintCtx<'_>, out: &mut CommandList) -> Result
                     alpha: node.props.overlay_alpha.min(15),
                 })?;
             }
-            emit_box_bg_and_border(node, ctx.part, rect, clip, ctx.root_bg, out)
+            emit_box_bg_and_border(ctx, out)
         }
         NodeKind::Label => {
-            emit_box_bg_and_border(node, ctx.part, rect, clip, ctx.root_bg, out)?;
+            emit_box_bg_and_border(ctx, out)?;
             let inner = rect.inset(
                 node.props.padding.left as u32,
                 node.props.padding.top as u32,
@@ -1571,7 +1808,7 @@ fn paint_builtin_node(ctx: BuiltinPaintCtx<'_>, out: &mut CommandList) -> Result
         NodeKind::Slider => paint_slider_parts(ctx, true, true, out),
         NodeKind::ProgressBar => paint_progress_bar_node(ctx, out),
         NodeKind::Sparkline => {
-            emit_box_bg_and_border(node, ctx.part, rect, clip, ctx.root_bg, out)?;
+            emit_box_bg_and_border(ctx, out)?;
             let inner = rect.inset(
                 node.props.padding.left as u32,
                 node.props.padding.top as u32,
@@ -1597,8 +1834,6 @@ fn paint_builtin_node(ctx: BuiltinPaintCtx<'_>, out: &mut CommandList) -> Result
 
 fn paint_button_node(ctx: BuiltinPaintCtx<'_>, out: &mut CommandList) -> Result<(), BuildError> {
     let node = ctx.node;
-    let rect = node.layout_rect;
-    let clip = node.clip_rect;
     let part = ctx.part;
     let mut bg = resolve_state_bg(node, part, ctx.root_bg);
     if node.motion.state() == crate::view::MotionState::Pressed
@@ -1614,7 +1849,7 @@ fn paint_button_node(ctx: BuiltinPaintCtx<'_>, out: &mut CommandList) -> Result<
             }
         };
     }
-    emit_box_fill(node, rect, clip, bg, out)?;
+    emit_box_fill(ctx, bg, out)?;
 
     paint_control_content(ctx, out)
 }
@@ -2089,7 +2324,27 @@ fn paint_progress_bar_node(
     Ok(())
 }
 
+fn emit_path_stroke(
+    out: &mut CommandList,
+    path: &'static crate::path::Path<'static>,
+    rect: Rect,
+    clip: Rect,
+    width: u8,
+    color: Rgb565,
+) -> Result<(), BuildError> {
+    let units = (u32::from(width) * 1024)
+        .div_ceil(rect.w.min(rect.h).max(1))
+        .min(u32::from(u16::MAX)) as u16;
+    out.push(PaintCmd::StaticPath {
+        rect,
+        clip,
+        path,
+        color,
+        paint: crate::path::PathPaint::Stroke(units),
+    })
+}
 fn emit_focus_outline(
+    composition: Option<&'static crate::composition::SurfaceComposition>,
     node: &RetainedNode,
     part: &WidgetPartStyle,
     screen: Rect,
@@ -2106,6 +2361,20 @@ fn emit_focus_outline(
         let width = ring.width.clamp(1, 3);
         let (ring_rect, ring_radius) = ring.outline_geometry(rect, ring_clip, node.props.radius);
         let ring_col = part.focused_border().unwrap_or(node.props.focus_color);
+        if let Some(crate::composition::Outline::Path(path, _)) = composition.map(|c| c.outline) {
+            emit_path_stroke(out, path, ring_rect, ring_clip, width, ring_col)?;
+            if editing {
+                emit_path_stroke(
+                    out,
+                    path,
+                    ring_rect.inset(1, 1, 1, 1),
+                    ring_clip,
+                    1,
+                    node.props.accent,
+                )?
+            }
+            return Ok(());
+        }
         if ring_radius != 0 {
             out.push(PaintCmd::StrokeRoundedRect {
                 rect: ring_rect,
@@ -2146,26 +2415,45 @@ fn emit_focus_outline(
 }
 
 fn emit_box_bg_and_border(
-    node: &RetainedNode,
-    part: &WidgetPartStyle,
-    rect: Rect,
-    clip: Rect,
-    root_bg: Rgb565,
+    ctx: BuiltinPaintCtx<'_>,
     out: &mut CommandList,
 ) -> Result<(), BuildError> {
-    if rect.intersect(clip).is_empty() {
-        return Ok(());
-    }
-    emit_box_fill(node, rect, clip, resolve_state_bg(node, part, root_bg), out)
+    emit_box_fill(ctx, resolve_state_bg(ctx.node, ctx.part, ctx.root_bg), out)
 }
-
 fn emit_box_fill(
-    node: &RetainedNode,
-    rect: Rect,
-    clip: Rect,
+    ctx: BuiltinPaintCtx<'_>,
     bg: Option<Rgb565>,
     out: &mut CommandList,
 ) -> Result<(), BuildError> {
+    let node = ctx.node;
+    let rect = node.layout_rect;
+    let clip = node.clip_rect;
+    if !rect.intersects(clip) {
+        return Ok(());
+    }
+    if let Some(c) = ctx.composition
+        && let crate::composition::Outline::Path(path, rule) = c.outline
+    {
+        if let Some(color) = bg {
+            if c.clip_content {
+                out.push(PaintCmd::FillRect { rect, clip, color })?
+            } else {
+                out.push(PaintCmd::StaticPath {
+                    rect,
+                    clip,
+                    path,
+                    paint: crate::path::PathPaint::Fill(rule),
+                    color,
+                })?
+            }
+        }
+        if let Some(color) = node.props.border_color()
+            && node.props.border_width > 0
+        {
+            emit_path_stroke(out, path, rect, clip, node.props.border_width, color)?;
+        }
+        return Ok(());
+    }
     if let Some(color) = bg {
         if node.props.radius > 0
             || (node.props.border_color().is_some()

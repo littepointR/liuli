@@ -17,7 +17,7 @@
 |---|---|
 | 调节 | 拖动弧形旋钮、有刻度的滑块或数值编辑器，观察同一数值和趋势线。用选择器切换预设，点带数值徽标的按钮打开确认框，确认后显示定时提示条。 |
 | 列表 | 拖动 1,000 条有稳定标识的记录，点一条查看编号。可在模拟器检查器中观察条目随视口创建。 |
-| 图形 | 旋转 RGB565 图片，调节缩放和透明度。增强档支持双触点平移、捏合、旋转，以及投影和毛玻璃合成；基础档可使用单指控制并查看抬升表面。 |
+| 图形 | 旋转 RGB565 图片，调节缩放和透明度。向上滑动可看到圆角悬浮卡片，里面有三次贝塞尔心形与描边，渐隐覆盖图案和说明文字。增强档支持双触点平移、捏合、旋转，以及投影和毛玻璃合成；基础档可使用单指控制并查看抬升表面。 |
 | 输入 | 在可定位光标的输入框中使用屏幕键盘或宿主文本输入。键盘支持英文、数字、符号、拼音和 T9。演示词典包含“中文、琉璃、输入、动效、图表”。增强档还能切换阿拉伯文、天城文和混排塑形样本。 |
 | 按钮 | 操作六种按钮变体，比较禁用态，点选全部 11 种内置图标。缩小视口时按钮与图标会换行。 |
 
@@ -43,6 +43,15 @@ python boards/fk743m2-iit6/jlink.py --speed 12000 --widget-samples apps/liuli-wi
 cargo run --release -p liuli-widget-demo --features desktop,enhanced -- --replay apps/liuli-widget-demo/tests/fixtures/h743-strip-fling.trace --scanout target/fling.rgb565
 python boards/fk743m2-iit6/jlink.py --speed 12000 --strip-fling apps/liuli-widget-demo/tests/fixtures/h743-strip-fling.trace target/fling.rgb565
 ~~~
+
+图形页的 `h743-composition.trace` 从首页进入展台，滑动图形页，使渐隐卡片完整进入视口。桌面回放逐帧核对增量输出和整屏参考渲染。H743 使用同一轨迹，比对停止后的页签和内容区域。
+
+~~~sh
+cargo run --release -p liuli-widget-demo --features desktop,enhanced -- --size 800x480 --replay apps/liuli-widget-demo/tests/fixtures/h743-composition.trace --scanout target/h743-composition.rgb565
+python boards/fk743m2-iit6/jlink.py --speed 12000 --widget-samples apps/liuli-widget-demo/tests/fixtures/h743-composition.trace target/h743-composition.rgb565
+~~~
+
+2026-11-28，FK743M2-IIT6 使用 ST HAL+LL 增强固件完成上述卡片轨迹，LTDC 帧缓冲前 430 行的 344,000 个 RGB565 像素与桌面一致。底部 50 行包含随板上时钟变化的统计信息。固件 CRC32 为 `e0383927`，桌面整帧参考文件的 SHA-256 为 `e2eb9f73c8f560ac17d5a021e8010c4aff06fb093d4a7df375c71ce2d4b6c377`。
 
 ## Spool 便携录音台
 

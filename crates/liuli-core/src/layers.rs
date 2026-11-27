@@ -20,21 +20,7 @@ pub struct GroupPixels {
     pub reused: bool,
 }
 
-#[inline(always)]
-pub fn get_a4(alpha: &[u8], i: usize) -> u8 {
-    let byte = alpha[i >> 1];
-    if (i & 1) == 0 { byte & 0x0F } else { byte >> 4 }
-}
-
-#[inline(always)]
-pub fn set_a4(alpha: &mut [u8], i: usize, a: u8) {
-    let slot = &mut alpha[i >> 1];
-    if (i & 1) == 0 {
-        *slot = (*slot & 0xF0) | (a & 0x0F);
-    } else {
-        *slot = (*slot & 0x0F) | (a << 4);
-    }
-}
+pub use crate::composition::{get_a4, set_a4};
 
 pub struct Backdrop {
     pub pixels: Vec<u16>,
@@ -43,10 +29,14 @@ pub struct Backdrop {
 }
 
 pub struct LayerCache {
+    pub layout: Rect,
+    pub composition: Option<&'static crate::composition::SurfaceComposition>,
+    pub shadow: Option<crate::effects::Shadow>,
     pub key: Key,
     pub style: Layer,
     pub radius: u8,
     pub source: Rect,
+    pub output: Rect,
     pub capture: Rect,
     pub start: usize,
     pub backdrop_end: usize,
@@ -77,13 +67,14 @@ impl CommandList {
         key: Key,
         rect: Rect,
         clip: Rect,
+        source: Rect,
         style: Layer,
         radius: u8,
         backdrop_end: usize,
     ) -> Result<usize, BuildError> {
-        let source = rect.intersect(clip);
+        let output = rect.intersect(clip);
         let capture = if style.backdrop_radius > 0 {
-            source
+            output
                 .expand(style.backdrop_radius.into())
                 .intersect(self.screen)
         } else {
@@ -115,6 +106,10 @@ impl CommandList {
             && existing.source.size() == source.size()
             && existing.capture.size() == capture.size()
         {
+            existing.layout = rect;
+            existing.output = output;
+            existing.shadow = None;
+            existing.composition = None;
             existing.key = key;
             existing.style = style;
             existing.radius = radius;
@@ -130,6 +125,10 @@ impl CommandList {
             layers.truncate(slot);
             layers.try_reserve(1).map_err(|_| BuildError::LayerPixels)?;
             layers.push(LayerCache {
+                layout: rect,
+                output,
+                shadow: None,
+                composition: None,
                 key,
                 style,
                 radius,
@@ -209,7 +208,10 @@ fn backdrop_matches(
                             return false;
                         }
                     }
-                    PaintCmd::Group { .. } | PaintCmd::Surface { .. } => return false,
+                    PaintCmd::Group { .. }
+                    | PaintCmd::Surface { .. }
+                    | PaintCmd::PathRun { .. }
+                    | PaintCmd::MaskGroup { .. } => return false,
                     _ => {}
                 }
             }
@@ -358,7 +360,15 @@ mod tests {
             })
             .unwrap();
             let start = list
-                .begin_layer(Key(303), rect, list.screen, style, 8, backdrop_end)
+                .begin_layer(
+                    Key(303),
+                    rect,
+                    list.screen,
+                    rect.intersect(list.screen),
+                    style,
+                    8,
+                    backdrop_end,
+                )
                 .unwrap();
             list.push(PaintCmd::text(
                 rect.top_left(),

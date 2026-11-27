@@ -316,6 +316,7 @@ impl Layer {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct SurfaceStyle {
+    pub composition: Option<&'static crate::composition::SurfaceComposition>,
     pub shadow: Option<Shadow>,
     pub press_depth: PressDepth,
     #[cfg(feature = "layers")]
@@ -323,6 +324,7 @@ pub struct SurfaceStyle {
 }
 impl SurfaceStyle {
     pub const FLAT: Self = Self {
+        composition: None,
         shadow: None,
         press_depth: PressDepth::DEFAULT,
         #[cfg(feature = "layers")]
@@ -332,6 +334,13 @@ impl SurfaceStyle {
         cfg!(feature = "layers")
     }
     #[inline]
+    pub const fn with_composition(
+        mut self,
+        composition: &'static crate::composition::SurfaceComposition,
+    ) -> Self {
+        self.composition = Some(composition);
+        self
+    }
     pub const fn with_shadow(mut self, shadow: Shadow) -> Self {
         self.shadow = Some(shadow);
         self
@@ -391,10 +400,18 @@ impl Effects {
         {
             return Err(BuildError::InvalidRange);
         }
+        if !cfg!(feature = "layers")
+            && style.shadow.is_some()
+            && style
+                .composition
+                .is_some_and(|c| c.shadow_source == crate::composition::ShadowSource::Content)
+        {
+            return Err(BuildError::UnsupportedEffect);
+        }
         if self.iter().iter().any(|i| i.0 == key) {
             return Err(BuildError::DuplicateKey);
         }
-        if style.shadow.is_none() && style.layer().is_none() {
+        if style.composition.is_none() && style.shadow.is_none() && style.layer().is_none() {
             return Ok(());
         }
         let entry = self
@@ -534,7 +551,12 @@ impl RetainedTree {
     }
     /// Pixel in the layout coordinates of a node, including its ancestor projections.
     pub fn local_point(&self, slot: u16, point: Point) -> Option<Point> {
-        #[cfg(feature = "layers")]
+        self.map_point(slot, point, false)
+    }
+    pub(crate) fn hit_point(&self, slot: u16, point: Point) -> Option<Point> {
+        self.map_point(slot, point, true)
+    }
+    fn map_point(&self, slot: u16, point: Point, for_hit: bool) -> Option<Point> {
         if !self.effects.iter().is_empty() {
             let mut chain = [0u16; crate::capacity::MAX_DEPTH + 1];
             let mut count = 0;
@@ -547,16 +569,23 @@ impl RetainedTree {
             let mut p = point;
             for &index in chain[..count].iter().rev() {
                 let n = &self.nodes[usize::from(index)];
-                if let Some(layer) = self.effects.get(n.key).layer() {
+                let effect = self.effects.get(n.key);
+                if let Some(layer) = effect.layer() {
                     if layer.opacity == 0 || !n.clip_rect.contains_point(p) {
                         return None;
                     }
                     p = layer.projection.unproject(n.layout_rect, p)?;
                 }
+                if for_hit
+                    && let Some(c) = effect.composition
+                    && c.hit_outline
+                    && c.outline.coverage(n.layout_rect, n.props.radius, p) < 8
+                {
+                    return None;
+                }
             }
             return Some(p);
         }
-        let _ = slot;
         Some(point)
     }
 }

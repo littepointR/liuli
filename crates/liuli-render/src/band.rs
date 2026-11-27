@@ -10,7 +10,7 @@ use liuli_core::geometry::Rect;
 
 pub struct BandTarget<'a> {
     words: &'a mut [u16],
-    #[cfg(feature = "layers")]
+
     alpha: Option<&'a mut [u8]>,
     width: u32,
     height: u32,
@@ -27,7 +27,7 @@ impl<'a> BandTarget<'a> {
         }
         Ok(Self {
             words: &mut words[..len],
-            #[cfg(feature = "layers")]
+
             alpha: None,
             width: band_rect.w,
             height: band_rect.h,
@@ -35,7 +35,6 @@ impl<'a> BandTarget<'a> {
         })
     }
 
-    #[cfg(feature = "layers")]
     pub fn new_with_alpha<E>(
         words: &'a mut [u16],
         alpha: &'a mut [u8],
@@ -59,14 +58,7 @@ impl<'a> BandTarget<'a> {
 
     #[inline(always)]
     pub const fn has_alpha(&self) -> bool {
-        #[cfg(feature = "layers")]
-        {
-            self.alpha.is_some()
-        }
-        #[cfg(not(feature = "layers"))]
-        {
-            false
-        }
+        self.alpha.is_some()
     }
 
     #[inline]
@@ -97,20 +89,19 @@ impl<'a> BandTarget<'a> {
     #[inline(always)]
     pub fn put_opaque(&mut self, idx: usize, raw: u16) {
         self.words[idx] = raw;
-        #[cfg(feature = "layers")]
+
         if let Some(a) = &mut self.alpha {
-            liuli_core::layers::set_a4(a, idx, 15);
+            liuli_core::composition::set_a4(a, idx, 15);
         }
     }
 
     #[inline(always)]
     pub fn set_opaque_span(&mut self, start: usize, len: usize) {
-        #[cfg(feature = "layers")]
         if let Some(a) = &mut self.alpha {
             let mut i = start;
             let end = start + len;
             if (i & 1) != 0 && i < end {
-                liuli_core::layers::set_a4(a, i, 15);
+                liuli_core::composition::set_a4(a, i, 15);
                 i += 1;
             }
             let pairs = (end - i) / 2;
@@ -119,22 +110,19 @@ impl<'a> BandTarget<'a> {
                 i += pairs * 2;
             }
             if i < end {
-                liuli_core::layers::set_a4(a, i, 15);
+                liuli_core::composition::set_a4(a, i, 15);
             }
         }
-        #[cfg(not(feature = "layers"))]
-        let _ = (start, len);
     }
 
     #[inline(always)]
     pub fn blend_pixel_a4(&mut self, idx: usize, fg_raw: u16, cov: u8) {
-        #[cfg(feature = "layers")]
         if let Some(a) = &mut self.alpha {
-            let dst_a = liuli_core::layers::get_a4(a, idx);
+            let dst_a = liuli_core::composition::get_a4(a, idx);
             let (rgb, out_a) =
                 liuli_text::blend_over_rgb565_a4(self.words[idx], dst_a, fg_raw, cov);
             self.words[idx] = rgb;
-            liuli_core::layers::set_a4(a, idx, out_a);
+            liuli_core::composition::set_a4(a, idx, out_a);
             return;
         }
         self.words[idx] = liuli_text::blend_rgb565_a4_u16(fg_raw, self.words[idx], cov);
@@ -259,7 +247,6 @@ impl DrawTarget for BandTarget<'_> {
     }
 
     fn clear(&mut self, color: Self::Color) -> Result<(), Self::Error> {
-        #[cfg(feature = "layers")]
         if let Some(a) = &mut self.alpha {
             a.fill(0);
             return Ok(());

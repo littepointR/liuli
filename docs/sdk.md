@@ -202,6 +202,31 @@ Projection 用 256 个单位表示一整圈，围绕卡片的竖直中心轴投�
 
 增强档默认给每份命令列表 512 KiB 像素预算，两份命令列表用于事务提交。单个图层每个可见像素占 2.5 字节（RGB565 色彩与 2 像素共 1 字节的打包 A4 透明度），启用毛玻璃时还需为含采样边缘的背景区域预留每像素 2 字节（原地盒式模糊与预烘焙透色遮罩，无额外 scratch 缓冲）。可通过 `Engine::set_layer_budget(bytes)` 调整单份预算。超出预算会返回 `BuildError::LayerPixels`，从 `build_failure` 可取得控件键。上一帧继续有效，修正后可通过 `commit_view` 重试。检查器的帧报告列出活动列表的 `layer_pixel_bytes` 和本帧跨帧复用的子树数量 `reused_groups`。
 
+## 路径、轮廓与子树遮罩
+
+自绘控件使用 `PreparedPath<N>::prepare(verbs, steps)` 定义路径。坐标范围是每轴 0 到 1024，绘制时映射到控件给出的局部矩形。路径支持多段轮廓、直线、二次和三次贝塞尔曲线。填充可选非零环绕或奇偶规则，绘制开放路径时仅填充会自动闭合。描边宽度使用路径坐标单位，端点和接合处为圆形，图元输出裁在目标矩形内。曲线在准备阶段按每段 `steps` 细分，可按最大显示尺寸选择精度；边数超过 `N` 返回 `BuildError::PathEdges`。
+
+固定图形可以在编译期准备，用 `WidgetCanvas::static_path` 提交一次绘制命令。动态路径使用 `WidgetCanvas::path`，引擎将边复制到有界命令表，每四条边占一个槽位，另需一个头部槽位。命令容量不足返回 `BuildError::Commands`。路径填充与描边使用每像素 2×2 覆盖采样。
+
+主题表面通过 `SurfaceSpec::with_composition` 设置轮廓、子树裁剪、透明度遮罩与阴影来源。底层 `ViewBuilder::decorate` 和第三方控件可以传入同一份 `SurfaceComposition`。例如，带外阴影的卡片可以让内容沿主题圆角裁剪，并在底部 40 像素逐渐透明：
+
+```rust
+use liuli::prelude::*;
+use liuli_widgets::SurfaceSpec;
+
+const CARD: SurfaceComposition = SurfaceComposition {
+    clip_content: true,
+    mask: Mask::FadeBottom(40),
+    ..SurfaceComposition::DEFAULT
+};
+
+let spec = SurfaceSpec::FLOATING.with_composition(&CARD);
+```
+
+`Outline::Surface` 读取控件解析后的圆角，`Outline::Path` 可复用填充用的静态路径和填充规则。开启 `hit_outline` 后，轮廓的孔洞也会从点选区域中扣除；默认保留矩形触摸目标。`Mask::Alpha` 可以引用静态 L565 位图的透明度，例如 A4 蒙版。遮罩作用于整组绘制完成的子树，重叠的子控件共同渐隐。基础档按每行 16 像素使用有界临时缓冲，支持嵌套裁剪和遮罩。
+
+两档都支持 `ShadowSource::Outline`，从表面轮廓投影。增强档还支持 `ShadowSource::Content`，从合成后的子树透明度投影，适用于有透明孔洞的图标或图片。为基础档声明带内容投影的阴影会返回 `BuildError::UnsupportedEffect`。阴影可以延伸出布局框，最终输出仍受父级可见区域约束。引擎在表面移动或移除时同时考虑旧、新阴影范围。
+
 ## 字库与图片
 
 device-ui/assets/fonts.toml 中的 source、charset 和 output 都相对配置文件。每个 [[font]] 提供源字体、Unicode 字符集文件、字号和一个源字体具备的回退字符。budget 限制所有槽位生成的总字节数。把纯数字项目的 fallback 设置为项目中已有的字符即可；配置文件支持多项和自定义像素字号。
@@ -297,6 +322,8 @@ try_message、try_dispatch 和 try_advance 提供事务结果。Busy 会交还�
 | 默认 (`default`) | 64 | 12 | 1024 | 256 | 12 | 8 |
 | `capacity-128` | 128 | 14 | 2048 | 512 | 16 | 12 |
 | `capacity-256` | 250 | 16 | 4096 | 1024 | 24 | 16 |
+
+32 位、64 节点配置的 `Storage` 编译上限为 67,456 字节。启用增强档图层后，三份效果表和两份绘制命令列表的元数据另有 256 字节预算。条带缓冲、引擎实例、应用模型和栈单独计量。
 
 ### 2. 链式 `NodeProps`、网格、横向滚动与 2D 焦点
 - **`const fn` 构建器**：`NodeProps::new().width(...).height(...).padding(...).gap(...).justify(Justify::SpaceBetween).grid_cols(cols).bg(...).fg(...).accent(...).border(color, w).radius(r).focusable(true).clickable(true)`。

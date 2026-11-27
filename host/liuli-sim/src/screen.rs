@@ -282,6 +282,7 @@ pub fn render_reference_fullscreen(
         0..cmds.count,
         cmds.root_bg,
         false,
+        cmds.screen,
     ) {
         Ok(screen) => screen,
         Err(never) => match never {},
@@ -301,6 +302,7 @@ pub fn render_reference_fullscreen_with_provider<F: FontProvider>(
         0..cmds.count,
         cmds.root_bg,
         false,
+        cmds.screen,
     )
 }
 
@@ -574,6 +576,120 @@ fn blit_sim_decoded_glyph(
     }
 }
 
+fn reference_path<'a>(
+    screen: &mut MemoryScreen,
+    rect: Rect,
+    clip: Rect,
+    paint: liuli::prelude::PathPaint,
+    color: Rgb565,
+    edges: impl Iterator<Item = &'a liuli::core::path::PathEdge> + Clone,
+) {
+    let area = rect
+        .intersect(clip)
+        .intersect(Rect::new(0, 0, screen.w, screen.h));
+    for y in area.y..area.bottom64() as i32 {
+        for x in area.x..area.right64() as i32 {
+            let a = liuli::core::path::coverage(edges.clone(), rect, Point::new(x, y), paint);
+            if a != 0 {
+                screen.blend_pixel_a4(
+                    y as usize * screen.w as usize + x as usize,
+                    color.into_storage(),
+                    a,
+                )
+            }
+        }
+    }
+}
+fn reference_shadow(
+    screen: &mut MemoryScreen,
+    rect: Rect,
+    clip: Rect,
+    s: liuli::prelude::Shadow,
+    alpha: impl Fn(Point) -> u8,
+) {
+    let area = s
+        .bounds(rect)
+        .intersect(clip)
+        .intersect(Rect::new(0, 0, screen.w, screen.h));
+    let r = i32::from(s.blur);
+    let size = ((2 * r + 1) * (2 * r + 1)) as u32;
+    for y in area.y..area.bottom64() as i32 {
+        for x in area.x..area.right64() as i32 {
+            let mut sum = 0u32;
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    let p = Point::new(
+                        x.saturating_sub(i32::from(s.x)).saturating_add(dx),
+                        y.saturating_sub(i32::from(s.y)).saturating_add(dy),
+                    );
+                    if rect.contains_point(p) {
+                        sum += u32::from(alpha(p))
+                    }
+                }
+            }
+            let a = liuli::core::composition::mul_a4(((sum + size / 2) / size) as u8, s.opacity);
+            if a != 0 {
+                screen.blend_pixel_a4(
+                    y as usize * screen.w as usize + x as usize,
+                    s.color.into_storage(),
+                    a,
+                )
+            }
+        }
+    }
+}
+// Shift global commands into the reference image. A content-shadow caster can
+// extend past the screen or outside a parent's scroll viewport.
+fn reference_command(mut cmd: PaintCmd, origin: Rect) -> PaintCmd {
+    if origin.x == 0 && origin.y == 0 {
+        return cmd;
+    }
+    let dx = origin.x.saturating_neg();
+    let dy = origin.y.saturating_neg();
+    let point = |p: &mut Point| {
+        p.x = p.x.saturating_add(dx);
+        p.y = p.y.saturating_add(dy);
+    };
+    let clip = match &mut cmd {
+        PaintCmd::Empty | PaintCmd::PathEdges { .. } => return cmd,
+        PaintCmd::Text { pos, clip, .. } | PaintCmd::InlineText { pos, clip, .. } => {
+            point(pos);
+            clip
+        }
+        PaintCmd::Circle { center, clip, .. } | PaintCmd::Arc { center, clip, .. } => {
+            point(center);
+            clip
+        }
+        PaintCmd::Line { p0, p1, clip, .. } => {
+            point(p0);
+            point(p1);
+            clip
+        }
+        PaintCmd::Bitmap { rect, clip, .. }
+        | PaintCmd::Surface { rect, clip, .. }
+        | PaintCmd::Group { rect, clip, .. }
+        | PaintCmd::Shadow { rect, clip, .. }
+        | PaintCmd::FillRect { rect, clip, .. }
+        | PaintCmd::StrokeRect { rect, clip, .. }
+        | PaintCmd::FillRoundedRect { rect, clip, .. }
+        | PaintCmd::StrokeRoundedRect { rect, clip, .. }
+        | PaintCmd::RoundedOverlay { rect, clip, .. }
+        | PaintCmd::Overlay { rect, clip, .. }
+        | PaintCmd::Icon { rect, clip, .. }
+        | PaintCmd::Sparkline { rect, clip, .. }
+        | PaintCmd::GradientRect { rect, clip, .. }
+        | PaintCmd::AlphaMask { rect, clip, .. }
+        | PaintCmd::MaskGroup { rect, clip, .. }
+        | PaintCmd::OutlineShadow { rect, clip, .. }
+        | PaintCmd::StaticPath { rect, clip, .. }
+        | PaintCmd::PathRun { rect, clip, .. } => {
+            *rect = rect.translate(dx, dy);
+            clip
+        }
+    };
+    *clip = clip.translate(dx, dy);
+    cmd
+}
 fn reference_range_with_source<S: SimTextSource>(
     cmds: &CommandList,
     resources: &impl SceneResources,
@@ -581,23 +697,94 @@ fn reference_range_with_source<S: SimTextSource>(
     range: std::ops::Range<usize>,
     clear: Rgb565,
     with_alpha: bool,
+    viewport: Rect,
 ) -> Result<MemoryScreen, S::Error> {
     let mut screen = if with_alpha {
-        MemoryScreen::new_with_alpha(cmds.screen.w, cmds.screen.h)
+        MemoryScreen::new_with_alpha(viewport.w, viewport.h)
     } else {
-        MemoryScreen::new(cmds.screen.w, cmds.screen.h)
+        MemoryScreen::new(viewport.w, viewport.h)
     };
     let _ = screen.clear(clear);
-    let full = cmds.screen;
+    let full = Rect::new(0, 0, viewport.w, viewport.h);
     let stride = screen.w as usize;
 
     let mut cursor = range.start;
     while cursor < range.end {
         let group_cmd_idx = cursor;
-        let cmd = &cmds.as_slice()[cursor];
+        let cmd = &reference_command(cmds.as_slice()[cursor], viewport);
         cursor += 1;
         match *cmd {
-            PaintCmd::Empty => {}
+            PaintCmd::Empty | PaintCmd::PathEdges { .. } => {}
+            PaintCmd::StaticPath {
+                rect,
+                clip,
+                path,
+                paint,
+                color,
+            } => reference_path(&mut screen, rect, clip, paint, color, path.edges.iter()),
+            PaintCmd::PathRun {
+                rect,
+                clip,
+                paint,
+                color,
+                chunks,
+            } => {
+                let end = (cursor + usize::from(chunks)).min(range.end);
+                let edges = cmds.as_slice()[cursor..end].iter().flat_map(|c| match c {
+                    PaintCmd::PathEdges { len, edges } => {
+                        &edges[..usize::from(*len).min(edges.len())]
+                    }
+                    _ => &[][..],
+                });
+                reference_path(&mut screen, rect, clip, paint, color, edges);
+                cursor = end;
+            }
+            PaintCmd::OutlineShadow {
+                rule,
+                path,
+                rect,
+                clip,
+                shadow,
+            } => reference_shadow(&mut screen, rect, clip, shadow, |p| {
+                liuli::core::path::coverage(
+                    path.edges.iter(),
+                    rect,
+                    p,
+                    liuli::prelude::PathPaint::Fill(rule),
+                )
+            }),
+            PaintCmd::MaskGroup {
+                radius,
+                rect,
+                clip,
+                end,
+                composition,
+            } => {
+                let end = usize::from(end).clamp(cursor, range.end);
+                let group = reference_range_with_source(
+                    cmds,
+                    resources,
+                    text_source,
+                    cursor..end,
+                    Rgb565::new(0, 0, 0),
+                    true,
+                    viewport,
+                )?;
+                cursor = end;
+                let area = rect.intersect(clip).intersect(full);
+                for y in area.y..area.bottom64() as i32 {
+                    for x in area.x..area.right64() as i32 {
+                        let i = y as usize * stride + x as usize;
+                        let a = liuli::core::composition::mul_a4(
+                            group.alpha.as_ref().unwrap()[i],
+                            composition.coverage(rect, radius, Point::new(x, y)),
+                        );
+                        if a != 0 {
+                            screen.blend_pixel_a4(i, group.pixels[i], a)
+                        }
+                    }
+                }
+            }
             PaintCmd::Shadow {
                 rect,
                 clip,
@@ -654,6 +841,15 @@ fn reference_range_with_source<S: SimTextSource>(
                 if style.opacity == 0 || matches!(style.projection.0, 64 | 192) {
                     continue;
                 }
+                let source = cmds.group_source(index).expect("group source");
+                let group_viewport = viewport.union(source);
+                let source =
+                    source.translate(viewport.x.saturating_neg(), viewport.y.saturating_neg());
+                let group_index = |p: Point| {
+                    ((i64::from(p.y) + viewport.top64() - group_viewport.top64()) as usize)
+                        * group_viewport.w as usize
+                        + (i64::from(p.x) + viewport.left64() - group_viewport.left64()) as usize
+                };
                 let group = reference_range_with_source(
                     cmds,
                     resources,
@@ -661,6 +857,7 @@ fn reference_range_with_source<S: SimTextSource>(
                     content,
                     Rgb565::new(0, 0, 0),
                     true,
+                    group_viewport,
                 )?;
                 let backdrop_end = cmds.group_backdrop_end(index).unwrap_or(group_cmd_idx);
                 let mut blurred = (style.backdrop_radius > 0)
@@ -672,6 +869,7 @@ fn reference_range_with_source<S: SimTextSource>(
                             range.start..backdrop_end.max(range.start),
                             clear,
                             false,
+                            viewport,
                         )?;
                         Ok(reference_blur(&bg_raw, style.backdrop_radius))
                     })
@@ -686,6 +884,36 @@ fn reference_range_with_source<S: SimTextSource>(
                     }
                 }
                 let group_alpha = group.alpha.as_ref().expect("group alpha");
+                let (rect, composition, shadow) = cmds
+                    .group_composition(index)
+                    .map(|(layout, c, s)| {
+                        (
+                            layout.translate(
+                                viewport.x.saturating_neg(),
+                                viewport.y.saturating_neg(),
+                            ),
+                            c,
+                            s,
+                        )
+                    })
+                    .unwrap_or((rect, None, None));
+                if let (Some(c), Some(s)) = (composition, shadow) {
+                    reference_shadow(&mut screen, rect, clip, s, |q| {
+                        let Some(p) = style.projection.unproject(rect, q) else {
+                            return 0;
+                        };
+                        if c.shadow_source == liuli::prelude::ShadowSource::Outline {
+                            return c.outline.coverage(rect, radius, p);
+                        }
+                        if !source.contains_point(p) {
+                            return 0;
+                        }
+                        liuli::core::composition::mul_a4(
+                            group_alpha[group_index(p)],
+                            c.coverage(rect, radius, p),
+                        )
+                    })
+                }
                 let area = rect.intersect(clip).intersect(full);
                 let radius = u32::from(radius).min(rect.w / 2).min(rect.h / 2);
                 let radius_thresh = i64::from(rounded_rect_threshold(radius));
@@ -694,13 +922,45 @@ fn reference_range_with_source<S: SimTextSource>(
                         let Some(p) = style.projection.unproject(rect, Point::new(x, y)) else {
                             continue;
                         };
-                        if !area.contains_point(p) {
+                        if !source.contains_point(p) {
                             continue;
                         }
                         let i = y as usize * stride + x as usize;
-                        let g_idx = p.y as usize * stride + p.x as usize;
+                        let g_idx = group_index(p);
                         let original = screen.pixels[i];
                         let a = group_alpha[g_idx];
+                        if composition.is_some() || with_alpha {
+                            let inside = corner_distance_2x(rect, radius, p) < radius_thresh;
+                            let (rgb, alpha) = if inside && blurred.is_some() {
+                                (
+                                    blend_rgb565_a4_u16(
+                                        group.pixels[g_idx],
+                                        blurred.as_ref().unwrap().pixels[i],
+                                        a,
+                                    ),
+                                    15,
+                                )
+                            } else if inside && style.tint_alpha > 0 {
+                                blend_over_rgb565_a4(
+                                    style.tint_color.into_storage(),
+                                    style.tint_alpha,
+                                    group.pixels[g_idx],
+                                    a,
+                                )
+                            } else {
+                                (group.pixels[g_idx], a)
+                            };
+                            let amount = liuli::core::composition::mul_a4(
+                                style.opacity,
+                                composition.map_or(15, |c| c.coverage(rect, radius as u8, p)),
+                            );
+                            screen.blend_pixel_a4(
+                                i,
+                                rgb,
+                                liuli::core::composition::mul_a4(alpha, amount),
+                            );
+                            continue;
+                        }
                         let color = if a == 15 {
                             group.pixels[g_idx]
                         } else {

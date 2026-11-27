@@ -42,6 +42,7 @@ pub mod prelude {
         rgb888_to_gray8, rgb888_to_hsl, rgb888_to_hsv, rgb888_to_rgb565_round,
         rgb888_to_rgb565_trunc,
     };
+    pub use liuli_core::composition::{Mask, Outline, ShadowSource, SurfaceComposition};
     pub use liuli_core::damage::DamageSet;
     pub use liuli_core::dither::{
         DitherMode, bayer_4x4, gray8_to_gray4_dithered, gray8_to_mono1_dithered,
@@ -66,6 +67,7 @@ pub mod prelude {
         IconPosition, IndicatorLayout, IndicatorMotion, IndicatorShape, IndicatorSpan, LayoutExtra,
         LayoutMotion, PartMetrics, VisualState, WidgetPart, WidgetPartStyle,
     };
+    pub use liuli_core::path::{FillRule, Path, PathPaint, PathVerb, PreparedPath};
     pub use liuli_core::time::{
         AnimProp, ClockTracker, Easing, InstantMs, MAX_REPEAT_STEPS_PER_ADVANCE, MonotonicClock32,
         NextWakeup, REPEAT_DELAY_MS, REPEAT_PERIOD_MS, ScrollPhysics, Tween,

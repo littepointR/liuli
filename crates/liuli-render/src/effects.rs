@@ -717,7 +717,7 @@ mod layers {
             return;
         }
         let band = target.band_rect();
-        let area = cache.source.intersect(band);
+        let area = cache.output.intersect(band);
         if area.is_empty() {
             return;
         }
@@ -728,6 +728,54 @@ mod layers {
         let band_w = band.w as usize;
         let src_w = cache.source.w as usize;
         let cap_w = cache.capture.w as usize;
+        if cache.composition.is_some() || target.has_alpha() {
+            // Preserve destination alpha when the parent is itself an isolated group.
+            for y in area.y..area.bottom64() as i32 {
+                for x in area.x..area.right64() as i32 {
+                    let dst = liuli_core::geometry::Point::new(x, y);
+                    let p = if cache.style.projection.0 == 0 {
+                        dst
+                    } else if let Some(p) = cache.style.projection.unproject(rect, dst) {
+                        p
+                    } else {
+                        continue;
+                    };
+                    if !cache.source.contains_point(p) {
+                        continue;
+                    }
+                    let mask = cache
+                        .composition
+                        .map_or(15, |c| c.coverage(rect, cache.radius, p));
+                    let amount = liuli_core::composition::mul_a4(mask, opacity);
+                    if amount == 0 {
+                        continue;
+                    }
+                    let i =
+                        (p.y - cache.source.y) as usize * src_w + (p.x - cache.source.x) as usize;
+                    let a = get_a4(&group.alpha, i);
+                    let (rgb, alpha) = if card_box.contains(p.x, p.y) && has_backdrop {
+                        let bd =
+                            (y - cache.capture.y) as usize * cap_w + (x - cache.capture.x) as usize;
+                        (blend_a4_u16(group.color[i], backdrop.pixels[bd], a), 15)
+                    } else if card_box.contains(p.x, p.y) && cache.style.tint_alpha > 0 {
+                        liuli_text::blend_over_rgb565_a4(
+                            rgb565_to_u16(cache.style.tint_color),
+                            cache.style.tint_alpha,
+                            group.color[i],
+                            a,
+                        )
+                    } else {
+                        (group.color[i], a)
+                    };
+                    let out = (y - band.y) as usize * band_w + (x - band.x) as usize;
+                    let alpha = liuli_core::composition::mul_a4(alpha, amount);
+                    if alpha > 0 {
+                        target.blend_pixel_a4(out, rgb, alpha)
+                    }
+                }
+            }
+            return;
+        }
         let words = target.words_mut();
 
         if cache.style.projection.0 == 0 {

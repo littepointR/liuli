@@ -114,9 +114,7 @@ pub fn reconcile_into(
             continue;
         }
         outcome.tree_changed = true;
-        if !old.visible_rect.is_empty() {
-            damage.add(active.style_bounds(old_idx), screen);
-        }
+        damage.add(active.style_bounds(old_idx), screen);
         anims.cancel_for_key(old.key);
         if focused_slot == Some(old_idx as u16) {
             outcome.focus_target_invalidated = true;
@@ -512,18 +510,18 @@ pub fn reconcile_into(
                 continue;
             }
             let old_slot = matched_from_old[c_idx];
-            let old_vis = if old_slot != NO_MAP {
-                active.nodes[old_slot as usize].visible_rect
+            let previous = if old_slot != NO_MAP {
+                active.style_bounds(usize::from(old_slot))
             } else {
                 Rect::ZERO
             };
-            if n.dirty_paint || n.dirty_measure || n.visible_rect != old_vis {
-                if !old_vis.is_empty() {
-                    damage.add(active.style_bounds(usize::from(old_slot)), screen);
-                }
-                if !n.visible_rect.is_empty() {
-                    damage.add(candidate.style_bounds(c_idx), screen);
-                }
+            let next = candidate.style_bounds(c_idx);
+            let moved = old_slot != NO_MAP
+                && (active.nodes[usize::from(old_slot)].layout_rect != n.layout_rect
+                    || active.nodes[usize::from(old_slot)].visible_rect != n.visible_rect);
+            if n.dirty_paint || n.dirty_measure || moved || previous != next {
+                damage.add(previous, screen);
+                damage.add(next, screen);
             }
         }
     }

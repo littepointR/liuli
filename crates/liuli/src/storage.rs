@@ -86,7 +86,14 @@ impl Default for Storage {
 const _: () = {
     assert!(core::mem::size_of::<liuli_core::paint::PaintCmd>() <= 48);
     assert!(core::mem::size_of::<liuli_core::node::RetainedNode>() <= 224);
-    assert!(core::mem::size_of::<Storage>() <= 67_456);
+    // Three effect tables and two command lists also retain layer metadata when enabled.
+    // The basic-profile limit is shared with checks/audit-firmware.ps1.
+    let layer_metadata = if liuli_core::effects::SurfaceStyle::has_layers_support() {
+        256
+    } else {
+        0
+    };
+    assert!(core::mem::size_of::<Storage>() <= 67_456 + layer_metadata);
 };
 
 #[cfg(all(

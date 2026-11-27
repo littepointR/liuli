@@ -109,6 +109,7 @@ impl Default for Compositor {
 /// Declarative surface recipe combining material, elevation, compositing, and per-node overrides.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SurfaceSpec {
+    pub composition: Option<&'static liuli::prelude::SurfaceComposition>,
     pub material: Material,
     pub elevation: Elevation,
     pub compositor: Compositor,
@@ -122,6 +123,7 @@ pub struct SurfaceSpec {
 
 impl SurfaceSpec {
     pub const CARD: Self = Self {
+        composition: None,
         material: Material::Solid,
         elevation: Elevation::Flat,
         compositor: Compositor::NONE,
@@ -150,6 +152,13 @@ impl SurfaceSpec {
     };
 
     #[inline]
+    pub const fn with_composition(
+        mut self,
+        c: &'static liuli::prelude::SurfaceComposition,
+    ) -> Self {
+        self.composition = Some(c);
+        self
+    }
     pub const fn with_material(mut self, material: Material) -> Self {
         self.material = material;
         self

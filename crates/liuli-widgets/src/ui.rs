@@ -736,7 +736,7 @@ impl<'a, 'b, 'p> ThemedUi<'a, 'b, 'p> {
 
     #[inline]
     fn decorate_if_needed(&mut self, key: Key, style: SurfaceStyle) -> Result<(), BuildError> {
-        if style.shadow.is_some() || style.layer().is_some() {
+        if style.composition.is_some() || style.shadow.is_some() || style.layer().is_some() {
             self.ui.decorate(key, style)
         } else {
             Ok(())

@@ -9,6 +9,27 @@ use liuli_widgets::{
 pub const LIST: Key = Key(720);
 pub const IMAGE: Key = Key(732);
 pub const TICKS: Key = Key(712);
+const ART: Key = Key(8803);
+const CARD_COMPOSITION: SurfaceComposition = SurfaceComposition {
+    clip_content: true,
+    mask: Mask::FadeBottom(40),
+    ..SurfaceComposition::DEFAULT
+};
+const HEART_CURVES: PreparedPath<64> = match PreparedPath::prepare(
+    &[
+        PathVerb::Move(512, 948),
+        PathVerb::Cubic((450, 840), (34, 550), (46, 290)),
+        PathVerb::Cubic((54, 42), (358, 0), (512, 242)),
+        PathVerb::Cubic((666, 0), (970, 42), (978, 290)),
+        PathVerb::Cubic((990, 550), (574, 840), (512, 948)),
+        PathVerb::Close,
+    ],
+    12,
+) {
+    Ok(path) => path,
+    Err(_) => panic!("heart path capacity"),
+};
+const HEART_PATH: Path<'static> = HEART_CURVES.path();
 const KNOB: Key = Key(710);
 const FIELD: Key = Key(740);
 const KEYBOARD: Key = Key(741);
@@ -514,6 +535,21 @@ impl Samples {
     }
 
     fn graphics(&self, ui: &mut Children<'_, '_>, t: Theme, zh: bool) -> Result<(), BuildError> {
+        ui.scroll_y(
+            Key(8800),
+            NodeProps::new()
+                .size(Length::Fill(1), Length::Fill(1))
+                .gap(8)
+                .scroll_policy(t.scroll_policy(ScrollPolicy::FREE)),
+            |ui| self.graphics_content(ui, t, zh),
+        )
+    }
+    fn graphics_content(
+        &self,
+        ui: &mut Children<'_, '_>,
+        t: Theme,
+        zh: bool,
+    ) -> Result<(), BuildError> {
         let mut surface = ThemedUi::new(ui, t.with_effects(EffectsConfig::GLASS));
         surface.stack(
             Key(730),
@@ -581,7 +617,32 @@ impl Samples {
         ))?;
         ui.label(Key(738), t.caption().text(info))?;
         widgets::number_editor(ui, Key(736), 30..=120, self.scale, 5, t)?;
-        widgets::number_editor(ui, Key(737), 1..=15, self.alpha.into(), 1, t)
+        widgets::number_editor(ui, Key(737), 1..=15, self.alpha.into(), 1, t)?;
+        ui.stack(
+            Key(8801),
+            row_props(176).padding(EdgeInsets::all(12)),
+            |stage| {
+                ThemedUi::new(stage, t).surface_column(
+                    Key(8802),
+                    SurfaceSpec::FLOATING.with_composition(&CARD_COMPOSITION),
+                    NodeProps::new()
+                        .size(Length::Px(196), Length::Px(144))
+                        .stack_align(StackAlign::Center),
+                    |card| {
+                        card.custom(
+                            ART,
+                            NodeProps::new()
+                                .size(Length::Fill(1), Length::Fill(1))
+                                .accent(t.accent),
+                        )?;
+                        card.caption(
+                            Key(8804),
+                            TextRef::Static(if zh { "图形淡出" } else { "Path & mask" }),
+                        )
+                    },
+                )
+            },
+        )
     }
 
     fn image_rev(&self) -> u32 {
@@ -648,6 +709,20 @@ impl Samples {
                 GRADIENT_HORIZONTAL,
                 8,
             ),
+            ART => {
+                let size = c.size();
+                let body = Rect::new(0, 0, size.width, size.height);
+                c.gradient_rect(body, t.surface_alt, t.accent, GRADIENT_DIAGONAL, 0)?;
+                let side = size.height.saturating_sub(12).min(size.width / 2);
+                let rect = Rect::new(((size.width - side) / 2) as i32, 6, side, side);
+                c.static_path(
+                    rect,
+                    &HEART_PATH,
+                    PathPaint::Fill(FillRule::NonZero),
+                    t.surface,
+                )?;
+                c.static_path(rect, &HEART_PATH, PathPaint::Stroke(28), t.accent)
+            }
             IMAGE => {
                 let s = c.size();
                 let w = s.width.min(s.height * 240 / 136) * self.scale as u32 / 100;

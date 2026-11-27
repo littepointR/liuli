@@ -1010,35 +1010,71 @@ impl LayoutExtra {
     }
 }
 
+// Keep the 16-bit geometry records contiguous. Only the revision needs 32 bits;
+// callers work on an aligned copy, including on targets that forbid unaligned loads.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+struct PackedLayoutExtra {
+    offset: (i16, i16),
+    motion: LayoutMotion,
+    revision: [u16; 2],
+    widths: [u16; 2],
+    heights: [u16; 2],
+    margin: crate::view::EdgeInsets,
+}
+impl PackedLayoutExtra {
+    const fn new(v: LayoutExtra) -> Self {
+        Self {
+            offset: (v.offset_x, v.offset_y),
+            motion: v.motion,
+            revision: [v.custom_rev as u16, (v.custom_rev >> 16) as u16],
+            widths: [v.min_w, v.max_w],
+            heights: [v.min_h, v.max_h],
+            margin: v.margin,
+        }
+    }
+    fn unpack(self) -> LayoutExtra {
+        LayoutExtra {
+            offset_x: self.offset.0,
+            offset_y: self.offset.1,
+            motion: self.motion,
+            custom_rev: u32::from(self.revision[0]) | (u32::from(self.revision[1]) << 16),
+            min_w: self.widths[0],
+            max_w: self.widths[1],
+            min_h: self.heights[0],
+            max_h: self.heights[1],
+            margin: self.margin,
+        }
+    }
+}
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct LayoutExtras {
-    items: [(Key, LayoutExtra); MAX_LAYOUT_EXTRAS],
+    keys: [Key; MAX_LAYOUT_EXTRAS],
+    items: [PackedLayoutExtra; MAX_LAYOUT_EXTRAS],
     len: u8,
 }
 
 impl LayoutExtras {
     pub const EMPTY: Self = Self {
-        items: [(Key(0), LayoutExtra::ZERO); MAX_LAYOUT_EXTRAS],
+        keys: [Key(0); MAX_LAYOUT_EXTRAS],
+        items: [PackedLayoutExtra::new(LayoutExtra::ZERO); MAX_LAYOUT_EXTRAS],
         len: 0,
     };
 
     #[inline]
     pub fn get(&self, key: Key) -> LayoutExtra {
-        for item in &self.items[..usize::from(self.len)] {
-            if item.0 == key {
-                return item.1;
-            }
-        }
-        LayoutExtra::ZERO
+        self.keys[..usize::from(self.len)]
+            .iter()
+            .position(|&k| k == key)
+            .map_or(LayoutExtra::ZERO, |i| self.items[i].unpack())
     }
 
     fn upsert(&mut self, key: Key, f: impl FnOnce(&mut LayoutExtra)) -> Result<(), BuildError> {
         let used = usize::from(self.len);
-        for item in &mut self.items[..used] {
-            if item.0 == key {
-                f(&mut item.1);
-                return Ok(());
-            }
+        if let Some(i) = self.keys[..used].iter().position(|&k| k == key) {
+            let mut value = self.items[i].unpack();
+            f(&mut value);
+            self.items[i] = PackedLayoutExtra::new(value);
+            return Ok(());
         }
         let mut next = LayoutExtra::ZERO;
         f(&mut next);
@@ -1046,7 +1082,8 @@ impl LayoutExtras {
             return Ok(());
         }
         let entry = self.items.get_mut(used).ok_or(BuildError::Effects)?;
-        *entry = (key, next);
+        self.keys[used] = key;
+        *entry = PackedLayoutExtra::new(next);
         self.len += 1;
         Ok(())
     }

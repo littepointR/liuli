@@ -146,6 +146,8 @@ pub enum BuildError {
     PartStyles,
     Effects,
     LayerPixels,
+    UnsupportedEffect,
+    PathEdges,
     Layout(LayoutError),
 }
 

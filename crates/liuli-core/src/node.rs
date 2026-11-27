@@ -214,10 +214,10 @@ impl RetainedTree {
             })
     }
 
-    /// Geometry that can contain pixels from a node's selection animation.
+    /// Visible output of this node, including an ancestor projecting its content alpha.
     pub(crate) fn style_bounds(&self, i: usize) -> Rect {
         let n = &self.nodes[i];
-        if n.kind == NodeKind::Tab
+        let mut output = if n.kind == NodeKind::Tab
             && self.part_styles.get(i).indicator_transition
                 == crate::part_style::IndicatorMotion::Slide
         {
@@ -226,7 +226,34 @@ impl RetainedTree {
                 .map_or(n.visible_rect, |p| self.nodes[p].visible_rect)
         } else {
             n.visible_rect
+        };
+        for &(key, style) in self.effects.iter() {
+            let Some(shadow) = style.shadow else { continue };
+            let caster = if key == n.key {
+                n
+            } else if style
+                .composition
+                .is_some_and(|c| c.shadow_source == crate::composition::ShadowSource::Content)
+            {
+                let Some(slot) = self.find_slot_by_key(key) else {
+                    continue;
+                };
+                if !self.is_descendant_of(i as u16, slot) {
+                    continue;
+                }
+                &self.nodes[usize::from(slot)]
+            } else {
+                continue;
+            };
+            if caster.props.visible() {
+                output = output.union(
+                    shadow
+                        .bounds(caster.layout_rect)
+                        .intersect(caster.clip_rect),
+                )
+            }
         }
+        output
     }
 
     pub fn sync_style_motion(

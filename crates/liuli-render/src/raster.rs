@@ -632,6 +632,225 @@ fn render_range<R: SceneResources + ?Sized, T: BandTextSource, A: crate::accel::
     clear: Rgb565,
 ) -> Result<u32, T::Error> {
     let _ = target.clear(clear);
+    paint_range(
+        target,
+        cmds,
+        resources,
+        blend,
+        accel,
+        text_source,
+        range,
+        clear,
+    )
+}
+#[allow(clippy::too_many_arguments)]
+fn paint_range<R: SceneResources + ?Sized, T: BandTextSource, A: crate::accel::DrawAccel>(
+    target: &mut BandTarget<'_>,
+    cmds: &CommandList,
+    resources: &R,
+    blend: impl Fn(&mut [u16], Rgb565, u8) + Copy,
+    accel: &mut A,
+    text_source: &mut T,
+    range: core::ops::Range<usize>,
+    clear: Rgb565,
+) -> Result<u32, T::Error> {
+    if !cmds.has_mask_groups() {
+        return paint_flat(
+            target,
+            cmds,
+            resources,
+            blend,
+            accel,
+            text_source,
+            range,
+            clear,
+        );
+    }
+    let mut cursor = range.start;
+    let mut replayed = 0;
+    while cursor < range.end {
+        let next = next_mask(cmds, cursor, range.end);
+        if cursor < next {
+            replayed += paint_flat(
+                target,
+                cmds,
+                resources,
+                blend,
+                accel,
+                text_source,
+                cursor..next,
+                clear,
+            )?;
+        }
+        if next == range.end {
+            break;
+        }
+        let PaintCmd::MaskGroup {
+            rect, clip, end, ..
+        } = cmds.cmds[next]
+        else {
+            unreachable!()
+        };
+        let area = rect.intersect(clip).intersect(target.band_rect());
+        for row in 0..area.h {
+            for column in (0..area.w).step_by(MASK_TILE) {
+                let tile = Rect::new(
+                    area.x.saturating_add_unsigned(column),
+                    area.y.saturating_add_unsigned(row),
+                    (area.w - column).min(MASK_TILE as u32),
+                    1,
+                );
+                replayed += paint_mask_tile(
+                    target,
+                    cmds,
+                    resources,
+                    blend,
+                    accel,
+                    text_source,
+                    next,
+                    tile,
+                    clear,
+                )?;
+            }
+        }
+        cursor = usize::from(end).clamp(next + 1, range.end);
+    }
+    Ok(replayed)
+}
+fn next_mask(cmds: &CommandList, mut at: usize, end: usize) -> usize {
+    while at < end {
+        match cmds.cmds[at] {
+            PaintCmd::MaskGroup { .. } => break,
+            PaintCmd::Group { end: group_end, .. } => {
+                at = usize::from(group_end).clamp(at + 1, end)
+            }
+            _ => at += 1,
+        }
+    }
+    at
+}
+const MASK_TILE: usize = 16;
+#[derive(Clone, Copy, Default)]
+struct MaskTile {
+    words: [u16; MASK_TILE],
+    alpha: [u8; MASK_TILE / 2],
+    command: usize,
+}
+/// Iterative group stack: nesting consumes fixed tile slots, never nested rasterizer stack frames.
+#[allow(clippy::too_many_arguments)]
+#[inline(never)]
+fn paint_mask_tile<R: SceneResources + ?Sized, T: BandTextSource, A: crate::accel::DrawAccel>(
+    target: &mut BandTarget<'_>,
+    cmds: &CommandList,
+    resources: &R,
+    blend: impl Fn(&mut [u16], Rgb565, u8) + Copy,
+    accel: &mut A,
+    text_source: &mut T,
+    root: usize,
+    tile: Rect,
+    clear: Rgb565,
+) -> Result<u32, T::Error> {
+    let mut frames = [MaskTile::default(); liuli_core::effects::MAX_EFFECTS];
+    let mut depth = 0;
+    frames[0].command = root;
+    let mut cursor = root + 1;
+    let mut replayed = 1;
+    loop {
+        let frame = &mut frames[depth];
+        let PaintCmd::MaskGroup {
+            rect,
+            clip,
+            end,
+            radius,
+            composition,
+        } = cmds.cmds[frame.command]
+        else {
+            unreachable!()
+        };
+        let end = usize::from(end).min(cmds.count);
+        let next = next_mask(cmds, cursor, end);
+        if cursor < next {
+            let mut dst =
+                BandTarget::new_with_alpha::<()>(&mut frame.words, &mut frame.alpha, tile).unwrap();
+            replayed += paint_flat(
+                &mut dst,
+                cmds,
+                resources,
+                blend,
+                accel,
+                text_source,
+                cursor..next,
+                clear,
+            )?;
+        }
+        if next < end {
+            let PaintCmd::MaskGroup {
+                end: child_end,
+                rect: child,
+                clip: child_clip,
+                ..
+            } = cmds.cmds[next]
+            else {
+                unreachable!()
+            };
+            if depth + 1 == frames.len() || !child.intersect(child_clip).intersects(tile) {
+                cursor = usize::from(child_end).clamp(next + 1, end);
+                continue;
+            }
+            depth += 1;
+            frames[depth] = MaskTile {
+                command: next,
+                ..Default::default()
+            };
+            cursor = next + 1;
+            continue;
+        }
+        let (parents, children) = frames.split_at_mut(depth);
+        let src = &children[0];
+        let composite = |dest: &mut BandTarget<'_>| {
+            let band = dest.band_rect();
+            let start = (tile.y - band.y) as usize * band.w as usize + (tile.x - band.x) as usize;
+            for i in 0..tile.w as usize {
+                let p = Point::new(tile.x.saturating_add_unsigned(i as u32), tile.y);
+                if !clip.contains_point(p) {
+                    continue;
+                }
+                let a = liuli_core::composition::mul_a4(
+                    composition.coverage(rect, radius, p),
+                    liuli_core::composition::get_a4(&src.alpha, i),
+                );
+                if a != 0 {
+                    dest.blend_pixel_a4(start + i, src.words[i], a)
+                }
+            }
+        };
+        if let Some(f) = parents.last_mut() {
+            composite(
+                &mut BandTarget::new_with_alpha::<()>(&mut f.words, &mut f.alpha, tile).unwrap(),
+            )
+        } else {
+            composite(target)
+        }
+        if depth == 0 {
+            break;
+        }
+        depth -= 1;
+        cursor = end;
+    }
+    Ok(replayed)
+}
+#[allow(clippy::too_many_arguments)]
+fn paint_flat<R: SceneResources + ?Sized, T: BandTextSource, A: crate::accel::DrawAccel>(
+    target: &mut BandTarget<'_>,
+    cmds: &CommandList,
+    resources: &R,
+    blend: impl Fn(&mut [u16], Rgb565, u8) + Copy,
+    accel: &mut A,
+    text_source: &mut T,
+    range: core::ops::Range<usize>,
+    clear: Rgb565,
+) -> Result<u32, T::Error> {
+    let _ = clear;
     let band_rect = target.band_rect();
     text_source.begin_band(band_rect);
     let mut replayed = 0u32;
@@ -645,13 +864,58 @@ fn render_range<R: SceneResources + ?Sized, T: BandTextSource, A: crate::accel::
         if let PaintCmd::Group { end, .. } = *cmd {
             cursor = usize::from(end).clamp(cursor, range.end);
         }
+        if let PaintCmd::MaskGroup { end, .. } = *cmd {
+            cursor = usize::from(end).clamp(cursor, range.end)
+        }
+        if let PaintCmd::PathRun { chunks, .. } = *cmd {
+            cursor = (cursor + usize::from(chunks)).min(range.end)
+        }
         if !cmd.bounds().intersects(band_rect) {
             continue;
         }
         replayed += 1;
 
         match *cmd {
-            PaintCmd::Empty => {}
+            PaintCmd::Empty | PaintCmd::PathEdges { .. } => {}
+            PaintCmd::StaticPath {
+                rect,
+                clip,
+                path,
+                paint,
+                color,
+            } => crate::composition::draw_path(target, rect, clip, path.edges.iter(), paint, color),
+            PaintCmd::PathRun {
+                rect,
+                clip,
+                paint,
+                color,
+                ..
+            } => {
+                let edges = cmds.as_slice()[index + 1..cursor]
+                    .iter()
+                    .flat_map(|c| match c {
+                        PaintCmd::PathEdges { len, edges } => {
+                            &edges[..usize::from(*len).min(edges.len())]
+                        }
+                        _ => &[][..],
+                    });
+                crate::composition::draw_path(target, rect, clip, edges, paint, color)
+            }
+            PaintCmd::OutlineShadow {
+                rect,
+                clip,
+                path,
+                rule,
+                shadow,
+            } => crate::composition::coverage_shadow(target, rect, clip, shadow, |p| {
+                liuli_core::path::coverage(
+                    path.edges.iter(),
+                    rect,
+                    p,
+                    liuli_core::path::PathPaint::Fill(rule),
+                )
+            }),
+            PaintCmd::MaskGroup { .. } => {}
             PaintCmd::Shadow {
                 rect,
                 clip,
@@ -664,13 +928,14 @@ fn render_range<R: SceneResources + ?Sized, T: BandTextSource, A: crate::accel::
             PaintCmd::Group { .. } => {
                 #[cfg(feature = "layers")]
                 if let PaintCmd::Group {
-                    rect,
+                    clip,
                     index: layer_id,
                     ..
                 } = *cmd
                 {
                     let cache =
                         &cmds.layers.as_ref().expect("emitted layer")[usize::from(layer_id)];
+                    let rect = cache.layout;
                     if cache.style.opacity == 0 || matches!(cache.style.projection.0, 64 | 192) {
                         continue;
                     }
@@ -748,6 +1013,25 @@ fn render_range<R: SceneResources + ?Sized, T: BandTextSource, A: crate::accel::
                         backdrop.tint = expected_tint;
                     }
                     text_source.begin_band(band_rect);
+                    if let (Some(s), Some(c)) = (cache.shadow, cache.composition) {
+                        crate::composition::coverage_shadow(target, rect, clip, s, |point| {
+                            let Some(p) = cache.style.projection.unproject(rect, point) else {
+                                return 0;
+                            };
+                            if c.shadow_source == liuli_core::composition::ShadowSource::Outline {
+                                return c.outline.coverage(rect, cache.radius, p);
+                            }
+                            if !cache.source.contains_point(p) {
+                                return 0;
+                            }
+                            let i = (p.y - cache.source.y) as usize * cache.source.w as usize
+                                + (p.x - cache.source.x) as usize;
+                            liuli_core::composition::mul_a4(
+                                liuli_core::layers::get_a4(&group.alpha, i),
+                                c.coverage(rect, cache.radius, p),
+                            )
+                        });
+                    }
                     crate::effects::composite(target, rect, cache, &group, &backdrop);
                 }
             }

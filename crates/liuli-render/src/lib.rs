@@ -7,6 +7,7 @@ extern crate alloc;
 pub mod accel;
 pub mod band;
 pub mod bitmap_store;
+mod composition;
 pub mod display;
 pub mod dma;
 pub mod drivers;

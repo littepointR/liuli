@@ -717,6 +717,7 @@ impl Theme {
             });
         }
 
+        effect.composition = spec.composition;
         ResolvedSurface {
             props: base,
             effect,
