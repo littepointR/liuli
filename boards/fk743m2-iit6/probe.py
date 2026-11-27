@@ -153,7 +153,7 @@ def depth_scroll(commander, uid, trace, demo):
         link.close()
 
 
-def showcase_trace(commander, uid, trace, reference, page, label, observe=None):
+def showcase_trace(commander, uid, trace, reference, page, label, observe=None, *, compare_rows=430):
     """Replay raw touch through the board mailbox and compare the complete settled content pane."""
     from urllib.parse import parse_qsl
     from jlink import expand_snapshot, compare_pixels
@@ -178,21 +178,40 @@ def showcase_trace(commander, uid, trace, reference, page, label, observe=None):
             if query != "tick":
                 event = dict(parse_qsl(query, strict_parsing=True))
                 kind = event["kind"]
-                action = {"down":1, "up":2, "move":3, "cancel":4}[kind]
-                issue(link, seq, action, int(event["x"]) | int(event["y"]) << 16)
+                if kind in ("next", "prev"):
+                    issue(link, seq, 7 if kind == "next" else 8)
+                else:
+                    action = {"down":1, "up":2, "move":3, "cancel":4}[kind]
+                    issue(link, seq, action, int(event["x"]) | int(event["y"]) << 16)
             if observe is not None:
                 observe(link, kind)
         snap = issue(link, len(rows)+1, 6)
         if snap[8] != page or snap[9] & 6 or not 0 < snap[14] <= 512*1024:
             raise RuntimeError(f"invalid {label} page or scanout: {snap}")
         frame = expand_snapshot(read_snapshot(link, snap[14]))
-        # Only the footer contains board-clock telemetry. Include the complete tab bar and title.
-        pane = slice(0,430*800*2)
+        # The dashboard contains live telemetry. For focus checks compare the entire tab bar.
+        pane = slice(0,compare_rows*800*2)
         compare_pixels(label, frame[pane], expected[pane])
-        print(f"{label} matches the desktop replay (344000 RGB565 pixels)")
+        print(f"{label} matches the desktop replay ({compare_rows*800} RGB565 pixels)")
         link.reset(halt=False)
     finally:
         link.close()
+
+
+def startup_focus(commander, uid, demo):
+    """Compare the complete top bar at each checkpoint, starting from a boot with no input."""
+    import subprocess
+    root = Path(__file__).resolve().parents[2]
+    apps = root / "apps" if (root / "apps").is_dir() else root
+    fixture = apps / "liuli-widget-demo/tests/fixtures/startup-focus.trace"
+    records = fixture.read_text(encoding="ascii").splitlines()
+    prefix = commander.temp / "startup-focus.trace"
+    scanout = commander.temp / "startup-focus.rgb565"
+    for i, record in enumerate(records[1:], 1):
+        prefix.write_text("\n".join(records[:i+1]) + "\n", encoding="ascii")
+        subprocess.run([str(demo.resolve()), "--size", "800x480", "--replay", str(prefix),
+                        "--scanout", str(scanout)], check=True)
+        showcase_trace(commander, uid, prefix, scanout, 0, f"Startup focus ({record})", compare_rows=48)
 
 
 def strip_fling(commander, uid, trace, reference):

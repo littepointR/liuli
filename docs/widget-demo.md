@@ -53,6 +53,22 @@ python boards/fk743m2-iit6/jlink.py --speed 12000 --widget-samples apps/liuli-wi
 
 2026-11-28，FK743M2-IIT6 使用 ST HAL+LL 增强固件完成上述卡片轨迹，LTDC 帧缓冲前 430 行的 344,000 个 RGB565 像素与桌面一致。底部 50 行包含随板上时钟变化的统计信息。固件 CRC32 为 `e0383927`，桌面整帧参考文件的 SHA-256 为 `e2eb9f73c8f560ac17d5a021e8010c4aff06fb093d4a7df375c71ce2d4b6c377`。
 
+调节页的 `h743-focus-shapes.trace` 用触摸打开控件页，再用前进和后退导航在旋钮、滑块间切换。结束时焦点回到旋钮，手柄位置和页签选择保留。模拟器逐帧验证重绘，H743 通过 SWD 向相同的输入入口注入导航，读取 LTDC 帧缓冲比对页签及内容区。
+
+~~~sh
+cargo run --locked --offline --release -p liuli-widget-demo --features desktop,enhanced -- --size 800x480 --replay apps/liuli-widget-demo/tests/fixtures/h743-focus-shapes.trace --scanout target/h743-focus-shapes.rgb565
+python boards/fk743m2-iit6/jlink.py --speed 12000 --widget-samples apps/liuli-widget-demo/tests/fixtures/h743-focus-shapes.trace target/h743-focus-shapes.rgb565
+~~~
+
+2026-11-28，FK743M2-IIT6 的 ST HAL+LL 增强固件 `f41f7e8a`（CRC32）完成这条轨迹。LTDC 前 430 行共 344,000 个 RGB565 像素与桌面一致，底部 50 行为实时统计区。桌面整帧参考的 SHA-256 为 `9856c140c66fd01c5660b8594901016fac09bacc9575d0fa4aa62a50757b942c`。
+
+首屏回归 `startup-focus.trace` 依次覆盖冷启动、向前导航、向后导航、按下空白区和松手。2026-11-28 在 FK743M2-IIT6 的 ST HAL+LL 增强档 Widget Demo（固件 CRC32 `a8053f03`）上验证。五个检查点分别对照整条 800×48 顶栏，均与桌面一致。结束后板子复位回到触摸首页。
+
+~~~sh
+cargo build --release --locked --offline -p liuli-widget-demo --features desktop,enhanced
+python boards/fk743m2-iit6/jlink.py --speed 12000 --startup-focus target/release/liuli-widget-demo.exe
+~~~
+
 ## Spool 便携录音台
 
 使用 `--studio` 打开这个独立产品风格的例子。

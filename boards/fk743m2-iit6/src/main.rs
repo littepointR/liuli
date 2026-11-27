@@ -112,7 +112,6 @@ async fn run() -> Result<(), u32> {
     #[cfg(feature = "enhanced")]
     ui.set_layer_budget(1024 * 1024).map_err(|_| 16u32)?;
     ui.set_band_height(32);
-    ui.try_set_focus_ring_visible(true).map_err(|_| 17u32)?;
     let mut frames = 0;
     present(&mut ui, &mut screen, band, &mut frames)?;
     report(1, 4);
@@ -179,6 +178,8 @@ async fn run() -> Result<(), u32> {
                 2 => RawInput::PointerUp { id, pos: point },
                 3 => RawInput::PointerMove { id, pos: point },
                 4 => RawInput::PointerCancel { id },
+                7 => RawInput::Nav(NavDir::Next),
+                8 => RawInput::Nav(NavDir::Prev),
                 _ => return Err(21),
             };
             ui.handle_input(ev, event_time).map_err(|_| 19u32)?;
