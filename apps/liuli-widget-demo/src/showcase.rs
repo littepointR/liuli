@@ -767,7 +767,7 @@ impl App for ShowcaseApp {
         }
     }
 
-    fn view(model: &Self::Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildError> {
+    fn view(model: &Self::Model) -> impl Scene {
         let theme = model.theme();
         let root_props = NodeProps::new()
             .width(Length::Fill(1))
@@ -775,7 +775,7 @@ impl App for ShowcaseApp {
             .padding(EdgeInsets::all(10))
             .bg(theme.background);
 
-        out.root(Key(1), root_props, |ui| {
+        layout(Key(1), root_props, move |ui| {
             ui.column(
                 Key(2),
                 NodeProps::new()
@@ -793,7 +793,7 @@ impl App for ShowcaseApp {
                     Ok(())
                 },
             )?;
-            if model.tab == ShowcaseTab::Widgets && model.samples.confirm {
+            if ui.optional(model.tab == ShowcaseTab::Widgets && model.samples.confirm) {
                 liuli_widgets::centered_confirm_dialog(
                     ui,
                     [Key(760), Key(761), Key(762), Key(763)],
@@ -1969,16 +1969,9 @@ fn paint_summary_rich_text(
     props: &StoredProps,
     canvas: &mut WidgetCanvas<'_>,
 ) -> Result<(), BuildError> {
-    let cap_label = if MAX_NODES >= 250 {
-        "capacity-256 "
-    } else if MAX_NODES >= 128 {
-        "capacity-128 "
-    } else {
-        "default-64 "
-    };
     let spans = [
         TextSpan::new("SDK Showcase: ").with_color(props.accent),
-        TextSpan::new(cap_label).with_underline(true),
+        TextSpan::new("Component UI ").with_underline(true),
         TextSpan::new("| Justify/Grid/ScrollX | GradientRect | LocaleTable("),
         TextSpan::new(if model.locale.0 == 0 { "EN" } else { "ZH" }).with_color(rgb8(64, 214, 152)),
         TextSpan::new(") | Drivers(ST7789/GT911)"),

@@ -45,6 +45,7 @@ extern "C" fn HAL_GetTick() -> u32 {
 
 #[embassy_executor::main]
 async fn main(_spawner: embassy_executor::Spawner) -> ! {
+    #[cfg(feature = "diagnostics")]
     for i in 0..16 {
         super::report(i, 0);
     }
@@ -54,6 +55,7 @@ async fn main(_spawner: embassy_executor::Spawner) -> ! {
 
 #[cortex_m_rt::exception]
 unsafe fn HardFault(_frame: &cortex_m_rt::ExceptionFrame) -> ! {
+    #[cfg(feature = "diagnostics")]
     super::report(15, unsafe { (*cortex_m::peripheral::SCB::PTR).cfsr.read() });
     super::fail(1)
 }

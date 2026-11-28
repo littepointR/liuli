@@ -1,6 +1,7 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+pub mod components;
 pub mod controls;
 pub mod data;
 pub mod ime;
@@ -182,6 +183,7 @@ pub fn virtual_list_with_policy(
         .checked_mul(h)
         .filter(|v| *v <= i32::MAX as u32)
         .ok_or(BuildError::InvalidRange)?;
+    let offset = ui.for_capacity(offset, (2 * h - 1) as i32);
     let y = (offset.max(0) as u32).min(extent.saturating_sub(viewport.into()));
     let first = (y / h).saturating_sub(1);
     let end = (y + u32::from(viewport))
@@ -207,6 +209,76 @@ pub fn virtual_list_with_policy(
         }
         list.label(keys[2], spacer((count - end) * h))
     })
+}
+
+/// A viewport-bounded list. The row factory describes both its shape and its rendering.
+/// `HEIGHT` is the fixed row height. `VIEWPORT` is the largest supported viewport height.
+pub struct VirtualRows<const RECORDS: u32, const HEIGHT: u16, const VIEWPORT: u16>;
+struct VirtualComponent<const RECORDS: u32, const HEIGHT: u16, const VIEWPORT: u16, F> {
+    keys: [Key; 3],
+    count: u32,
+    offset: i32,
+    viewport: u16,
+    policy: ScrollPolicy,
+    row: F,
+}
+impl<const RECORDS: u32, const HEIGHT: u16, const VIEWPORT: u16>
+    VirtualRows<RECORDS, HEIGHT, VIEWPORT>
+{
+    pub fn rows<C: liuli::component::Component>(
+        keys: [Key; 3],
+        count: u32,
+        offset: i32,
+        viewport: u16,
+        policy: ScrollPolicy,
+        row: impl FnMut(u32) -> C,
+    ) -> impl liuli::component::Component {
+        VirtualComponent::<RECORDS, HEIGHT, VIEWPORT, _> {
+            keys,
+            count,
+            offset,
+            viewport,
+            policy,
+            row,
+        }
+    }
+}
+impl<const RECORDS: u32, const HEIGHT: u16, const VIEWPORT: u16, F, C> liuli::component::Component
+    for VirtualComponent<RECORDS, HEIGHT, VIEWPORT, F>
+where
+    F: FnMut(u32) -> C,
+    C: liuli::component::Component,
+{
+    const DEMAND: liuli::component::Demand = {
+        assert!(HEIGHT > 0);
+        // Worst sub-row alignment plus one overscan row on either side.
+        let visible = (VIEWPORT as usize + HEIGHT as usize - 1).div_ceil(HEIGHT as usize) + 2;
+        let rows = if visible < RECORDS as usize {
+            visible
+        } else {
+            RECORDS as usize
+        };
+        liuli::component::Demand::LEAF
+            .repeated(2)
+            .siblings(C::DEMAND.repeated(rows))
+            .enclosed()
+    };
+    fn render(mut self, ui: &mut Children<'_, '_>) -> Result<(), BuildError> {
+        if self.count > RECORDS || self.viewport > VIEWPORT {
+            return Err(ui.business_limit(self.keys[0]));
+        }
+        let height = core::num::NonZeroU16::new(HEIGHT).ok_or(BuildError::InvalidRange)?;
+        virtual_list_with_policy(
+            ui,
+            self.keys,
+            self.count,
+            height,
+            self.offset,
+            self.viewport,
+            self.policy,
+            |ui, index| (self.row)(index).render(ui),
+        )
+    }
 }
 
 /// A threshold meter rendered entirely through the public custom-widget API.
@@ -238,19 +310,27 @@ pub fn number_editor(
     step: i16,
     theme: Theme,
 ) -> Result<(), BuildError> {
-    let (min, max) = range.into_inner();
-    if min > max || step <= 0 {
-        return Err(BuildError::InvalidRange);
-    }
-    ui.slider(
-        key,
-        NodeProps {
+    liuli::component::Component::render(numeric_control(key, range, value, step, &theme), ui)
+}
+pub fn numeric_control(
+    key: Key,
+    range: core::ops::RangeInclusive<i16>,
+    value: i16,
+    step: i16,
+    theme: &Theme,
+) -> impl liuli::component::Component {
+    liuli::component::text_leaf(key, NodeKind::Slider, move |_| {
+        let (min, max) = range.into_inner();
+        if min > max || step <= 0 {
+            return Err(BuildError::InvalidRange);
+        }
+        Ok(NodeProps {
             min,
             max,
             step,
             ..theme.slider(value.clamp(min, max))
-        },
-    )
+        })
+    })
 }
 /// A mutually exclusive set of buttons. Each action uses the caller's stable key.
 pub fn selector(
@@ -301,9 +381,19 @@ pub fn confirm_dialog(
     labels: [TextRef; 2],
     theme: Theme,
 ) -> Result<(), BuildError> {
-    ui.modal(
+    liuli::component::Component::render(confirmation(keys, labels, &theme), ui)
+}
+
+/// Planned modal used by both declarative and imperative applications.
+pub fn confirmation(
+    keys: [Key; 4],
+    labels: [TextRef; 2],
+    theme: &Theme,
+) -> impl liuli::component::Component {
+    liuli::component::container(
         keys[0],
-        NodeProps {
+        NodeKind::Modal,
+        move || NodeProps {
             width: Length::Px(180),
             height: Length::Content,
             padding: EdgeInsets::all(8),
@@ -315,7 +405,7 @@ pub fn confirm_dialog(
             overlay_alpha: theme.interaction.modal_scrim_alpha,
             ..NodeProps::new()
         },
-        |modal| confirm_dialog_actions(modal, keys, labels, theme),
+        confirmation_actions(keys, labels, theme),
     )
 }
 /// Centered modal confirmation dialog covering the viewport with a backdrop scrim.
@@ -369,35 +459,30 @@ pub fn centered_confirm_dialog(
         },
     )
 }
-fn confirm_dialog_actions(
-    modal: &mut Children<'_, '_>,
+fn confirmation_actions(
     keys: [Key; 4],
     labels: [TextRef; 2],
-    theme: Theme,
-) -> Result<(), BuildError> {
-    modal.column(
+    theme: &Theme,
+) -> impl liuli::component::Component {
+    use liuli::component::{container, leaf};
+    container(
         keys[1],
-        NodeProps {
+        NodeKind::Column,
+        move || NodeProps {
             width: Length::Fill(1),
             gap: theme.spacing,
             ..NodeProps::new()
         },
-        |actions| {
-            actions.button(
-                keys[2],
-                NodeProps {
-                    text: labels[0],
-                    ..theme.primary_button()
-                },
-            )?;
-            actions.button(
-                keys[3],
-                NodeProps {
-                    text: labels[1],
-                    ..theme.secondary_button()
-                },
-            )
-        },
+        (
+            leaf(keys[2], NodeKind::Button, move || NodeProps {
+                text: labels[0],
+                ..theme.primary_button()
+            }),
+            leaf(keys[3], NodeKind::Button, move || NodeProps {
+                text: labels[1],
+                ..theme.secondary_button()
+            }),
+        ),
     )
 }
 /// Insert last in an overlay stack. The application owns the dismissal deadline.
@@ -438,7 +523,7 @@ mod tests {
 
     use super::*;
 
-    const TEST_LF4: &[u8] = include_bytes!("../../../apps/liuli-settings/assets/settings.lf4");
+    const TEST_LF4: &[u8] = liuli_settings::SETTINGS_LF4_BYTES;
 
     #[test]
     fn component_parts_propagate_via_themed_ui_without_wasting_default_slots() {
@@ -558,9 +643,9 @@ mod tests {
             Change::View
         }
 
-        fn view(model: &Self::Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildError> {
+        fn view(model: &Self::Model) -> impl Scene {
             let theme = Theme::DARK;
-            out.root(
+            layout(
                 Key(1),
                 NodeProps {
                     bg: Some(theme.background),
@@ -570,7 +655,7 @@ mod tests {
                     gap: 8,
                     ..NodeProps::new()
                 },
-                |ui| {
+                move |ui| {
                     ui.column(
                         Key(2),
                         NodeProps {
@@ -872,9 +957,9 @@ mod tests {
                 }
             }
 
-            fn view(model: &Self::Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildError> {
+            fn view(model: &Self::Model) -> impl Scene {
                 let theme = Theme::DARK;
-                out.root(
+                layout(
                     Key(1),
                     NodeProps {
                         bg: Some(theme.background),
@@ -883,7 +968,7 @@ mod tests {
                         padding: EdgeInsets::all(6),
                         ..NodeProps::new()
                     },
-                    |ui| {
+                    move |ui| {
                         ui.column(
                             Key(2),
                             NodeProps {
@@ -956,10 +1041,7 @@ mod tests {
         }
 
         let font = Lf4Font::from_bytes(TEST_LF4).unwrap();
-        let small = Lf4Font::from_bytes(include_bytes!(
-            "../../../apps/liuli-settings/assets/small12.lf4"
-        ))
-        .unwrap();
+        let small = liuli_settings::small12_font();
         let screen_rect = Rect::new(0, 0, 320, 240);
         let mut storage = Storage::new();
         let mut engine = Engine::<ImeTestApp>::new_in_place_with_fonts(
@@ -1436,7 +1518,7 @@ mod tests {
         let mut anims = liuli::core::time::AnimPool::new();
         let mut dmg = DamageSet::new();
         let screen = Rect::new(0, 0, 320, 480);
-        let lf4 = include_bytes!("../../../apps/liuli-alarms/assets/body.lf4");
+        let lf4 = liuli_settings::SETTINGS_LF4_BYTES;
         let fonts = liuli::text::FontSet::single(liuli::text::Lf4Font::from_bytes(lf4).unwrap());
         liuli::core::reconcile::reconcile_into(
             &draft,

@@ -6,7 +6,15 @@
 .word Fault
 .endr
 .word HAL_IncTick
-.rept 151
+.rept 9
+.word Fault
+.endr
+.if {touch_irq}
+.word EXTI3
+.else
+.word Fault
+.endif
+.rept 141
 .word Fault
 .endr
 
@@ -35,10 +43,12 @@ Reset:
     bl firmware_main
 .thumb_func
 Fault:
+.if {diagnostics}
     ldr r0, =0x24000000
     ldr r1, =0xBAD00001
     str r1, [r0, #4]
     ldr r2, =0xE000ED28
     ldr r3, [r2]
     str r3, [r0, #60]
+.endif
 5:  b 5b

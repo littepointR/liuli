@@ -4,10 +4,12 @@
 pub mod engine;
 mod scroll;
 pub mod storage;
-#[cfg(feature = "enhanced")]
+#[cfg(any(feature = "complex-text", feature = "multitouch"))]
 pub use liuli_enhanced as enhanced;
 
 pub use liuli_core as core;
+pub use liuli_core::component;
+pub use liuli_core::scene;
 pub use liuli_render as render;
 pub use liuli_text as text;
 
@@ -18,6 +20,7 @@ pub mod prelude {
     pub use embedded_graphics_core::geometry::{Point, Size};
     pub use embedded_graphics_core::pixelcolor::{PixelColor, Rgb565};
     pub use embedded_graphics_core::primitives::Rectangle;
+    pub use liuli_core::scene::{Scene, layout, scene};
 
     pub use liuli_core::animation::{
         Animation, CubicBezier, Curve, Keyframe, Keyframes, Playback, Repeat, StyleCurve, Timing,
@@ -66,6 +69,8 @@ pub mod prelude {
         GRADIENT_DIAGONAL, GRADIENT_HORIZONTAL, GRADIENT_VERTICAL, PaintOverride, PaintState,
         SceneResources, SliceSceneResources, TextId, WidgetCanvas,
     };
+    #[cfg(feature = "part-painters")]
+    pub use liuli_core::paint::{PaintPart, PartPainter};
     pub use liuli_core::part_style::{
         IconPosition, IndicatorLayout, IndicatorMotion, IndicatorShape, IndicatorSpan, LayoutExtra,
         LayoutMotion, PartMetrics, VisualState, WidgetPart, WidgetPartStyle,

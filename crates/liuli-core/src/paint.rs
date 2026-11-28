@@ -418,18 +418,49 @@ impl PaintCmd {
     }
 }
 
+/// Explicit zero discriminant keeps empty owned resources in .bss on MCU targets.
+#[cfg(feature = "owned-images")]
+#[repr(u8)]
+pub enum ResourceList<T> {
+    Empty,
+    Items(alloc::vec::Vec<T>),
+}
+#[cfg(feature = "owned-images")]
+impl<T> ResourceList<T> {
+    pub fn as_ref(&self) -> Option<&alloc::vec::Vec<T>> {
+        match self {
+            Self::Empty => None,
+            Self::Items(v) => Some(v),
+        }
+    }
+    pub fn as_mut(&mut self) -> Option<&mut alloc::vec::Vec<T>> {
+        match self {
+            Self::Empty => None,
+            Self::Items(v) => Some(v),
+        }
+    }
+    pub(crate) fn items(&mut self) -> &mut alloc::vec::Vec<T> {
+        if matches!(self, Self::Empty) {
+            *self = Self::Items(alloc::vec::Vec::new());
+        }
+        match self {
+            Self::Items(v) => v,
+            Self::Empty => unreachable!(),
+        }
+    }
+}
 pub struct CommandList {
-    has_masks: bool,
+    has_masks: [bool; (crate::capacity::MASKS && crate::capacity::MAX_EFFECTS > 0) as usize],
     pub effect_error_key: Option<crate::view::Key>,
     #[cfg(feature = "layers")]
-    pub layers: Option<alloc::vec::Vec<crate::layers::LayerCache>>,
+    pub layers: ResourceList<crate::layers::LayerCache>,
     #[cfg(feature = "layers")]
     pub layer_budget: Option<usize>,
     #[cfg(feature = "layers")]
     pub(crate) used_layers: u8,
 
     #[cfg(feature = "owned-images")]
-    surfaces: Option<alloc::vec::Vec<alloc::sync::Arc<crate::bitmap::OwnedBitmap>>>,
+    surfaces: ResourceList<alloc::sync::Arc<crate::bitmap::OwnedBitmap>>,
     pub cmds: [PaintCmd; MAX_COMMANDS],
     pub count: usize,
     pub root_bg: Rgb565,
@@ -438,12 +469,12 @@ pub struct CommandList {
 
 impl CommandList {
     pub const ZERO: Self = Self {
-        has_masks: false,
+        has_masks: [false; (crate::capacity::MASKS && crate::capacity::MAX_EFFECTS > 0) as usize],
         effect_error_key: None,
         #[cfg(feature = "owned-images")]
-        surfaces: None,
+        surfaces: ResourceList::Empty,
         #[cfg(feature = "layers")]
-        layers: None,
+        layers: ResourceList::Empty,
         #[cfg(feature = "layers")]
         layer_budget: None,
         #[cfg(feature = "layers")]
@@ -459,10 +490,10 @@ impl CommandList {
     }
 
     pub fn has_mask_groups(&self) -> bool {
-        self.has_masks
+        self.has_masks.first().copied().unwrap_or(false)
     }
     pub fn reset(&mut self) {
-        self.has_masks = false;
+        self.has_masks.fill(false);
         self.count = 0;
         self.effect_error_key = None;
         #[cfg(feature = "layers")]
@@ -470,7 +501,7 @@ impl CommandList {
             self.used_layers = 0;
         }
         #[cfg(feature = "owned-images")]
-        if let Some(v) = &mut self.surfaces {
+        if let Some(v) = self.surfaces.as_mut() {
             v.clear();
         }
     }
@@ -490,7 +521,8 @@ impl CommandList {
         #[cfg(feature = "layers")]
         {
             self.layers
-                .iter()
+                .as_ref()
+                .into_iter()
                 .flatten()
                 .filter(|l| l.group.borrow().reused)
                 .count()
@@ -572,7 +604,31 @@ impl CommandList {
         if self.count >= MAX_COMMANDS {
             return Err(BuildError::Commands);
         }
-        self.has_masks |= matches!(cmd, PaintCmd::MaskGroup { .. });
+        use crate::capacity::{ICONS, MASKS, MAX_SPARKLINES, SHADOWS};
+        match cmd {
+            PaintCmd::Icon {
+                kind: IconKind::Custom,
+                ..
+            } => return Err(BuildError::UnsupportedEffect),
+            PaintCmd::Icon { .. } if !ICONS => return Err(BuildError::UnsupportedEffect),
+            PaintCmd::Sparkline { .. } if MAX_SPARKLINES == 0 => {
+                return Err(BuildError::Sparklines);
+            }
+            PaintCmd::Shadow { .. }
+            | PaintCmd::WideRoundShadow { .. }
+            | PaintCmd::OutlineShadow { .. }
+                if !SHADOWS =>
+            {
+                return Err(BuildError::UnsupportedEffect);
+            }
+            PaintCmd::MaskGroup { .. } => {
+                if !MASKS || crate::capacity::MAX_EFFECTS == 0 {
+                    return Err(BuildError::UnsupportedEffect);
+                }
+                self.has_masks.fill(true);
+            }
+            _ => {}
+        }
         self.cmds[self.count] = cmd;
         self.count += 1;
         Ok(())
@@ -676,10 +732,35 @@ pub enum PaintOverride {
     Handled = 1,
 }
 
+/// Part bounds use the same local coordinates as the canvas. Moving strip
+/// indicators use the strip as their origin, including during retargeting.
+#[cfg(feature = "part-painters")]
+#[derive(Copy, Clone, Debug)]
+pub struct PaintPart {
+    pub role: crate::part_style::WidgetPart,
+    pub bounds: Rect,
+    pub color: Rgb565,
+    pub alpha: u8,
+}
+#[cfg(feature = "part-painters")]
+#[derive(Debug)]
+pub struct PartPainter(
+    pub fn(PaintPart, &StoredProps, &mut WidgetCanvas<'_>) -> Result<PaintOverride, BuildError>,
+);
+#[cfg(feature = "part-painters")]
+impl PartialEq for PartPainter {
+    fn eq(&self, rhs: &Self) -> bool {
+        core::ptr::eq(self, rhs)
+    }
+}
+#[cfg(feature = "part-painters")]
+impl Eq for PartPainter {}
+
 #[derive(Copy, Clone)]
 struct BuiltinPaintCtx<'a> {
     composition: Option<&'static crate::composition::SurfaceComposition>,
     node: &'a RetainedNode,
+    text: &'a crate::node::TextCache,
     anims: &'a AnimPool,
     focus: PaintFocusInfo,
     screen: Rect,
@@ -687,9 +768,77 @@ struct BuiltinPaintCtx<'a> {
     slot: u16,
     root_bg: Rgb565,
     in_tab_bar: bool,
+    state: PaintState,
 }
 
-const MAX_CLIP_DEPTH: usize = 4;
+impl<'a> BuiltinPaintCtx<'a> {
+    fn canvas<'b>(self, bounds: Rect, clip: Rect, commands: &'b mut CommandList) -> WidgetCanvas<'b>
+    where
+        'a: 'b,
+    {
+        let mut clip_stack = [Rect::ZERO; MAX_CLIP_DEPTH];
+        clip_stack[0] = bounds.intersect(clip);
+        WidgetCanvas {
+            bounds,
+            clip_stack,
+            clip_depth: 1,
+            commands,
+            pressed: self.state.pressed,
+            state: self.state,
+            slot: self.slot,
+            ctx: self,
+        }
+    }
+    #[inline]
+    #[allow(unused_variables)]
+    fn paint_part(
+        self,
+        role: crate::part_style::WidgetPart,
+        bounds: Rect,
+        clip: Rect,
+        color: Rgb565,
+        alpha: u8,
+        out: &mut CommandList,
+    ) -> Result<PaintOverride, BuildError> {
+        self.paint_part_at(self.node.layout_rect, role, bounds, clip, color, alpha, out)
+    }
+
+    #[inline]
+    #[allow(unused_variables, clippy::too_many_arguments)]
+    fn paint_part_at(
+        self,
+        origin: Rect,
+        role: crate::part_style::WidgetPart,
+        bounds: Rect,
+        clip: Rect,
+        color: Rgb565,
+        alpha: u8,
+        out: &mut CommandList,
+    ) -> Result<PaintOverride, BuildError> {
+        #[cfg(feature = "part-painters")]
+        if let Some(painter) = self.part.painter() {
+            let local = Rect::new(
+                bounds.x.saturating_sub(origin.x),
+                bounds.y.saturating_sub(origin.y),
+                bounds.w,
+                bounds.h,
+            );
+            return (painter.0)(
+                PaintPart {
+                    role,
+                    bounds: local,
+                    color,
+                    alpha,
+                },
+                &self.node.props,
+                &mut self.canvas(origin, clip, out),
+            );
+        }
+        Ok(PaintOverride::Default)
+    }
+}
+
+use crate::capacity::MAX_CLIP_DEPTH;
 
 /// Coordinates supplied to drawing methods are relative to the widget's `bounds`.
 pub struct WidgetCanvas<'a> {
@@ -745,13 +894,25 @@ impl WidgetCanvas<'_> {
         let clip = self.current_clip();
         paint_selection(
             self.commands,
-            self.ctx.part,
+            self.ctx,
             control,
             content,
             clip,
             self.ctx.node.props.accent,
             self.state.checked,
             selection_progress(self.ctx.node, self.ctx.anims),
+        )
+    }
+
+    #[cfg(feature = "part-painters")]
+    pub fn paint_part(&mut self, part: PaintPart) -> Result<PaintOverride, BuildError> {
+        self.ctx.paint_part(
+            part.role,
+            self.to_global(part.bounds),
+            self.current_clip(),
+            part.color,
+            part.alpha,
+            self.commands,
         )
     }
 
@@ -827,10 +988,7 @@ impl WidgetCanvas<'_> {
         if self.commands.count >= MAX_COMMANDS {
             return Err(BuildError::Commands);
         }
-        let surfaces = self
-            .commands
-            .surfaces
-            .get_or_insert_with(alloc::vec::Vec::new);
+        let surfaces = self.commands.surfaces.items();
         let index = surfaces.len() as u16;
         surfaces.push(source);
         self.commands.push(PaintCmd::Surface {
@@ -1549,10 +1707,10 @@ pub fn emit_commands_with_override(
                     anim_progress,
                 };
                 let root_bg = out.root_bg;
-                let init_clip = node.clip_rect.intersect(rect);
-                let clip_stack = [init_clip, Rect::ZERO, Rect::ZERO, Rect::ZERO];
                 let ctx = BuiltinPaintCtx {
                     composition: effect.composition,
+                    state,
+                    text: tree.text_cache(usize::from(frame.slot)),
                     node,
                     anims,
                     focus,
@@ -1567,17 +1725,20 @@ pub fn emit_commands_with_override(
                             .is_some_and(|i| tree.nodes[i].kind == NodeKind::TabBar),
                 };
                 out.effect_error_key = Some(node.key);
-                if node.kind == NodeKind::Custom || node.props.paint_mode() == PaintMode::Override {
-                    let mut canvas = WidgetCanvas {
-                        bounds: rect,
-                        clip_stack,
-                        clip_depth: 1,
-                        commands: out,
-                        pressed: node.pressed,
-                        state,
-                        slot: frame.slot,
-                        ctx,
-                    };
+                let handled = ctx.paint_part(
+                    crate::part_style::WidgetPart::Main,
+                    rect,
+                    node.clip_rect,
+                    resolve_state_fg(node, part),
+                    15,
+                    out,
+                )?;
+                if handled == PaintOverride::Handled {
+                    // The part renderer supplied the body. The strip decoration has its own hook.
+                } else if node.kind == NodeKind::Custom
+                    || node.props.paint_mode() == PaintMode::Override
+                {
+                    let mut canvas = ctx.canvas(rect, node.clip_rect, out);
                     if node.kind == NodeKind::Custom {
                         custom(node.key, &node.props, &mut canvas)?;
                     } else if override_cb(node.key, node.kind, &node.props, state, &mut canvas)?
@@ -1588,10 +1749,10 @@ pub fn emit_commands_with_override(
                 } else {
                     paint_builtin_node(ctx, out)?;
                 }
-                out.effect_error_key = None;
-                if node.kind == NodeKind::TabBar {
-                    paint_sliding_indicator(tree, node, anims, root_bg, out)?;
+                if crate::capacity::TAB_INDICATOR && node.kind == NodeKind::TabBar {
+                    paint_sliding_indicator(tree, ctx, out)?;
                 }
+                out.effect_error_key = None;
             }
 
             stack[top].stage = 1;
@@ -1845,17 +2006,17 @@ fn paint_builtin_node(ctx: BuiltinPaintCtx<'_>, out: &mut CommandList) -> Result
             let font = node.props.font();
             let text_style = node.props.text_style();
             let mut text_clip = clip;
-            if node.text_cache.valid {
-                let text_size = node.text_cache.size;
+            if ctx.text.valid {
+                let text_size = ctx.text.size;
                 if node.props.align_cross == Align::Center && inner.h > text_size.height {
                     text_y += ((inner.h - text_size.height) / 2) as i32;
                 } else if node.props.align_cross == Align::End && inner.h > text_size.height {
                     text_y += (inner.h - text_size.height) as i32;
                 }
-                if node.text_cache.align == align
-                    && (align == TextAlign::Start || node.text_cache.wrap_width == inner.w)
+                if ctx.text.align == align
+                    && (align == TextAlign::Start || ctx.text.wrap_width == inner.w)
                 {
-                    let mut rel_ink = node.text_cache.rel_ink;
+                    let mut rel_ink = ctx.text.rel_ink;
                     if text_style.underline() || text_style.strikethrough() {
                         rel_ink = rel_ink.union(Rect::new(
                             0,
@@ -1947,7 +2108,11 @@ struct ControlContent {
     bounds: Rect,
 }
 
-fn control_content(node: &RetainedNode, part: &WidgetPartStyle) -> ControlContent {
+fn control_content(
+    node: &RetainedNode,
+    part: &WidgetPartStyle,
+    text: &crate::node::TextCache,
+) -> ControlContent {
     let rect = node.layout_rect;
     let inner = rect.inset(
         node.props.padding.left as u32,
@@ -1968,16 +2133,8 @@ fn control_content(node: &RetainedNode, part: &WidgetPartStyle) -> ControlConten
     };
     let icon_pos = part.icon_pos().unwrap_or(IconPosition::Left);
     let icon_span = if has_icon { icon_sz + gap_w } else { 0 };
-    let text_w = if node.text_cache.valid {
-        node.text_cache.size.width
-    } else {
-        0
-    };
-    let text_h = if node.text_cache.valid {
-        node.text_cache.size.height
-    } else {
-        16
-    };
+    let text_w = if text.valid { text.size.width } else { 0 };
+    let text_h = if text.valid { text.size.height } else { 16 };
     let align = node.props.text_align();
 
     let (text_x, text_y, wrap_w, cmd_align, icon_pt) = match icon_pos {
@@ -2072,7 +2229,7 @@ fn paint_control_content(
     ctx: BuiltinPaintCtx<'_>,
     out: &mut CommandList,
 ) -> Result<(), BuildError> {
-    draw_control_content(ctx, control_content(ctx.node, ctx.part), out)
+    draw_control_content(ctx, control_content(ctx.node, ctx.part, ctx.text), out)
 }
 
 fn draw_control_content(
@@ -2091,25 +2248,36 @@ fn draw_control_content(
     let cmd_align = content.align;
     let font = node.props.font();
     if let Some(rect) = content.icon {
-        out.push(PaintCmd::Icon {
+        let color = ctx.part.icon_color().unwrap_or(fg_col);
+        if ctx.paint_part(
+            crate::part_style::WidgetPart::Icon,
             rect,
             clip,
-            kind: node.props.icon,
-            color: ctx.part.icon_color().unwrap_or(fg_col),
-        })?;
+            color,
+            15,
+            out,
+        )? == PaintOverride::Default
+        {
+            out.push(PaintCmd::Icon {
+                rect,
+                clip,
+                kind: node.props.icon,
+                color,
+            })?;
+        }
     }
     let text_style = node.props.text_style();
-    let text_clip = if node.text_cache.valid
-        && node.text_cache.align == cmd_align
-        && (cmd_align == TextAlign::Start || node.text_cache.wrap_width == wrap_w)
+    let text_clip = if ctx.text.valid
+        && ctx.text.align == cmd_align
+        && (cmd_align == TextAlign::Start || ctx.text.wrap_width == wrap_w)
     {
-        let mut rel_ink = node.text_cache.rel_ink;
+        let mut rel_ink = ctx.text.rel_ink;
         if text_style.underline() || text_style.strikethrough() {
             rel_ink = rel_ink.union(Rect::new(
                 0,
                 0,
-                node.text_cache.size.width.max(1),
-                node.text_cache.size.height.saturating_add(3),
+                ctx.text.size.width.max(1),
+                ctx.text.size.height.saturating_add(3),
             ));
         }
         clip.intersect(rel_ink.translate(text_x, text_y))

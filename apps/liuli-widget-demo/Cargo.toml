@@ -6,12 +6,16 @@ rust-version.workspace = true
 license.workspace = true
 description = "Interactive UI feature gallery and Spool recorder example for desktop, ESP32-S3 and STM32H743"
 
+[package.metadata.liuli]
+capacity-example = "widget-demo-capacity"
+
 [dependencies]
 liuli.workspace = true
 liuli-widgets = { version = "=1.0.0", path = "../../crates/liuli-widgets" }
 liuli-sim = { version = "=1.0.0", path = "../../host/liuli-sim", optional = true, default-features = false }
 
 [features]
+part-painters = ["liuli/part-painters"]
 desktop = ["dep:liuli-sim"]
 enhanced = ["liuli/enhanced"]
 
@@ -19,3 +23,10 @@ enhanced = ["liuli/enhanced"]
 name = "liuli-widget-demo"
 path = "src/main.rs"
 required-features = ["desktop"]
+
+[[example]]
+name = "widget-demo-capacity"
+required-features = ["liuli/scene-planner"]
+
+[dev-dependencies]
+liuli = { workspace = true, features = ["host-testing"] }

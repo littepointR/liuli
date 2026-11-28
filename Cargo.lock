@@ -244,6 +244,7 @@ name = "liuli-widgets"
 version = "1.0.0"
 dependencies = [
  "liuli",
+ "liuli-settings",
  "liuli-sim",
 ]
 

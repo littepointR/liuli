@@ -1,0 +1,7 @@
+[package]
+name = "product-controls"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+liuli = { version = "=1.0.0", path = "../../../crates/liuli", features = ["part-painters"] }

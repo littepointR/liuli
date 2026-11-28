@@ -30,34 +30,38 @@ impl App for I18nTestApp {
         Change::View
     }
 
-    fn view(model: &Self::Model, vb: &mut ViewBuilder<'_>) -> Result<(), BuildError> {
+    fn view(model: &Self::Model) -> impl Scene {
         let greet_tmpl = LocaleTable::resolve(LOCALES, model.locale, KEY_GREETING);
         let fallback = LocaleTable::resolve(LOCALES, model.locale, KEY_ONLY_EN);
         let plural_suffix = match plural_en(model.count) {
             PluralForm::One => "item",
             PluralForm::Other => "items",
         };
-        vb.root(Key(1), NodeProps::new().bg(Rgb565::new(0, 0, 0)), |ui| {
-            let txt = ui.text_fmt(format_args!(
-                "{} ({})",
-                TemplateDisplay::new(greet_tmpl, &[&model.name]),
-                plural_suffix
-            ))?;
-            ui.label(
-                Key(2),
-                NodeProps::new()
-                    .width(Length::Fill(1))
-                    .height(Length::Px(24))
-                    .text(txt),
-            )?;
-            ui.label(
-                Key(3),
-                NodeProps::new()
-                    .width(Length::Fill(1))
-                    .height(Length::Px(24))
-                    .text(TextRef::Static(fallback)),
-            )
-        })
+        layout(
+            Key(1),
+            NodeProps::new().bg(Rgb565::new(0, 0, 0)),
+            move |ui| {
+                let txt = ui.text_fmt(format_args!(
+                    "{} ({})",
+                    TemplateDisplay::new(greet_tmpl, &[&model.name]),
+                    plural_suffix
+                ))?;
+                ui.label(
+                    Key(2),
+                    NodeProps::new()
+                        .width(Length::Fill(1))
+                        .height(Length::Px(24))
+                        .text(txt),
+                )?;
+                ui.label(
+                    Key(3),
+                    NodeProps::new()
+                        .width(Length::Fill(1))
+                        .height(Length::Px(24))
+                        .text(TextRef::Static(fallback)),
+                )
+            },
+        )
     }
 }
 

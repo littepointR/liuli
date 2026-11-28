@@ -21,7 +21,9 @@ use liuli_core::time::{
     REPEAT_PERIOD_MS,
 };
 use liuli_core::view::{App, Change, Key, NodeKind, ViewBuilder};
-use liuli_render::{DisplaySink, DmaCoordinator, DmaSink};
+use liuli_render::DisplaySink;
+#[cfg(liuli_dma)]
+use liuli_render::{DmaCoordinator, DmaSink};
 use liuli_text::{FontCacheStats, FontProvider, FontSet, Lf4Font};
 
 use crate::storage::Storage;
@@ -93,6 +95,7 @@ impl<A: App, F: TextMeasurer> TextMeasurer for AppMeasure<'_, A, F> {
     }
 }
 
+#[cfg(liuli_dma)]
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 struct ActiveDma {
     session_token: u32,
@@ -120,16 +123,21 @@ pub struct Engine<'s, 'f, A: App, F: FontProvider + TextMeasurer = FontSet<'f>> 
     blend: fn(&mut [u16], Rgb565, u8),
     view_pending: bool,
     timer_pending_after_dma: bool,
-    animation_wake: NextWakeup,
+    animation_wake: [NextWakeup;
+        (liuli_core::capacity::SCROLL || liuli_core::capacity::MAX_ANIMATIONS > 0) as usize],
     scroll: crate::scroll::TouchScroll,
     last_build_error: Option<BuildError>,
     build_key: Option<Key>,
+    #[cfg(liuli_metrics)]
     last_metrics: FrameMetrics,
+    #[cfg(liuli_metrics)]
     pending_measured_nodes: u32,
     scene_version: u32,
+    #[cfg(liuli_dma)]
     next_dma_session: u32,
+    #[cfg(liuli_dma)]
     active_dma: Option<ActiveDma>,
-    #[cfg(feature = "enhanced")]
+    #[cfg(all(feature = "multitouch", liuli_pointer))]
     pair: liuli_enhanced::gestures::TouchPair,
     has_committed_once: bool,
     active_page: u8,
@@ -268,6 +276,7 @@ impl<'s, 'f, A: App> Engine<'s, 'f, A, FontSet<'f>> {
         Ok(status)
     }
 
+    #[cfg(liuli_dma)]
     pub fn poll_dma<'a, S>(
         &mut self,
         dma: &mut DmaCoordinator<'a>,
@@ -314,6 +323,12 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
         now: InstantMs,
         initial_focus: InitialFocusRing,
     ) -> Result<Self, BuildError> {
+        const {
+            assert!(
+                liuli_core::capacity::PLANNED || liuli_core::capacity::HOST_TESTING,
+                "applications must be built with their scene plan (tools/build-ui.py or the BSP build tool)"
+            );
+        }
         storage.init_in_place();
         storage.focus.ring_visible = initial_focus == InitialFocusRing::Visible;
         let _ = storage.clock.advance_to(now);
@@ -331,15 +346,20 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
             timer_pending_after_dma: false,
             last_build_error: None,
             build_key: None,
+            #[cfg(liuli_metrics)]
             last_metrics: FrameMetrics::default(),
+            #[cfg(liuli_metrics)]
             pending_measured_nodes: 0,
             scene_version: 0,
+            #[cfg(liuli_dma)]
             next_dma_session: 1,
+            #[cfg(liuli_dma)]
             active_dma: None,
-            #[cfg(feature = "enhanced")]
+            #[cfg(all(feature = "multitouch", liuli_pointer))]
             pair: Default::default(),
             has_committed_once: false,
-            animation_wake: NextWakeup::OnEvent,
+            animation_wake: [NextWakeup::OnEvent;
+                (liuli_core::capacity::SCROLL || liuli_core::capacity::MAX_ANIMATIONS > 0) as usize],
             scroll: crate::scroll::TouchScroll::default(),
             active_page,
             last_content_focus: None,
@@ -412,9 +432,9 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
         self.storage.clock.advance_to(now)?;
         self.fonts = fonts;
         let active_t_idx = self.storage.active_tree_idx as usize;
+        self.storage.trees[active_t_idx].invalidate_text_measurements();
         for node in &mut self.storage.trees[active_t_idx].nodes {
             if node.occupied {
-                node.text_cache = liuli_core::node::TextCache::ZERO;
                 node.dirty_measure = true;
                 node.dirty_paint = true;
             }
@@ -427,6 +447,9 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
 
     #[inline]
     fn record_present_metrics(&mut self, status: PresentStatus, m: &mut FrameMetrics) {
+        #[cfg(not(liuli_metrics))]
+        let _ = (status, m);
+        #[cfg(liuli_metrics)]
         match status {
             PresentStatus::Presented => {
                 m.measured_nodes = self.pending_measured_nodes;
@@ -455,7 +478,14 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
 
     #[inline]
     pub const fn is_dma_busy(&self) -> bool {
-        self.active_dma.is_some()
+        #[cfg(liuli_dma)]
+        {
+            self.active_dma.is_some()
+        }
+        #[cfg(not(liuli_dma))]
+        {
+            false
+        }
     }
 
     #[inline]
@@ -476,10 +506,7 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
     where
         Cb: FnOnce(&mut A::Model) -> R,
     {
-        if self.is_dma_busy() {
-            return Err(TransactionError::Busy(()));
-        }
-        Ok(f(&mut self.model))
+        Ok(f(self.try_model_mut()?))
     }
 
     #[inline]
@@ -509,17 +536,29 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
 
     #[inline]
     pub const fn pointer(&self) -> &PointerState {
-        &self.storage.pointer
+        self.storage.pointer_state()
     }
 
     #[inline]
     pub const fn repeat(&self) -> &RepeatState {
-        &self.storage.repeat
+        self.storage.repeat_state()
     }
 
     #[inline]
     pub const fn last_metrics(&self) -> FrameMetrics {
-        self.last_metrics
+        #[cfg(liuli_metrics)]
+        {
+            self.last_metrics
+        }
+        #[cfg(not(liuli_metrics))]
+        {
+            FrameMetrics {
+                measured_nodes: 0,
+                bands: 0,
+                pixels_sent: 0,
+                commands_replayed: 0,
+            }
+        }
     }
 
     #[inline]
@@ -566,7 +605,7 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
     }
 
     /// Pixel-buffer budget for each of the two transactional command lists.
-    #[cfg(feature = "enhanced")]
+    #[cfg(feature = "layers")]
     pub fn set_layer_budget(&mut self, bytes: usize) -> Result<(), TransactionError<()>> {
         if self.is_dma_busy() {
             return Err(TransactionError::Busy(()));
@@ -632,14 +671,14 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
                 now,
             );
         }
-        #[cfg(feature = "enhanced")]
+        #[cfg(all(feature = "multitouch", liuli_pointer))]
         let previous = self.pair.owner().and_then(|id| {
             let tree = self.storage.active_tree();
             tree.is_id_valid(id)
                 .then(|| (id, tree.nodes[id.slot() as usize].key, self.active_page))
         });
         self.commit_view_once(now)?;
-        #[cfg(feature = "enhanced")]
+        #[cfg(all(feature = "multitouch", liuli_pointer))]
         if let Some((id, key, page)) = previous {
             let tree = self.storage.active_tree();
             let still_eligible = self.active_page == page
@@ -664,25 +703,28 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
     fn sync_animations(&mut self, now: InstantMs, advance: bool) -> bool {
         let tree = &self.storage.trees[self.storage.active_tree_idx as usize];
         let (mut changed, mut wake) = self.scroll.sample::<A>(tree, &mut self.model, now, advance);
-        A::animations(&mut self.model, &mut |key, animation| {
-            let due = animation.next_wakeup(now);
-            if due == NextWakeup::OnEvent {
-                return;
-            }
-            if tree.node_by_key(key).is_some() {
-                let ready = due == NextWakeup::Now || matches!(due, NextWakeup::At(t) if t <= now);
-                let next = if advance && ready {
-                    changed |= animation.advance(now);
-                    animation.next_wakeup(now)
-                } else {
-                    due
-                };
-                wake = wake.earlier(next);
-            } else if !advance {
-                animation.cancel(now);
-            }
-        });
-        self.animation_wake = wake;
+        if liuli_core::capacity::MAX_ANIMATIONS != 0 {
+            A::animations(&mut self.model, &mut |key, animation| {
+                let due = animation.next_wakeup(now);
+                if due == NextWakeup::OnEvent {
+                    return;
+                }
+                if tree.node_by_key(key).is_some() {
+                    let ready =
+                        due == NextWakeup::Now || matches!(due, NextWakeup::At(t) if t <= now);
+                    let next = if advance && ready {
+                        changed |= animation.advance(now);
+                        animation.next_wakeup(now)
+                    } else {
+                        due
+                    };
+                    wake = wake.earlier(next);
+                } else if !advance {
+                    animation.cancel(now);
+                }
+            });
+        }
+        self.animation_wake.fill(wake);
         changed
     }
 
@@ -690,7 +732,7 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
     #[inline(never)]
     fn build_draft(&mut self) -> Result<(), BuildError> {
         let mut vb = ViewBuilder::new(&mut self.storage.draft);
-        if let Err(err) = A::view(&self.model, &mut vb) {
+        if let Err(err) = liuli_core::scene::Scene::build(A::view(&self.model), &mut vb) {
             self.build_key = vb.operation_key();
             self.view_pending = true;
             self.last_build_error = Some(err);
@@ -753,8 +795,8 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
         self.storage.cand_anims.copy_from(&self.storage.anims);
         let mut cand_focus = self.storage.focus;
         cand_focus.remember_panel_focus(&self.storage.trees[active_t_idx]);
-        let mut cand_pointer = self.storage.pointer;
-        let mut cand_repeat = self.storage.repeat;
+        let mut cand_pointer = *self.storage.pointer_state();
+        let mut cand_repeat = *self.storage.repeat_state();
         self.storage.cand_damage.clear();
 
         let focused_slot = cand_focus.focused_slot(&self.storage.trees[active_t_idx]);
@@ -926,7 +968,7 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
         cand_tree.accept_style_targets(focus_info.focused_slot.filter(|_| focus_info.ring_visible));
         active_tree.expand_effect_damage(&mut self.storage.cand_damage, self.screen);
         cand_tree.expand_effect_damage(&mut self.storage.cand_damage, self.screen);
-        #[cfg(feature = "enhanced")]
+        #[cfg(feature = "layers")]
         liuli_core::layers::reuse_groups(
             &mut self.storage.cmds,
             active_c_idx,
@@ -938,8 +980,6 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
         self.storage.active_cmd_idx = cand_c_idx as u8;
         self.storage.anims.copy_from(&self.storage.cand_anims);
         self.storage.focus = cand_focus;
-        self.storage.pointer = cand_pointer;
-        self.storage.repeat = cand_repeat;
         self.scroll.did_commit::<A>(
             &mut self.model,
             active_tree,
@@ -947,16 +987,21 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
             page_switched,
             outcome.revealed_tab_bars,
         );
+        self.storage.set_pointer(cand_pointer);
+        self.storage.set_repeat(cand_repeat);
         for &r in self.storage.cand_damage.as_slice() {
             self.storage.damage.add(r, self.screen);
         }
         self.storage.cand_damage.clear();
         self.view_pending = false;
         self.last_build_error = None;
-        self.pending_measured_nodes = self
-            .pending_measured_nodes
-            .saturating_add(outcome.measured_nodes);
-        self.last_metrics.measured_nodes = self.pending_measured_nodes;
+        #[cfg(liuli_metrics)]
+        {
+            self.pending_measured_nodes = self
+                .pending_measured_nodes
+                .saturating_add(outcome.measured_nodes);
+            self.last_metrics.measured_nodes = self.pending_measured_nodes;
+        }
         self.scene_version = self.scene_version.wrapping_add(1);
         self.has_committed_once = true;
         self.active_page = new_page;
@@ -1003,11 +1048,12 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
             editing: self.storage.focus.editing,
         };
         self.storage.cand_anims.copy_from(&self.storage.anims);
+        let capture = self.storage.pointer_state().capture;
         tree.sync_style_motion(
             &mut self.storage.cand_anims,
             self.storage.clock.last().unwrap_or_default(),
             focus_info.focused_slot.filter(|_| focus_info.ring_visible),
-            self.storage.pointer.capture,
+            capture,
         );
         tree.sync_press_depth(
             &mut self.storage.cand_anims,
@@ -1028,7 +1074,7 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
             self.last_build_error = Some(err);
             return Err(err);
         }
-        #[cfg(feature = "enhanced")]
+        #[cfg(feature = "layers")]
         liuli_core::layers::reuse_groups(&mut self.storage.cmds, active_c_idx, tree, tree);
         self.storage.anims.copy_from(&self.storage.cand_anims);
         self.storage.trees[active_t_idx]
@@ -1072,8 +1118,8 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
         saved_scroll_y: &[i32; MAX_NODES],
     ) {
         self.storage.focus = saved_focus;
-        self.storage.pointer = saved_pointer;
-        self.storage.repeat = saved_repeat;
+        self.storage.set_pointer(saved_pointer);
+        self.storage.set_repeat(saved_repeat);
         self.last_content_focus = saved_last_content_focus;
         let tree = &mut self.storage.trees[active_t_idx];
         let mut scroll_changed_mask = NodeMask::ZERO;
@@ -1145,8 +1191,19 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
             return Err(TransactionError::WentBackwards);
         }
 
+        if !liuli_core::capacity::POINTER
+            && matches!(
+                input,
+                RawInput::PointerDown { .. }
+                    | RawInput::PointerMove { .. }
+                    | RawInput::PointerUp { .. }
+                    | RawInput::PointerCancel { .. }
+            )
+        {
+            return Ok(false);
+        }
         let active_t_idx = self.storage.active_tree_idx as usize;
-        #[cfg(feature = "enhanced")]
+        #[cfg(all(feature = "multitouch", liuli_pointer))]
         {
             use liuli_enhanced::gestures::Delivery;
             let tree = self.storage.active_tree();
@@ -1174,12 +1231,13 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
                     let key = tree.nodes[id.slot() as usize].key;
                     if gesture.phase == liuli_core::input::GesturePhase::Begin {
                         self.scroll.stop::<A>(&mut self.model);
+                        #[cfg(liuli_pointer)]
                         self.storage.pointer.clear(
                             &mut self.storage.trees[active_t_idx],
                             &mut self.storage.damage,
                             self.screen,
                         );
-                        self.storage.repeat.clear();
+                        self.storage.set_repeat(RepeatState::ZERO);
                         self.reemit_commands_inner()?;
                     }
                     if let Some(msg) = A::on_transform(&self.model, key, gesture) {
@@ -1194,8 +1252,8 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
             }
         }
         let saved_focus = self.storage.focus;
-        let saved_pointer = self.storage.pointer;
-        let saved_repeat = self.storage.repeat;
+        let saved_pointer = *self.storage.pointer_state();
+        let saved_repeat = *self.storage.repeat_state();
         let saved_last_content_focus = self.last_content_focus;
         let suppress_pointer_up_action = matches!(
             (input, saved_repeat.source),
@@ -1217,14 +1275,19 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
 
         let saved_scroll = self.scroll;
         if matches!(input, RawInput::PointerDown { .. }) && saved_pointer.active_id().is_none() {
-            self.scroll.pressed_at = now;
+            self.scroll.set_pressed_at(now);
         } else if matches!(input, RawInput::Nav(_)) && saved_pointer.active_id().is_none() {
             self.scroll.stop::<A>(&mut self.model);
         }
+        #[cfg(not(liuli_pointer))]
+        let mut no_pointer = PointerState::ZERO;
         let (consumed, action, pointer_ev) = dispatch_input_with_scroll(
             &mut self.storage.trees[active_t_idx],
             &mut self.storage.focus,
+            #[cfg(liuli_pointer)]
             &mut self.storage.pointer,
+            #[cfg(not(liuli_pointer))]
+            &mut no_pointer,
             input,
             self.screen,
             &mut self.storage.cand_damage,
@@ -1236,8 +1299,10 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
 
         let cur_tree = &self.storage.trees[active_t_idx];
         let interrupt_at = match input {
-            RawInput::PointerDown { id, .. } if self.storage.pointer.active_id() == Some(id) => {
-                self.storage.pointer.captured_slot()
+            RawInput::PointerDown { id, .. }
+                if self.storage.pointer_state().active_id() == Some(id) =>
+            {
+                self.storage.pointer_state().captured_slot()
             }
             RawInput::Nav(_) => self.storage.focus.focused_slot(cur_tree),
             _ => None,
@@ -1255,10 +1320,11 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
                 controller.set_offset(node.scroll_y - origin);
             }
         }
+        #[cfg(liuli_repeat)]
         match input {
             RawInput::PointerDown { id, .. } => {
-                if self.storage.pointer.active_id() == Some(id) {
-                    let target_id = match self.storage.pointer.capture {
+                if self.storage.pointer_state().active_id() == Some(id) {
+                    let target_id = match self.storage.pointer_state().capture {
                         CaptureKind::Button(id)
                         | CaptureKind::ScrollCandidate { candidate: id, .. }
                         | CaptureKind::CustomPointer { id, .. } => Some(id),
@@ -1293,7 +1359,7 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
                         is_valid_repeat_target(
                             cur_tree,
                             &self.storage.focus,
-                            &self.storage.pointer,
+                            self.storage.pointer_state(),
                             &self.storage.repeat,
                         ) && pointer_hits_id_in_scope(cur_tree, self.storage.repeat.target_id, pos);
                     if !valid {
@@ -1532,12 +1598,13 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
             }
         }
 
+        #[cfg(liuli_repeat)]
         if self.storage.repeat.is_active() && now >= self.storage.repeat.next_fire_ms {
             let active_t_idx = self.storage.active_tree_idx as usize;
             if !is_valid_repeat_target(
                 &self.storage.trees[active_t_idx],
                 &self.storage.focus,
-                &self.storage.pointer,
+                self.storage.pointer_state(),
                 &self.storage.repeat,
             ) {
                 self.storage.repeat.clear();
@@ -1624,7 +1691,10 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
                         self.storage.damage.add(node.visible_rect, self.screen);
                         self.storage.trees[active_t_idx]
                             .expand_effect_damage(&mut self.storage.damage, self.screen);
-                        self.storage.pointer.capture = CaptureKind::None;
+                        #[cfg(liuli_pointer)]
+                        {
+                            self.storage.pointer.capture = CaptureKind::None;
+                        }
                         self.storage.repeat.clear();
                         self.reemit_commands_inner()?;
                         any_change = true;
@@ -1653,6 +1723,9 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
             }
         }
 
+        if !self.storage.anims.has_active() {
+            return build_err.map_or(Ok(any_change), |err| Err(TransactionError::Build(err)));
+        }
         self.storage.cand_anims.copy_from(&self.storage.anims);
         self.storage.cand_damage.clear();
         let anim_changed = self.storage.cand_anims.advance(now, |dirty| {
@@ -1684,14 +1757,14 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
                 self.last_build_error = Some(err);
                 return Err(TransactionError::Build(err));
             }
-            #[cfg(feature = "enhanced")]
+            #[cfg(feature = "layers")]
             liuli_core::layers::reuse_groups(&mut self.storage.cmds, active_c_idx, tree, tree);
             self.storage.active_cmd_idx = cand_c_idx as u8;
             self.scene_version = self.scene_version.wrapping_add(1);
             self.storage.anims.copy_from(&self.storage.cand_anims);
             self.flush_cand_damage();
             any_change = true;
-        } else if self.storage.anims.has_active() {
+        } else {
             // Quantized and stepped curves may sample the same value for many frames.
             self.storage.anims.copy_from(&self.storage.cand_anims);
         }
@@ -1720,13 +1793,18 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
             return NextWakeup::Now;
         }
         let anim_wake = self.storage.anims.next_wakeup(now);
-        let repeat_wake = self.storage.repeat.next_wakeup(now);
+        let repeat_wake = self.storage.repeat_state().next_wakeup(now);
         let app_wake = match A::next_deadline(&self.model, now) {
             Some(t) if t <= now => NextWakeup::Now,
             Some(t) => NextWakeup::At(t),
             None => NextWakeup::OnEvent,
         };
-        let managed = match self.animation_wake {
+        let managed = match self
+            .animation_wake
+            .first()
+            .copied()
+            .unwrap_or(NextWakeup::OnEvent)
+        {
             NextWakeup::At(due) if due <= now => NextWakeup::Now,
             wake => wake,
         };
@@ -1772,13 +1850,22 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
         sink: &mut S,
         scratch: &mut [u16],
     ) -> Result<PresentStatus, liuli_render::sync::FrameError<S::Error, F::Error>> {
+        self.present_with_accel(sink, scratch, &mut liuli_render::SoftAccel)
+    }
+
+    pub fn present_with_accel<S: DisplaySink + ?Sized>(
+        &mut self,
+        sink: &mut S,
+        scratch: &mut [u16],
+        accel: &mut impl liuli_render::DrawAccel,
+    ) -> Result<PresentStatus, liuli_render::sync::FrameError<S::Error, F::Error>> {
         if self.is_dma_busy() {
             return Err(PresentError::DmaBusy.into());
         }
         let active_t_idx = self.storage.active_tree_idx as usize;
         let active_c_idx = self.storage.active_cmd_idx as usize;
 
-        let (status, mut m) = liuli_render::sync::present_sink_with_blend(
+        let (status, mut m) = liuli_render::sync::present_sink_with_accel(
             sink,
             scratch,
             self.screen,
@@ -1791,6 +1878,7 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
             self.blend,
             #[cfg(not(feature = "platform-blend"))]
             liuli_render::raster::blend_solid,
+            accel,
         )?;
         self.record_present_metrics(status, &mut m);
         Ok(status)
@@ -1839,10 +1927,23 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
         Ok(status)
     }
 
+    #[cfg(liuli_dma)]
     pub fn poll_dma_with_provider<'a, S>(
         &mut self,
         dma: &mut DmaCoordinator<'a>,
         sink: &mut S,
+    ) -> Result<PresentStatus, liuli_render::sync::FrameError<S::Error, F::Error>>
+    where
+        S: DmaSink<'a>,
+    {
+        self.poll_dma_with_accel(dma, sink, &mut liuli_render::SoftAccel)
+    }
+    #[cfg(liuli_dma)]
+    pub fn poll_dma_with_accel<'a, S>(
+        &mut self,
+        dma: &mut DmaCoordinator<'a>,
+        sink: &mut S,
+        accel: &mut impl liuli_render::DrawAccel,
     ) -> Result<PresentStatus, liuli_render::sync::FrameError<S::Error, F::Error>>
     where
         S: DmaSink<'a>,
@@ -1882,12 +1983,13 @@ impl<'s, 'f, A: App, F: FontProvider + TextMeasurer> Engine<'s, 'f, A, F> {
         let active_t_idx = self.storage.active_tree_idx as usize;
         let active_c_idx = self.storage.active_cmd_idx as usize;
 
-        let step_res = dma.step_with_provider(
+        let step_res = dma.step_with_accel(
             sink,
             &self.storage.cmds[active_c_idx],
             &mut self.storage.damage,
             &self.storage.trees[active_t_idx],
             &self.fonts,
+            accel,
         );
         if !dma.is_active() {
             self.active_dma = None;
@@ -1904,10 +2006,9 @@ mod tests {
     use liuli_core::geometry::{Point, Rect};
     use liuli_core::input::{PointerId, RawInput, UiAction};
     use liuli_core::node::RetainedTree;
+    use liuli_core::scene::{Scene, layout};
     use liuli_core::time::{AnimPool, AnimProp, InstantMs, NextWakeup};
-    use liuli_core::view::{
-        App, Change, Key, Length, NodeKind, NodeProps, SlotLink, StoredProps, ViewBuilder,
-    };
+    use liuli_core::view::{App, Change, Key, Length, NodeKind, NodeProps, SlotLink, StoredProps};
     use liuli_text::Lf4Font;
 
     use super::Engine;
@@ -1931,12 +2032,12 @@ mod tests {
             Change::View
         }
 
-        fn view(model: &Self::Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildError> {
+        fn view(model: &Self::Model) -> impl Scene {
             let mut root_p = NodeProps::new();
             root_p.width = Length::Fill(1);
             root_p.height = Length::Fill(1);
 
-            out.root(Key(1), root_p, |ui| {
+            layout(Key(1), root_p, move |ui| {
                 let mut scroll_p = NodeProps::new();
                 scroll_p.width = Length::Fill(1);
                 scroll_p.height = Length::Px(60);

@@ -220,6 +220,7 @@ def main():
     p.add_argument("--speed",type=int,default=100,help="SWD speed in kHz")
     p.add_argument("--flash",type=Path,help="write and verify the Widget Demo internal-flash binary")
     p.add_argument("--ram-writer", action="store_true", help="use the bundled ST HAL flash writer via pylink-square")
+    p.add_argument("--diagnostics", action="store_true", help="verify the optional boot mailbox after flashing")
     p.add_argument("--compare",type=Path,help="compare scanout with --panel-frames directory from a fresh boot")
     p.add_argument("--raw-scanout", action="store_true", help="read uncompressed framebuffer memory during --compare")
     p.add_argument("--probe-api", action="store_true", help="poll frame acknowledgements and double-read snapshot blocks with pylink-square")
@@ -234,6 +235,7 @@ def main():
                    help="compare the cold-start, navigation and touch header against the desktop demo")
     p.add_argument("--strip-fling", nargs=2, type=Path, metavar=("TRACE", "SCANOUT"),
                    help="replay h743-strip-fling.trace, sample the moving card after release and compare the settled pane")
+    p.add_argument("--touch-wakeup", type=Path, metavar="ELF", help="verify idle I2C and EXTI3 wake with the installed IRQ firmware")
     args=p.parse_args()
     if args.speed <= 0:
         p.error("--speed must be a positive SWD frequency in kHz")
@@ -256,10 +258,18 @@ def main():
             else:
                 c.commands(["r","h","loadbin widget.bin,0x08000000","verifybin widget.bin,0x08000000"],
                            transfer_bytes=2*len(image))
-            v=c.boot_report()
-            print(f"boot verified, front={v[3]:#x}, first/last update={v[4]} pixels, touch ID={v[6]:#x}")
+            if args.diagnostics or any((args.compare, args.depth_scroll, args.motion_gallery, args.themed_motion,
+                                       args.widget_samples, args.startup_focus, args.strip_fling)):
+                v=c.boot_report()
+                print(f"boot verified, front={v[3]:#x}, first/last update={v[4]} pixels, touch ID={v[6]:#x}")
+            else:
+                c.commands(["r","g"])
+                print("flash verified; running the application")
         if args.compare:
             compare(c,args.compare,args.raw_scanout,uid if args.probe_api else None)
+        if args.touch_wakeup:
+            from probe import touch_wakeup
+            touch_wakeup(c, uid, args.touch_wakeup)
         if args.depth_scroll:
             from probe import depth_scroll
             depth_scroll(c, uid, *args.depth_scroll)

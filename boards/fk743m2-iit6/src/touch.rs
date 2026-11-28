@@ -81,6 +81,7 @@ fn access(address: u8, reg: u16, read: &mut [u8]) -> Result<(), ()> {
 
 pub struct Touch {
     addr: u8,
+    #[cfg(feature = "diagnostics")]
     pub product: u32,
     width: u16,
     height: u16,
@@ -124,8 +125,11 @@ impl Touch {
                 continue;
             }
             access(addr, 0x814e, &mut [])?;
+            #[cfg(feature = "touch-irq")]
+            crate::touch_irq::enable();
             return Ok(Self {
                 addr,
+                #[cfg(feature = "diagnostics")]
                 product: u32::from_le_bytes(id[..4].try_into().unwrap()),
                 width,
                 height,
@@ -133,6 +137,9 @@ impl Touch {
             });
         }
         Err(())
+    }
+    pub fn active(&self) -> bool {
+        self.tracker.active_count() != 0
     }
     fn sample(&self) -> Result<Option<([TouchPoint; 16], usize)>, ()> {
         let mut status = [0];

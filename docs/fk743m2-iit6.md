@@ -62,7 +62,7 @@ Spool 增强档共 31 个检查点，覆盖三个主区、上下级页面切换�
 在解压后的 SDK 中，先用 `--studio` 构建用于此组检查点的固件。两个后端可共用同一档位的桌面参考帧。
 
 ~~~sh
-cargo run --locked --offline --release --manifest-path liuli-widget-demo/Cargo.toml --no-default-features --features desktop -- --size 800x480 --panel-frames target/fk743-frames-basic
+python tools/build-ui.py --locked --offline --app liuli-widget-demo/Cargo.toml --app-features desktop --action run -- --release --bin liuli-widget-demo -- --size 800x480 --panel-frames target/fk743-frames-basic
 python boards/fk743m2-iit6/build.py --offline --backend embassy --profile basic --studio --out target/fk743-studio-basic
 python boards/fk743m2-iit6/jlink.py --speed 12000 --ram-writer --probe-api --flash target/fk743-studio-basic/widget-demo.bin --compare target/fk743-frames-basic
 ~~~
@@ -76,9 +76,18 @@ python boards/fk743m2-iit6/jlink.py --speed 12000 --ram-writer --probe-api --fla
 同一条 800 × 480 轨迹会按住屏幕，把顶部卡片完全滑出，再沿原路滑回。桌面回放逐帧比较增量与整屏绘制。实板工具按每次提交的确认序号注入轨迹坐标，在四个位置读回完整扫描缓冲区，与桌面输出逐字节比较。触摸由工具产生，板上的时钟用于帧耗时测量。
 
 ~~~sh
-cargo build --offline --locked --release -p liuli-widget-demo --features desktop,enhanced
+python tools/build-ui.py --app apps/liuli-widget-demo/Cargo.toml --app-features desktop,enhanced --action build --locked --offline -- --bin liuli-widget-demo --release
 target/release/liuli-widget-demo --studio --size 800x480 --replay apps/liuli-widget-demo/tests/fixtures/h743-depth-scroll.trace
 python boards/fk743m2-iit6/jlink.py --speed 12000 --depth-scroll apps/liuli-widget-demo/tests/fixtures/h743-depth-scroll.trace target/release/liuli-widget-demo
 ~~~
 
 Windows 把桌面程序路径写为 `target/release/liuli-widget-demo.exe`。在含本次修复的离线 SDK 中，使用 `liuli-widget-demo/tests/fixtures/h743-depth-scroll.trace` 和 `tools/bin/` 下的桌面程序，板上运行同一构建的增强版 Widget Demo。工具在卡片接近顶部与完全隐藏时分别取中位数，两组相差超过 18 ms（约一个面板刷新周期）、检测到 LTDC 欠载或传输错误、扫描像素不匹配时均会报错。
+
+## 生产与调试配置
+
+`build.py --touch-irq` 在 PG3 启用 GT911 的 EXTI3。触点活动期间继续采样至抬起。默认以 4 ms 为间隔轮询，`--touch-poll-ms` 接受 1 到 1000 ms。两个后端都优先服务更早的 UI 截止时间。HAL 等待时使用 WFI，SysTick 维持毫秒时钟。Embassy 使用 TIM5 和任务唤醒。
+
+普通烧录按写后校验结果启动程序。需要在烧录后读取诊断邮箱时，给 jlink.py 添加 `--diagnostics`，像素对照命令会自动核对邮箱。自行编译用于 SWD 自动输入、计数和截图的固件时添加 `--diagnostics`。SDK 内预编译的测试镜像已经启用。生产配置释放测试邮箱和截图保留区。板级 DMA2D 由显示驱动管理。
+
+
+实板空闲验收可运行 `jlink.py --speed 12000 --touch-wakeup target/fk743-irq/widget-demo.elf`。工具要求已安装的镜像与 ELF 完整匹配，使用 pylink-square 和 llvm-nm，在 500 ms 静止期间监测触摸总线，再触发一次 EXTI3 软件中断，核对执行到达中断入口及 GT911 读事务并复位。该测试覆盖唤醒与分发；物理 INT 电气时序需单独测量。

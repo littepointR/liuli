@@ -1382,7 +1382,7 @@ fn reference_range_with_source<S: SimTextSource>(
                     };
 
                 match kind {
-                    IconKind::None => {}
+                    IconKind::None | IconKind::Custom => {}
                     IconKind::ChevronRight => {
                         draw_line(&mut clipped, 4, 3, 10, 7, stroke);
                         draw_line(&mut clipped, 10, 7, 4, 11, stroke);

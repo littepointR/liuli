@@ -1,5 +1,6 @@
 use embedded_graphics::draw_target::DrawTarget;
 use embedded_graphics::pixelcolor::Rgb565;
+use liuli_core::capacity::FrameCounters;
 use liuli_core::capacity::{FrameMetrics, PresentError, PresentStatus};
 use liuli_core::damage::DamageSet;
 use liuli_core::geometry::{Rect, u16_to_rgb565};
@@ -151,13 +152,13 @@ where
     }
 
     let target_bb = Rect::from_eg(target.bounding_box());
-    let mut metrics = FrameMetrics::default();
+    let mut metrics = FrameCounters::default();
 
     let bands = BandIter::new(damage.as_slice(), screen, configured_band_h, scratch.len())?;
 
     for band_rect in bands {
         let mut band_target = BandTarget::new(scratch, band_rect)?;
-        metrics.commands_replayed = metrics.commands_replayed.saturating_add(
+        metrics.replayed(
             render_band_with_pixels(&mut band_target, cmds, resources, fonts, blend, glyphs)
                 .map_err(|err| match err {
                     crate::raster::GlyphReadError::Source(e) => FrameError::Font(e),
@@ -191,10 +192,7 @@ where
             return Err(PresentError::Target(err).into());
         }
 
-        metrics.bands += 1;
-        metrics.pixels_sent = metrics
-            .pixels_sent
-            .saturating_add((vis_w as u32).saturating_mul(vis_h as u32));
+        metrics.sent((vis_w as u32).saturating_mul(vis_h as u32));
     }
 
     if let Err(err) = finish(target) {
@@ -203,7 +201,7 @@ where
     }
 
     damage.clear();
-    Ok((PresentStatus::Presented, metrics))
+    Ok((PresentStatus::Presented, metrics.snapshot()))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -233,13 +231,13 @@ where
 
     fonts.begin_frame();
     let target_bb = Rect::from_eg(target.bounding_box());
-    let mut metrics = FrameMetrics::default();
+    let mut metrics = FrameCounters::default();
 
     let bands = BandIter::new(damage.as_slice(), screen, configured_band_h, scratch.len())?;
 
     for band_rect in bands {
         let mut band_target = BandTarget::new(scratch, band_rect)?;
-        metrics.commands_replayed = metrics.commands_replayed.saturating_add(
+        metrics.replayed(
             render_band_with_provider(&mut band_target, cmds, resources, fonts, blend)
                 .map_err(FrameError::Font)?,
         );
@@ -268,10 +266,7 @@ where
             return Err(PresentError::Target(err).into());
         }
 
-        metrics.bands += 1;
-        metrics.pixels_sent = metrics
-            .pixels_sent
-            .saturating_add((vis_w as u32).saturating_mul(vis_h as u32));
+        metrics.sent((vis_w as u32).saturating_mul(vis_h as u32));
     }
 
     if let Err(err) = finish(target) {
@@ -280,7 +275,7 @@ where
     }
 
     damage.clear();
-    Ok((PresentStatus::Presented, metrics))
+    Ok((PresentStatus::Presented, metrics.snapshot()))
 }
 
 /// Presents damaged bands into any bus-agnostic [`DisplaySink`] using `fonts`.
@@ -329,6 +324,37 @@ where
     S: DisplaySink + ?Sized,
     R: SceneResources + ?Sized,
 {
+    present_sink_with_accel(
+        sink,
+        scratch,
+        screen,
+        configured_band_h,
+        cmds,
+        damage,
+        resources,
+        fonts,
+        blend,
+        &mut crate::accel::SoftAccel,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn present_sink_with_accel<S, R, F: FontProvider>(
+    sink: &mut S,
+    scratch: &mut [u16],
+    screen: Rect,
+    configured_band_h: u32,
+    cmds: &CommandList,
+    damage: &mut DamageSet,
+    resources: &R,
+    fonts: &F,
+    blend: impl Fn(&mut [u16], Rgb565, u8) + Copy,
+    accel: &mut impl crate::accel::DrawAccel,
+) -> Result<(PresentStatus, FrameMetrics), FrameError<S::Error, F::Error>>
+where
+    S: DisplaySink + ?Sized,
+    R: SceneResources + ?Sized,
+{
     if damage.is_empty() {
         return Ok((PresentStatus::Idle, FrameMetrics::default()));
     }
@@ -337,14 +363,21 @@ where
     }
 
     fonts.begin_frame();
-    let mut metrics = FrameMetrics::default();
+    let mut metrics = FrameCounters::default();
     let bands = BandIter::new(damage.as_slice(), screen, configured_band_h, scratch.len())?;
 
     for band_rect in bands {
         let mut band_target = BandTarget::new(scratch, band_rect)?;
-        metrics.commands_replayed = metrics.commands_replayed.saturating_add(
-            render_band_with_provider(&mut band_target, cmds, resources, fonts, blend)
-                .map_err(FrameError::Font)?,
+        metrics.replayed(
+            crate::raster::render_band_with_provider_accel(
+                &mut band_target,
+                cmds,
+                resources,
+                fonts,
+                blend,
+                accel,
+            )
+            .map_err(FrameError::Font)?,
         );
 
         if let Err(err) = sink.flush_rect(band_rect, band_target.words()) {
@@ -352,10 +385,7 @@ where
             return Err(PresentError::Target(err).into());
         }
 
-        metrics.bands += 1;
-        metrics.pixels_sent = metrics
-            .pixels_sent
-            .saturating_add(band_rect.w.saturating_mul(band_rect.h));
+        metrics.sent(band_rect.w.saturating_mul(band_rect.h));
     }
 
     if let Err(err) = sink.finish_frame() {
@@ -364,7 +394,7 @@ where
     }
 
     damage.clear();
-    Ok((PresentStatus::Presented, metrics))
+    Ok((PresentStatus::Presented, metrics.snapshot()))
 }
 
 /// Presents damaged bands of a [`FontSet`] into a [`DisplaySink`] using a custom [`GlyphPixels`] source.
@@ -392,12 +422,12 @@ where
         return Err(PresentError::BufferTooSmall.into());
     }
 
-    let mut metrics = FrameMetrics::default();
+    let mut metrics = FrameCounters::default();
     let bands = BandIter::new(damage.as_slice(), screen, configured_band_h, scratch.len())?;
 
     for band_rect in bands {
         let mut band_target = BandTarget::new(scratch, band_rect)?;
-        metrics.commands_replayed = metrics.commands_replayed.saturating_add(
+        metrics.replayed(
             render_band_with_pixels(&mut band_target, cmds, resources, fonts, blend, glyphs)
                 .map_err(|err| match err {
                     crate::raster::GlyphReadError::Source(e) => FrameError::Font(e),
@@ -412,10 +442,7 @@ where
             return Err(PresentError::Target(err).into());
         }
 
-        metrics.bands += 1;
-        metrics.pixels_sent = metrics
-            .pixels_sent
-            .saturating_add(band_rect.w.saturating_mul(band_rect.h));
+        metrics.sent(band_rect.w.saturating_mul(band_rect.h));
     }
 
     if let Err(err) = sink.finish_frame() {
@@ -424,5 +451,5 @@ where
     }
 
     damage.clear();
-    Ok((PresentStatus::Presented, metrics))
+    Ok((PresentStatus::Presented, metrics.snapshot()))
 }

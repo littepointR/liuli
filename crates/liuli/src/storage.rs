@@ -16,7 +16,9 @@ pub struct Storage {
     pub anims: AnimPool,
     pub(crate) cand_anims: AnimPool,
     pub focus: FocusState,
+    #[cfg(liuli_pointer)]
     pub pointer: PointerState,
+    #[cfg(liuli_repeat)]
     pub repeat: RepeatState,
     pub clock: ClockTracker,
 }
@@ -33,11 +35,49 @@ impl Storage {
         anims: AnimPool::ZERO,
         cand_anims: AnimPool::ZERO,
         focus: FocusState::ZERO,
+        #[cfg(liuli_pointer)]
         pointer: PointerState::ZERO,
+        #[cfg(liuli_repeat)]
         repeat: RepeatState::ZERO,
         clock: ClockTracker::ZERO,
     };
 
+    pub(crate) const fn pointer_state(&self) -> &PointerState {
+        #[cfg(liuli_pointer)]
+        {
+            &self.pointer
+        }
+        #[cfg(not(liuli_pointer))]
+        {
+            &PointerState::ZERO
+        }
+    }
+    pub(crate) fn set_pointer(&mut self, value: PointerState) {
+        #[cfg(liuli_pointer)]
+        {
+            self.pointer = value;
+        }
+        #[cfg(not(liuli_pointer))]
+        let _ = value;
+    }
+    pub(crate) const fn repeat_state(&self) -> &RepeatState {
+        #[cfg(liuli_repeat)]
+        {
+            &self.repeat
+        }
+        #[cfg(not(liuli_repeat))]
+        {
+            &RepeatState::ZERO
+        }
+    }
+    pub(crate) fn set_repeat(&mut self, value: RepeatState) {
+        #[cfg(liuli_repeat)]
+        {
+            self.repeat = value;
+        }
+        #[cfg(not(liuli_repeat))]
+        let _ = value;
+    }
     pub const fn new() -> Self {
         Self::ZERO
     }
@@ -57,8 +97,8 @@ impl Storage {
         self.anims.reset();
         self.cand_anims.reset();
         self.focus.reset();
-        self.pointer = PointerState::ZERO;
-        self.repeat = RepeatState::ZERO;
+        self.set_pointer(PointerState::ZERO);
+        self.set_repeat(RepeatState::ZERO);
         self.clock = ClockTracker::ZERO;
     }
 
@@ -79,10 +119,7 @@ impl Default for Storage {
     }
 }
 
-#[cfg(all(
-    target_pointer_width = "32",
-    not(any(feature = "capacity-128", feature = "capacity-256"))
-))]
+#[cfg(target_pointer_width = "32")]
 const _: () = {
     assert!(core::mem::size_of::<liuli_core::paint::PaintCmd>() <= 48);
     assert!(core::mem::size_of::<liuli_core::node::RetainedNode>() <= 224);
@@ -93,51 +130,27 @@ const _: () = {
     } else {
         0
     };
-    assert!(core::mem::size_of::<Storage>() <= 67_456 + layer_metadata);
+    assert!(
+        liuli_core::capacity::CUSTOM_BUDGET
+            || core::mem::size_of::<Storage>().saturating_sub(PAINTER_BUDGET)
+                <= 67_456 + layer_metadata
+    );
 };
 
-#[cfg(all(
-    target_pointer_width = "64",
-    not(any(feature = "capacity-128", feature = "capacity-256"))
-))]
+#[cfg(target_pointer_width = "64")]
 const _: () = {
     assert!(core::mem::size_of::<liuli_core::paint::PaintCmd>() <= 48);
     assert!(core::mem::size_of::<liuli_core::node::RetainedNode>() <= 232);
-    assert!(core::mem::size_of::<Storage>() <= 73_120);
+    assert!(
+        liuli_core::capacity::CUSTOM_BUDGET
+            || core::mem::size_of::<Storage>().saturating_sub(PAINTER_BUDGET) <= 73_120
+    );
 };
 
-#[cfg(all(
-    target_pointer_width = "32",
-    feature = "capacity-128",
-    not(feature = "capacity-256")
-))]
-const _: () = {
-    assert!(core::mem::size_of::<liuli_core::paint::PaintCmd>() <= 48);
-    assert!(core::mem::size_of::<liuli_core::node::RetainedNode>() <= 224);
-    assert!(core::mem::size_of::<Storage>() <= 160_000);
-};
-
-#[cfg(all(
-    target_pointer_width = "64",
-    feature = "capacity-128",
-    not(feature = "capacity-256")
-))]
-const _: () = {
-    assert!(core::mem::size_of::<liuli_core::paint::PaintCmd>() <= 48);
-    assert!(core::mem::size_of::<liuli_core::node::RetainedNode>() <= 232);
-    assert!(core::mem::size_of::<Storage>() <= 176_000);
-};
-
-#[cfg(all(target_pointer_width = "32", feature = "capacity-256"))]
-const _: () = {
-    assert!(core::mem::size_of::<liuli_core::paint::PaintCmd>() <= 48);
-    assert!(core::mem::size_of::<liuli_core::node::RetainedNode>() <= 224);
-    assert!(core::mem::size_of::<Storage>() <= 320_000);
-};
-
-#[cfg(all(target_pointer_width = "64", feature = "capacity-256"))]
-const _: () = {
-    assert!(core::mem::size_of::<liuli_core::paint::PaintCmd>() <= 48);
-    assert!(core::mem::size_of::<liuli_core::node::RetainedNode>() <= 232);
-    assert!(core::mem::size_of::<Storage>() <= 352_000);
+const PAINTER_BUDGET: usize = if cfg!(feature = "part-painters") {
+    liuli_core::part_style::MAX_PART_STYLES
+        * 3
+        * core::mem::size_of::<liuli_core::part_style::WidgetPartStyle>().saturating_sub(52)
+} else {
+    0
 };

@@ -29,19 +29,19 @@ impl App for Fixture {
         Change::View
     }
 
-    fn view(model: &Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildError> {
+    fn view(model: &Model) -> impl Scene {
         let fill = NodeProps {
             width: Length::Fill(1),
             height: Length::Fill(1),
             ..NodeProps::new()
         };
-        out.root(
+        layout(
             Key(1),
             NodeProps {
                 theme_id: model.revision,
                 ..fill
             },
-            |ui| {
+            move |ui| {
                 ui.stack(Key(2), fill, |layers| {
                     layers.button(Key(11), Theme::DARK.control())?;
                     // A transparent overlay mistakenly claims hits meant for button 11.
@@ -53,9 +53,11 @@ impl App for Fixture {
                         },
                     )
                 })?;
-                for i in 0..model.extra_rows {
-                    ui.label(Key(100 + i), NodeProps::new())?;
-                }
+                ui.show(liuli::component::Bounded::<8>::rows(
+                    Key(100),
+                    0..model.extra_rows,
+                    |i| liuli::component::leaf(Key(100 + i), NodeKind::Label, NodeProps::new),
+                ))?;
                 Ok(())
             },
         )
@@ -71,6 +73,13 @@ impl App for Fixture {
 }
 
 fn main() -> Result<(), String> {
+    #[cfg(feature = "scene-planner")]
+    if std::env::var_os("LIULI_PRINT_CAPACITY").is_some() {
+        let d =
+            liuli::scene::capacity::<Fixture>(&Model::default()).map_err(|e| format!("{e:?}"))?;
+        println!("liuli-capacity-v1 {} {} {}", d.nodes, d.depth, d.text_slots);
+        return Ok(());
+    }
     let font = Lf4Font::from_bytes(include_bytes!("../assets/body.lf4"))
         .map_err(|err| format!("{err:?}"))?;
     let mut storage = Storage::new();
@@ -103,7 +112,10 @@ fn main() -> Result<(), String> {
         .message(InstantMs(2), Message::Overflow, true)
         .unwrap_err();
     let (page, key, cause) = app.engine().build_failure().unwrap();
-    assert_eq!((page, key, cause), (7, Some(Key(160)), BuildError::Nodes));
+    assert_eq!(
+        (page, key, cause),
+        (7, Some(Key(100)), BuildError::ItemLimit)
+    );
     assert_eq!(app.snapshot().frame_id, id);
     println!("{error}");
     app.recover(InstantMs(3), |model| model.extra_rows = 1)?;

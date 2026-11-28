@@ -165,7 +165,7 @@ impl App for SettingsApp {
         }
     }
 
-    fn view(model: &Self::Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildError> {
+    fn view(model: &Self::Model) -> impl Scene {
         let t = Self::theme(model);
 
         let mut root_p = NodeProps::new();
@@ -174,7 +174,7 @@ impl App for SettingsApp {
         root_p.bg = Some(t.bg);
         root_p.theme_id = t.id;
 
-        out.root(keys::ROOT, root_p, |ui| {
+        layout(keys::ROOT, root_p, move |ui| {
             let mut stack_p = NodeProps::new();
             stack_p.width = Length::Fill(1);
             stack_p.height = Length::Fill(1);
@@ -338,7 +338,7 @@ impl App for SettingsApp {
                 })?;
 
                 // 4. Optional Modal
-                if model.reset_modal_open {
+                if ui.optional(model.reset_modal_open) {
                     let mut modal_p = NodeProps::new();
                     modal_p.width = Length::Fill(1);
                     modal_p.height = Length::Fill(1);

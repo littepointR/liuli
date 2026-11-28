@@ -3,12 +3,17 @@ use crate::geometry::{Rect, Rgb565, Size};
 use crate::view::Key;
 
 /// Maximum distinct part styles per scene. Identical styles share one entry.
-pub const MAX_PART_STYLES: usize = 12;
-const _: () = assert!(MAX_PART_STYLES <= 15 && MAX_NODES <= u8::MAX as usize);
+pub use crate::capacity::MAX_PART_STYLES;
+const _: () = assert!(MAX_NODES <= u8::MAX as usize);
 
 /// Maximum per-node layout offsets / custom revisions per scene graph.
-pub const MAX_LAYOUT_EXTRAS: usize = 12;
+pub use crate::capacity::MAX_LAYOUT_EXTRAS;
 
+const BINDING_BYTES: usize = match MAX_PART_STYLES {
+    0 => 0,
+    1..=15 => MAX_NODES.div_ceil(2),
+    _ => MAX_NODES,
+};
 /// Logical sub-parts of built-in widgets that can be styled independently.
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Default)]
 #[repr(u8)]
@@ -20,6 +25,8 @@ pub enum WidgetPart {
     Knob = 3,
     Content = 4,
     FocusRing = 5,
+    Icon = 6,
+    Custom(u32),
 }
 
 /// The selection decoration occupies the control or follows its measured content.
@@ -163,6 +170,8 @@ pub struct PartMetrics {
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct WidgetPartStyle {
     pub present: u32,
+    #[cfg(feature = "part-painters")]
+    painter: Option<&'static crate::paint::PartPainter>,
     pub track_color: Rgb565,
     pub track_border_color: Rgb565,
     pub indicator_color: Rgb565,
@@ -206,11 +215,14 @@ impl Default for WidgetPartStyle {
     }
 }
 
+#[cfg(not(feature = "part-painters"))]
 const _: () = assert!(core::mem::size_of::<WidgetPartStyle>() <= 52);
 
 impl WidgetPartStyle {
     pub const ZERO: Self = Self {
         present: 0,
+        #[cfg(feature = "part-painters")]
+        painter: None,
         track_color: Rgb565::new(0, 0, 0),
         track_border_color: Rgb565::new(0, 0, 0),
         indicator_color: Rgb565::new(0, 0, 0),
@@ -306,6 +318,21 @@ impl WidgetPartStyle {
     }
 
     #[inline]
+    /// Install a static renderer shared by every instance using this style.
+    #[cfg(feature = "part-painters")]
+    pub const fn with_painter(
+        mut self,
+        painter: Option<&'static crate::paint::PartPainter>,
+    ) -> Self {
+        self.present |= 1 << 28;
+        self.painter = painter;
+        self
+    }
+    #[cfg(feature = "part-painters")]
+    pub(crate) const fn painter(&self) -> Option<&'static crate::paint::PartPainter> {
+        self.painter
+    }
+
     pub const fn is_empty(&self) -> bool {
         self.present == 0
     }
@@ -764,6 +791,10 @@ impl WidgetPartStyle {
             return self;
         }
         self.present |= p;
+        #[cfg(feature = "part-painters")]
+        if p & (1 << 28) != 0 {
+            self.painter = over.painter;
+        }
         if p & HAS_INDICATOR_LAYOUT != 0 {
             self.indicator_geometry = over.indicator_geometry;
         }
@@ -855,30 +886,44 @@ impl WidgetPartStyle {
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct PartStyles {
-    bindings: [u8; MAX_NODES.div_ceil(2)],
+    bindings: [u8; BINDING_BYTES],
     styles: [WidgetPartStyle; MAX_PART_STYLES],
     references: [u8; MAX_PART_STYLES],
 }
 
 impl PartStyles {
     pub const EMPTY: Self = Self {
-        bindings: [0; MAX_NODES.div_ceil(2)],
+        bindings: [0; BINDING_BYTES],
         styles: [WidgetPartStyle::ZERO; MAX_PART_STYLES],
         references: [0; MAX_PART_STYLES],
     };
 
     #[inline]
     fn id(&self, node: usize) -> u8 {
-        (self.bindings[node / 2] >> ((node % 2) * 4)) & 15
+        match MAX_PART_STYLES {
+            0 => 0,
+            1..=15 => (self.bindings[node / 2] >> ((node % 2) * 4)) & 15,
+            _ => self.bindings[node],
+        }
     }
 
     fn bind(&mut self, node: usize, id: u8) {
+        if MAX_PART_STYLES == 0 {
+            return;
+        }
+        if MAX_PART_STYLES > 15 {
+            self.bindings[node] = id;
+            return;
+        }
         let shift = (node % 2) * 4;
         let packed = &mut self.bindings[node / 2];
         *packed = (*packed & !(15 << shift)) | (id << shift);
     }
 
     pub(crate) fn copy_from_draft(&mut self, draft: &Self, slots: &[u8]) {
+        if MAX_PART_STYLES == 0 {
+            return;
+        }
         self.styles = draft.styles;
         self.references = draft.references;
         self.bindings.fill(0);
@@ -1066,26 +1111,26 @@ impl PackedLayoutExtra {
 pub struct LayoutExtras {
     keys: [Key; MAX_LAYOUT_EXTRAS],
     items: [PackedLayoutExtra; MAX_LAYOUT_EXTRAS],
-    len: u8,
+    len: [u8; (MAX_LAYOUT_EXTRAS != 0) as usize],
 }
 
 impl LayoutExtras {
     pub const EMPTY: Self = Self {
         keys: [Key(0); MAX_LAYOUT_EXTRAS],
         items: [PackedLayoutExtra::new(LayoutExtra::ZERO); MAX_LAYOUT_EXTRAS],
-        len: 0,
+        len: [0; (MAX_LAYOUT_EXTRAS != 0) as usize],
     };
 
     #[inline]
     pub fn get(&self, key: Key) -> LayoutExtra {
-        self.keys[..usize::from(self.len)]
+        self.keys[..usize::from(self.len.first().copied().unwrap_or(0))]
             .iter()
             .position(|&k| k == key)
             .map_or(LayoutExtra::ZERO, |i| self.items[i].unpack())
     }
 
     fn upsert(&mut self, key: Key, f: impl FnOnce(&mut LayoutExtra)) -> Result<(), BuildError> {
-        let used = usize::from(self.len);
+        let used = usize::from(self.len.first().copied().unwrap_or(0));
         if let Some(i) = self.keys[..used].iter().position(|&k| k == key) {
             let mut value = self.items[i].unpack();
             f(&mut value);
@@ -1097,10 +1142,12 @@ impl LayoutExtras {
         if next.is_zero() {
             return Ok(());
         }
-        let entry = self.items.get_mut(used).ok_or(BuildError::Effects)?;
+        let entry = self.items.get_mut(used).ok_or(BuildError::LayoutExtras)?;
         self.keys[used] = key;
         *entry = PackedLayoutExtra::new(next);
-        self.len += 1;
+        if let Some(n) = self.len.first_mut() {
+            *n += 1;
+        }
         Ok(())
     }
 

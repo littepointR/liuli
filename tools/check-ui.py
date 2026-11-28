@@ -13,6 +13,16 @@ def run(*args):
     subprocess.run(args, cwd=ROOT, check=True)
 
 
+def planned(app, action, features=None, example=None):
+    command = [sys.executable, str(ROOT/"tools/build-ui.py"), "--app", str(app/"Cargo.toml"),
+               "--offline", "--locked", "--action", action]
+    if features:
+        command += ["--app-features", features]
+    if example:
+        command += ["--plan-example", example]
+    return [*command, "--", "--release"]
+
+
 def check(screenshots):
     packaged = (ROOT / "vendor").is_dir() and (ROOT / "liuli-alarms").is_dir()
     apps = ROOT if packaged else ROOT / "apps"
@@ -24,8 +34,7 @@ def check(screenshots):
         exe = ".exe" if os.name == "nt" else ""
         demo = [str(ROOT / "tools/bin" / ("liuli-widget-demo" + exe))]
     else:
-        demo = ["cargo", "run", "--offline", "--locked", "--release", "--manifest-path",
-                str(catalog / "Cargo.toml"), "--features", "desktop,enhanced", "--"]
+        demo = [*planned(catalog, "run", "desktop,enhanced"), "--bin", "liuli-widget-demo", "--"]
     if screenshots:
         run(*demo, "--studio", "--screenshots", str(screenshots.resolve()))
     else:
@@ -47,9 +56,8 @@ def check(screenshots):
         "--test", "showcase", "--test", "composition", "--test", "geometry")
     run("cargo", "test", "--offline", "--locked", "--release", "--manifest-path", manifest,
         "--all-features", "--tests")
-    example = ["cargo", "run", "--offline", "--locked", "--manifest-path", manifest, "--example"]
-    run(*example, "diagnostics")
-    editor = [*example, "editor", "--features", "enhanced", "--"]
+    run(*planned(alarms, "run", example="diagnostics"), "--example", "diagnostics")
+    editor = [*planned(alarms, "run", "enhanced", "editor"), "--example", "editor", "--"]
     run(*editor, str(catalog/"assets/Arabic.ttf"), str(catalog/"assets/Devanagari.ttf"), "--headless")
     run(*editor, "--replay", str(ROOT/"docs/hardware/rc1-browser-ime.trace"))
     with TemporaryDirectory() as directory:
@@ -58,7 +66,7 @@ def check(screenshots):
             str(fixtures/"s3-long-press.serial.gz"), "--out", str(exported))
         if exported.read_text(encoding="ascii") != (fixtures/"s3-long-press.trace").read_text(encoding="ascii"):
             raise ValueError("exported board trace differs from the regression fixture")
-        run(*example, "preview", "--", str(alarms/"assets/body.lf4"), "--replay", str(exported))
+        run(*planned(alarms, "run"), "--example", "preview", "--", str(alarms/"assets/body.lf4"), "--replay", str(exported))
     print("UI regressions passed", flush=True)
 
 

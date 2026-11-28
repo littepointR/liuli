@@ -33,7 +33,7 @@ pub trait App {
     type Msg;
 
     fn update(model: &mut Self::Model, msg: Self::Msg, now: InstantMs) -> Change;
-    fn view(model: &Self::Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildError>;
+    fn view(model: &Self::Model) -> impl crate::scene::Scene;
     fn on_action(model: &Self::Model, event: UiAction) -> Option<Self::Msg>;
 
     /// Visit model-owned animations, including inactive ones. The engine advances them,
@@ -333,24 +333,17 @@ impl EdgeInsets {
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Default)]
-#[repr(u8)]
-pub enum FontId {
-    #[default]
-    Body16 = 0,
-    Small12 = 1,
-    Title20 = 2,
-    Display28 = 3,
-}
+#[repr(transparent)]
+pub struct FontId(pub u8);
 
+#[allow(non_upper_case_globals)]
 impl FontId {
-    #[inline]
+    pub const Body16: Self = Self(0);
+    pub const Small12: Self = Self(1);
+    pub const Title20: Self = Self(2);
+    pub const Display28: Self = Self(3);
     pub const fn from_raw(raw: u8) -> Self {
-        match raw & 0b11 {
-            1 => Self::Small12,
-            2 => Self::Title20,
-            3 => Self::Display28,
-            _ => Self::Body16,
-        }
+        Self(raw)
     }
 }
 
@@ -490,6 +483,8 @@ pub enum IconKind {
     Gauge = 9,
     Waveform = 10,
     Diagnostics = 11,
+    /// Reserves the standard icon slot for a part painter.
+    Custom = 12,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Default)]
@@ -596,6 +591,10 @@ pub enum NodeKind {
 }
 
 impl NodeKind {
+    pub(crate) const fn uses_text_slot(self) -> bool {
+        matches!(self, Self::Label | Self::Button | Self::Tab)
+    }
+
     pub const fn scrolls_x(self) -> bool {
         matches!(self, Self::ScrollX | Self::TabBar)
     }
@@ -1269,6 +1268,7 @@ pub struct StoredProps {
     pub overlay_color: Rgb565,
     pub overlay_alpha: u8,
     pub text_style_raw: u8,
+    extended_font: [FontId; (crate::capacity::FONT_SLOTS > 4) as usize],
     pub letter_spacing: i8,
     pub line_spacing: i8,
     pub geometry: Option<&'static crate::composition::WidgetGeometry>,
@@ -1312,6 +1312,7 @@ impl StoredProps {
         overlay_color: Rgb565::new(0, 0, 0),
         overlay_alpha: 0,
         text_style_raw: 0,
+        extended_font: [FontId::Body16; (crate::capacity::FONT_SLOTS > 4) as usize],
         letter_spacing: 0,
         line_spacing: 0,
         geometry: None,
@@ -1375,7 +1376,7 @@ impl StoredProps {
             .with_strikethrough(p.strikethrough)
             .with_gamma(p.text_gamma)
             .with_subpixel(p.subpixel);
-        let text_style_raw = (text_style_flags.0 & 0x3F) | (((p.font as u8) & 0x03) << 6);
+        let text_style_raw = (text_style_flags.0 & 63) | ((p.font.0 & 3) << 6);
         flags |= ((p.text_align as u16) << TEXT_ALIGN_SHIFT) & TEXT_ALIGN_MASK;
         if p.anim_easing as u8 & 1 != 0 {
             flags |= FLAG_EASE_OUT_CUBIC;
@@ -1418,6 +1419,7 @@ impl StoredProps {
             overlay_color: p.overlay_color,
             overlay_alpha: p.overlay_alpha,
             text_style_raw,
+            extended_font: [p.font; (crate::capacity::FONT_SLOTS > 4) as usize],
             letter_spacing: p.letter_spacing,
             line_spacing: p.line_spacing,
             geometry: p.geometry,
@@ -1509,7 +1511,11 @@ impl StoredProps {
 
     #[inline]
     pub const fn font(&self) -> FontId {
-        FontId::from_raw(self.text_style_raw >> 6)
+        if let Some(id) = self.extended_font.first() {
+            *id
+        } else {
+            FontId(self.text_style_raw >> 6)
+        }
     }
 
     #[inline]
@@ -1731,13 +1737,17 @@ impl SparklineData {
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct SparklinePool {
     pub slots: [SparklineData; MAX_SPARKLINES],
-    pub count: u8,
+    count: [u8; (MAX_SPARKLINES != 0) as usize],
 }
 
 impl SparklinePool {
+    pub fn count(&self) -> u8 {
+        self.count.first().copied().unwrap_or(0)
+    }
+
     pub const ZERO: Self = Self {
         slots: [SparklineData::ZERO; MAX_SPARKLINES],
-        count: 0,
+        count: [0; (MAX_SPARKLINES != 0) as usize],
     };
 
     pub const fn new() -> Self {
@@ -1745,14 +1755,14 @@ impl SparklinePool {
     }
 
     pub fn reset(&mut self) {
-        self.count = 0;
+        self.count.fill(0);
         for slot in &mut self.slots {
             slot.len = 0;
         }
     }
 
     pub fn push_slice(&mut self, samples: &[i16]) -> Result<u8, BuildError> {
-        let idx = self.count as usize;
+        let idx = usize::from(self.count());
         if idx >= MAX_SPARKLINES {
             return Err(BuildError::Sparklines);
         }
@@ -1761,26 +1771,30 @@ impl SparklinePool {
         let slot = &mut self.slots[idx];
         slot.samples[..tail.len()].copy_from_slice(tail);
         slot.len = tail.len() as u8;
-        self.count += 1;
+        if let Some(n) = self.count.first_mut() {
+            *n += 1;
+        }
         Ok(idx as u8)
     }
 
     pub fn push_ring<const N: usize>(&mut self, ring: &SampleRing<N>) -> Result<u8, BuildError> {
-        let idx = self.count as usize;
+        let idx = usize::from(self.count());
         if idx >= MAX_SPARKLINES {
             return Err(BuildError::Sparklines);
         }
         let slot = &mut self.slots[idx];
         let copied = ring.copy_ordered(&mut slot.samples);
         slot.len = copied as u8;
-        self.count += 1;
+        if let Some(n) = self.count.first_mut() {
+            *n += 1;
+        }
         Ok(idx as u8)
     }
 
     #[inline]
     pub fn slice(&self, series: u8) -> &[i16] {
         let idx = series as usize;
-        if idx < self.count as usize && idx < MAX_SPARKLINES {
+        if idx < usize::from(self.count()) && idx < MAX_SPARKLINES {
             self.slots[idx].as_slice()
         } else {
             &[]
@@ -1928,9 +1942,12 @@ impl Write for DraftTextWriter<'_> {
 }
 
 pub struct ViewBuilder<'a> {
+    #[cfg(all(feature = "scene-planner", not(target_os = "none")))]
+    pub(crate) choices: Option<&'a mut crate::scene::Choices>,
     draft: &'a mut ViewDraft,
     stack: [SlotLink; MAX_DEPTH],
     depth: usize,
+    text_count: usize,
     first_error: Option<BuildError>,
     operation_key: Option<Key>,
 }
@@ -1975,6 +1992,103 @@ pub struct Children<'a, 'b> {
 }
 
 impl<'a, 'b> Children<'a, 'b> {
+    /// Mount a bounded component in a scoped layout. Its entire declared shape
+    /// contributes to the plan even when no rows are currently mounted.
+    pub fn show<C: crate::component::Component>(&mut self, child: C) -> Result<(), BuildError> {
+        #[cfg(all(feature = "scene-planner", not(target_os = "none")))]
+        if self.builder.choices.is_some() {
+            let start = self.builder.draft.count as usize;
+            let choices = self.builder.choices.take();
+            let result = child.render(self);
+            self.builder.choices = choices;
+            result?;
+            let added = &self.builder.draft.nodes[start..usize::from(self.builder.draft.count)];
+            let texts = added.iter().filter(|n| n.kind.uses_text_slot()).count();
+            let bound = C::DEMAND;
+            let extra = &mut self.builder.choices.as_mut().unwrap().reserved;
+            extra.nodes += bound
+                .nodes
+                .checked_sub(added.len())
+                .expect("component exceeded its node declaration");
+            extra.text_slots += bound
+                .text_slots
+                .checked_sub(texts)
+                .expect("component exceeded its text declaration");
+            extra.depth = extra.depth.max(self.builder.depth + bound.depth);
+            return Ok(());
+        }
+        child.render(self)
+    }
+    /// Select from a finite set of layout variants. The host planner visits each variant.
+    #[inline]
+    pub fn variant<T: Copy>(&mut self, selected: T, _domain: &[T]) -> T {
+        self.variant_with(selected, _domain.len(), |i| _domain[i])
+    }
+    /// Select a layout declared in a table without copying its contents.
+    #[inline]
+    pub fn variant_with<T>(
+        &mut self,
+        selected: T,
+        _count: usize,
+        _at: impl FnOnce(usize) -> T,
+    ) -> T {
+        #[cfg(all(feature = "scene-planner", not(target_os = "none")))]
+        if let Some(choices) = self.builder.choices.as_mut() {
+            assert!(_count > 0, "empty layout domain");
+            return _at(choices.select(_count));
+        }
+        selected
+    }
+
+    /// Include an optional subtree when calculating the maximum live view.
+    #[inline]
+    pub fn optional(&self, present: bool) -> bool {
+        self.for_capacity(present, true)
+    }
+
+    /// Use the business maximum during planning and the current value when rendering.
+    #[inline]
+    pub fn for_capacity<T>(&self, current: T, _maximum: T) -> T {
+        #[cfg(all(feature = "scene-planner", not(target_os = "none")))]
+        if self.builder.choices.is_some() {
+            return _maximum;
+        }
+        current
+    }
+    pub(crate) fn branch<F>(
+        &mut self,
+        key: Key,
+        kind: NodeKind,
+        props: NodeProps,
+        f: F,
+    ) -> Result<(), BuildError>
+    where
+        F: FnOnce(&mut Children<'a, '_>) -> Result<(), BuildError>,
+    {
+        self.builder.scoped_container(key, kind, props, f)
+    }
+
+    pub(crate) fn single_node(
+        &mut self,
+        key: Key,
+        build: impl FnOnce(&mut Self) -> Result<(), BuildError>,
+    ) -> Result<(), BuildError> {
+        let first = self.builder.draft.count;
+        build(self)?;
+        if self.builder.draft.count != first + 1
+            || self.builder.draft.nodes[first as usize].key != key
+        {
+            self.builder.operation_key = Some(key);
+            return Err(self.builder.fail(BuildError::InvalidKind));
+        }
+        Ok(())
+    }
+
+    pub fn business_limit(&mut self, key: Key) -> BuildError {
+        self.builder.operation_key = Some(key);
+        self.builder.fail(BuildError::ItemLimit)
+    }
+
     #[inline]
     fn ensure_key(&mut self, key: Key) -> Result<(), BuildError> {
         let b = &mut self.builder;
@@ -2296,9 +2410,12 @@ impl<'a> ViewBuilder<'a> {
     pub fn new(draft: &'a mut ViewDraft) -> Self {
         draft.reset();
         Self {
+            #[cfg(all(feature = "scene-planner", not(target_os = "none")))]
+            choices: None,
             draft,
             stack: [SlotLink::NONE; MAX_DEPTH],
             depth: 0,
+            text_count: 0,
             first_error: None,
             operation_key: None,
         }
@@ -2488,6 +2605,9 @@ impl<'a> ViewBuilder<'a> {
         kind: NodeKind,
         props: &NodeProps,
     ) -> Result<SlotLink, BuildError> {
+        if crate::capacity::FONT_SLOTS <= 4 && props.font.0 >= 4 {
+            return Err(self.fail(BuildError::InvalidRange));
+        }
         if self.depth >= MAX_DEPTH {
             return Err(self.fail(BuildError::Depth));
         }
@@ -2525,10 +2645,27 @@ impl<'a> ViewBuilder<'a> {
             }
         }
 
+        if crate::capacity::MAX_TEXT_SLOTS < MAX_NODES && kind.uses_text_slot() {
+            if self.text_count == crate::capacity::MAX_TEXT_SLOTS {
+                return Err(self.fail(BuildError::TextSlots));
+            }
+            self.text_count += 1;
+        }
         let parent_link = if self.depth > 0 {
             let p_link = self.stack[self.depth - 1];
             if let Some(p_idx) = p_link.get() {
                 let pk = self.draft.nodes[p_idx].kind;
+                if pk == NodeKind::CustomContainer {
+                    let mut child = self.draft.nodes[p_idx].first_child;
+                    let mut count = 0;
+                    while let Some(i) = child.get() {
+                        count += usize::from(self.draft.nodes[i].props.visible());
+                        child = self.draft.nodes[i].next_sibling;
+                    }
+                    if props.visible && count >= crate::capacity::MAX_CUSTOM_CHILDREN {
+                        return Err(self.fail(BuildError::CustomChildren));
+                    }
+                }
                 if (pk == NodeKind::ScrollY && matches!(props.height, Length::Fill(_)))
                     || (pk == NodeKind::ScrollX && matches!(props.width, Length::Fill(_)))
                 {
@@ -2544,7 +2681,8 @@ impl<'a> ViewBuilder<'a> {
             return Err(self.fail(BuildError::Nodes));
         };
         let mut curve_slot = 0;
-        if props.motion_state != MotionState::None
+        if crate::capacity::MAX_ANIMATIONS != 0
+            && props.motion_state != MotionState::None
             && props.motion_ms > 0
             && let Some(curve) = props.motion_curve
         {

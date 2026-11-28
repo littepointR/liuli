@@ -237,17 +237,17 @@ fn measure_leaf(
                 letter_spacing,
                 line_spacing,
             );
-            tree.nodes[slot as usize].text_cache = TextCache {
-                wrap_width: wrap_w,
-                size: tm.size,
-                rel_ink: tm.ink,
-                lines: tm.lines,
-                valid: true,
-                font,
-                align: measure_align,
-                max_lines,
-                ellipsis,
-            };
+            tree.text_geometry.set(
+                slot as usize,
+                TextCache {
+                    wrap_width: wrap_w,
+                    size: tm.size,
+                    rel_ink: tm.ink,
+                    lines: tm.lines,
+                    valid: true,
+                    align: measure_align,
+                },
+            );
 
             let w = resolve_axis_size(width_prop, tm.size.width.saturating_add(pad_w), c.max_w);
             let h = resolve_axis_size(height_prop, tm.size.height.saturating_add(pad_h), c.max_h);
@@ -282,17 +282,17 @@ fn measure_leaf(
                 letter_spacing,
                 line_spacing,
             );
-            tree.nodes[slot as usize].text_cache = TextCache {
-                wrap_width: wrap_w,
-                size: tm.size,
-                rel_ink: tm.ink,
-                lines: tm.lines,
-                valid: true,
-                font,
-                align: measure_align,
-                max_lines: eff_max_lines,
-                ellipsis,
-            };
+            tree.text_geometry.set(
+                slot as usize,
+                TextCache {
+                    wrap_width: wrap_w,
+                    size: tm.size,
+                    rel_ink: tm.ink,
+                    lines: tm.lines,
+                    valid: true,
+                    align: measure_align,
+                },
+            );
 
             let mut content_w = if vert_icon {
                 tm.size.width.max(icon_w).saturating_add(pad_w)
@@ -422,7 +422,7 @@ fn measure_iterative(
         }
 
         if stack[top].phase == 0 {
-            measured_count += 1;
+            measured_count += u32::from(crate::capacity::METRICS);
             let n_key = tree.nodes[slot as usize].key;
             let extra = tree.layout_extras.get(n_key);
             let c = if extra.is_zero() {
@@ -1158,7 +1158,7 @@ fn child_constraints_stack(
     }
 }
 
-const MAX_CUSTOM_CHILDREN: usize = 16;
+use crate::capacity::MAX_CUSTOM_CHILDREN;
 
 #[inline(never)]
 fn finalize_wrap_measure(tree: &mut RetainedTree, slot: u16, c: Constraints, inner_max_w: u32) {
@@ -1339,16 +1339,6 @@ fn arrange_custom_children(
     for i in 0..count {
         tree.nodes[child_slots[i] as usize].ink_rect = out_rects[i].translate(content.x, content.y);
     }
-    // Overflow children beyond MAX_CUSTOM_CHILDREN collapse cleanly to zero size.
-    let mut extra = if count > 0 {
-        next_visible_sibling(tree, child_slots[count - 1])
-    } else {
-        None
-    };
-    while let Some(idx) = extra {
-        tree.nodes[idx as usize].ink_rect = Rect::ZERO;
-        extra = next_visible_sibling(tree, idx);
-    }
 }
 
 fn stack_child_origin(
@@ -1525,7 +1515,7 @@ fn arrange_iterative(
                 let n = &mut tree.nodes[slot as usize];
                 n.layout_rect = rect;
                 n.clip_rect = own_clip;
-                refresh_node_ink_rect_with(n, part, &style);
+                refresh_node_ink_rect_with(n, tree.text_geometry.get(slot as usize), part, &style);
             }
 
             if !kind.is_container() {
@@ -2136,7 +2126,7 @@ fn reveal_delta(sv: &crate::node::RetainedNode, target_rect: Rect) -> i32 {
     delta
 }
 
-pub fn compute_text_origin(node: &RetainedNode) -> Point {
+pub fn compute_text_origin(node: &RetainedNode, cache: &TextCache) -> Point {
     let rect = node.layout_rect;
     let inner = rect.inset(
         node.props.padding.left as u32,
@@ -2145,8 +2135,8 @@ pub fn compute_text_origin(node: &RetainedNode) -> Point {
         node.props.padding.bottom as u32,
     );
     let mut text_y = inner.y;
-    if node.text_cache.valid {
-        let text_size = node.text_cache.size;
+    if cache.valid {
+        let text_size = cache.size;
         if node.props.align_cross == Align::Center && inner.h > text_size.height {
             text_y += ((inner.h - text_size.height) / 2) as i32;
         } else if node.props.align_cross == Align::End && inner.h > text_size.height {
@@ -2156,22 +2146,24 @@ pub fn compute_text_origin(node: &RetainedNode) -> Point {
     Point::new(inner.x, text_y)
 }
 
-pub fn refresh_node_ink_rect(node: &mut RetainedNode) {
+pub fn refresh_node_ink_rect(node: &mut RetainedNode, cache: &TextCache) {
     refresh_node_ink_rect_with(
         node,
+        cache,
         &crate::part_style::WidgetPartStyle::ZERO,
         &crate::effects::SurfaceStyle::FLAT,
     );
 }
 pub(crate) fn refresh_node_ink_rect_with(
     node: &mut RetainedNode,
+    cache: &TextCache,
     part: &crate::part_style::WidgetPartStyle,
     style: &crate::effects::SurfaceStyle,
 ) {
     let mut ink = node.layout_rect;
-    if node.kind == NodeKind::Label && node.text_cache.valid {
-        let origin = compute_text_origin(node);
-        ink = ink.union(node.text_cache.rel_ink.translate(origin.x, origin.y));
+    if node.kind == NodeKind::Label && cache.valid {
+        let origin = compute_text_origin(node, cache);
+        ink = ink.union(cache.rel_ink.translate(origin.x, origin.y));
     }
     if node.props.focusable() {
         let ring = node.props.focus_ring();

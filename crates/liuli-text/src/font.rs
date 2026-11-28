@@ -1,4 +1,14 @@
-use liuli_core::view::FontId;
+use liuli_core::{capacity::FONT_SLOTS, view::FontId};
+
+// Unbound roles use the primary face. Binding a role outside the product's
+// declared range is a configuration error, including in const initializers.
+const fn slot_index(id: FontId) -> usize {
+    if (id.0 as usize) < FONT_SLOTS {
+        id.0 as usize
+    } else {
+        0
+    }
+}
 
 use crate::cache::FontCacheStats;
 use crate::coverage::validate_rle;
@@ -548,30 +558,31 @@ impl<'a> Lf4Font<'a> {
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct FontSet<'a> {
-    slots: [Lf4Font<'a>; 4],
+    slots: [Lf4Font<'a>; FONT_SLOTS],
     fallback: Option<Lf4Font<'a>>,
 }
 
 impl<'a> FontSet<'a> {
     #[inline]
     pub const fn new(body16: Lf4Font<'a>, small12: Lf4Font<'a>) -> Self {
-        Self {
-            slots: [body16, small12, body16, body16],
-            fallback: None,
+        let mut result = Self::single(body16);
+        if FONT_SLOTS > 1 {
+            result.slots[slot_index(FontId::Small12)] = small12;
         }
+        result
     }
 
     #[inline]
     pub const fn single(font: Lf4Font<'a>) -> Self {
         Self {
-            slots: [font; 4],
+            slots: [font; FONT_SLOTS],
             fallback: None,
         }
     }
 
     #[inline]
     pub const fn with_slot(mut self, id: FontId, font: Lf4Font<'a>) -> Self {
-        self.slots[id as usize] = font;
+        self.slots[id.0 as usize] = font;
         self
     }
 
@@ -598,17 +609,17 @@ impl<'a> FontSet<'a> {
 
     #[inline]
     pub const fn get(&self, id: FontId) -> &Lf4Font<'a> {
-        &self.slots[id as usize]
+        &self.slots[slot_index(id)]
     }
 
     #[inline]
     pub const fn body16(&self) -> &Lf4Font<'a> {
-        &self.slots[FontId::Body16 as usize]
+        &self.slots[0]
     }
 
     #[inline]
     pub const fn small12(&self) -> &Lf4Font<'a> {
-        &self.slots[FontId::Small12 as usize]
+        &self.slots[slot_index(FontId::Small12)]
     }
 }
 
@@ -1059,7 +1070,7 @@ impl<'a, S: FontFace> FontFace for FontSlot<'a, S> {
 
 /// Hot/cold 4-slot font provider mixing fast XIP slice fonts with streaming non-XIP faces.
 pub struct HybridFontSet<'a, S> {
-    slots: [FontSlot<'a, S>; 4],
+    slots: [FontSlot<'a, S>; FONT_SLOTS],
     fallback: Option<FontSlot<'a, S>>,
 }
 
@@ -1072,13 +1083,14 @@ impl<'a, S> Clone for HybridFontSet<'a, S> {
 
 impl<'a, S> HybridFontSet<'a, S> {
     pub const fn from_xip(set: FontSet<'a>) -> Self {
+        let mut slots = [FontSlot::Xip(set.slots[0]); FONT_SLOTS];
+        let mut i = 1;
+        while i < FONT_SLOTS {
+            slots[i] = FontSlot::Xip(set.slots[i]);
+            i += 1;
+        }
         Self {
-            slots: [
-                FontSlot::Xip(set.slots[0]),
-                FontSlot::Xip(set.slots[1]),
-                FontSlot::Xip(set.slots[2]),
-                FontSlot::Xip(set.slots[3]),
-            ],
+            slots,
             fallback: match set.fallback {
                 Some(f) => Some(FontSlot::Xip(f)),
                 None => None,
@@ -1088,13 +1100,13 @@ impl<'a, S> HybridFontSet<'a, S> {
 
     pub const fn streaming(stream: &'a S) -> Self {
         Self {
-            slots: [FontSlot::Stream(stream); 4],
+            slots: [FontSlot::Stream(stream); FONT_SLOTS],
             fallback: None,
         }
     }
 
     pub const fn with_slot(mut self, id: FontId, slot: FontSlot<'a, S>) -> Self {
-        self.slots[id as usize] = slot;
+        self.slots[id.0 as usize] = slot;
         self
     }
 
@@ -1117,7 +1129,7 @@ impl<'a, S> HybridFontSet<'a, S> {
     }
 
     pub const fn get(&self, id: FontId) -> FontSlot<'a, S> {
-        self.slots[id as usize]
+        self.slots[slot_index(id)]
     }
 }
 
@@ -1125,31 +1137,31 @@ impl<S: FontFace> FontProvider for HybridFontSet<'_, S> {
     type Error = S::Error;
 
     fn line_height(&self, slot: FontId) -> u32 {
-        self.slots[slot as usize].line_height()
+        self.slots[slot_index(slot)].line_height()
     }
 
     fn ascent(&self, slot: FontId) -> i16 {
-        self.slots[slot as usize].ascent()
+        self.slots[slot_index(slot)].ascent()
     }
 
     fn descent(&self, slot: FontId) -> u16 {
-        self.slots[slot as usize].descent()
+        self.slots[slot_index(slot)].descent()
     }
 
     fn line_gap(&self, slot: FontId) -> u16 {
-        self.slots[slot as usize].line_gap()
+        self.slots[slot_index(slot)].line_gap()
     }
 
     fn has_kerning(&self, slot: FontId) -> bool {
-        self.slots[slot as usize].has_kerning()
+        self.slots[slot_index(slot)].has_kerning()
     }
 
     fn kerning(&self, slot: FontId, left: char, right: char) -> Result<i16, Self::Error> {
-        self.slots[slot as usize].kerning(left, right)
+        self.slots[slot_index(slot)].kerning(left, right)
     }
 
     fn resolve_char(&self, slot: FontId, ch: char) -> Result<ResolvedGlyph, Self::Error> {
-        resolve_with_faces(&self.slots[slot as usize], self.fallback.as_ref(), ch)
+        resolve_with_faces(&self.slots[slot_index(slot)], self.fallback.as_ref(), ch)
     }
 
     fn with_glyph_bytes<R>(
@@ -1160,9 +1172,11 @@ impl<S: FontFace> FontProvider for HybridFontSet<'_, S> {
         f: impl FnOnce(&[u8], GlyphEncoding) -> R,
     ) -> Result<R, Self::Error> {
         let face = if from_fallback {
-            self.fallback.as_ref().unwrap_or(&self.slots[slot as usize])
+            self.fallback
+                .as_ref()
+                .unwrap_or(&self.slots[slot_index(slot)])
         } else {
-            &self.slots[slot as usize]
+            &self.slots[slot_index(slot)]
         };
         FontFace::with_glyph_bytes(face, metrics, f)
     }

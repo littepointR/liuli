@@ -1,5 +1,4 @@
-/target
-checks/firmware/target
+target/
 **/*.rs.bk
 __pycache__/
 *.pyc

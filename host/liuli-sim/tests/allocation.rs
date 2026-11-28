@@ -247,8 +247,8 @@ impl App for MovingLabel {
         );
         Change::Unchanged // The first visual change is due in 16 ms.
     }
-    fn view(model: &Tween, ui: &mut ViewBuilder<'_>) -> Result<(), BuildError> {
-        ui.root(Key(1), NodeProps::new(), |r| {
+    fn view(model: &Tween) -> impl Scene {
+        layout(Key(1), NodeProps::new(), move |r| {
             r.label(Key(2), NodeProps::new().text(TextRef::Static("A")))?;
             r.set_layout_motion(
                 Key(2),

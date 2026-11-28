@@ -62,11 +62,10 @@ fn emit_indicator(
 /// including the current positions when selection is retargeted between frames.
 pub(super) fn paint_sliding_indicator(
     tree: &RetainedTree,
-    bar: &RetainedNode,
-    anims: &AnimPool,
-    root_bg: Rgb565,
+    ctx: BuiltinPaintCtx<'_>,
     out: &mut CommandList,
 ) -> Result<(), BuildError> {
+    let (bar, anims, root_bg) = (ctx.node, ctx.anims, ctx.root_bg);
     let mut selected = None;
     let mut weighted = [0i64; 4];
     let mut total = 0;
@@ -91,11 +90,14 @@ pub(super) fn paint_sliding_indicator(
                 part.indicator_color().unwrap_or(n.props.accent),
                 part.indicator_radius().unwrap_or(0),
                 n.clip_rect,
+                part,
+                i,
+                p,
             ));
         }
         let rect = part.indicator_layout().bounds(
             n.layout_rect,
-            control_content(n, part).bounds,
+            control_content(n, part, tree.text_cache(i)).bounds,
             part.indicator_inset().unwrap_or(0),
         );
         let weight = i64::from(p);
@@ -109,18 +111,41 @@ pub(super) fn paint_sliding_indicator(
         }
         total += weight;
     }
-    if let Some((color, radius, clip)) = selected
+    if let Some((color, radius, clip, selected_part, i, progress)) = selected
         && total > 0
     {
         let [x, y, w, h] = weighted.map(|v| v / total);
-        emit_indicator(
-            out,
-            Rect::new(x as i32, y as i32, w as u32, h as u32),
+        let bounds = Rect::new(x as i32, y as i32, w as u32, h as u32);
+        let owner = &tree.nodes[i];
+        let focused = ctx.focus.focused_slot == Some(i as u16);
+        let strip = BuiltinPaintCtx {
+            node: owner,
+            slot: i as u16,
+            text: tree.text_cache(i),
+            state: super::PaintState {
+                pressed: owner.pressed,
+                focused: focused && ctx.focus.ring_visible,
+                editing: focused && ctx.focus.editing,
+                checked: true,
+                enabled: owner.props.enabled(),
+                anim_progress: progress,
+            },
+            part: selected_part,
+            ..ctx
+        };
+        if strip.paint_part_at(
+            bar.layout_rect,
+            crate::part_style::WidgetPart::Indicator,
+            bounds,
             clip,
             color,
-            radius,
             15,
-        )?;
+            out,
+        )? == super::PaintOverride::Handled
+        {
+            return Ok(());
+        }
+        emit_indicator(out, bounds, clip, color, radius, 15)?;
     }
     Ok(())
 }
@@ -128,7 +153,7 @@ pub(super) fn paint_sliding_indicator(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn paint_selection(
     out: &mut CommandList,
-    part: &WidgetPartStyle,
+    ctx: BuiltinPaintCtx<'_>,
     rect: Rect,
     content: Rect,
     clip: Rect,
@@ -136,6 +161,7 @@ pub(super) fn paint_selection(
     checked: bool,
     progress: i32,
 ) -> Result<(), BuildError> {
+    let part = ctx.part;
     let shape = part
         .indicator_layout()
         .bounds(rect, content, part.indicator_inset().unwrap_or(0));
@@ -156,6 +182,17 @@ pub(super) fn paint_selection(
             )
         }
     };
+    if ctx.paint_part(
+        crate::part_style::WidgetPart::Indicator,
+        shape,
+        clip,
+        color,
+        alpha,
+        out,
+    )? == super::PaintOverride::Handled
+    {
+        return Ok(());
+    }
     emit_indicator(
         out,
         shape,
@@ -207,12 +244,15 @@ pub(super) fn paint_tab(ctx: BuiltinPaintCtx<'_>, out: &mut CommandList) -> Resu
     if clip.is_empty() {
         return Ok(());
     }
-    let content = control_content(node, ctx.part);
-    if ctx.part.indicator_transition != IndicatorMotion::Slide || !ctx.in_tab_bar {
+    let content = control_content(node, ctx.part, ctx.text);
+    if !crate::capacity::TAB_INDICATOR
+        || ctx.part.indicator_transition != IndicatorMotion::Slide
+        || !ctx.in_tab_bar
+    {
         tab_surface(node, ctx.composition, ctx.part, ctx.root_bg, out)?;
         paint_selection(
             out,
-            ctx.part,
+            ctx,
             rect,
             content.bounds,
             clip,

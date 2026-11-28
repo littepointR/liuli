@@ -23,24 +23,27 @@ fn wide(height: Length) -> NodeProps {
         ..NodeProps::new()
     }
 }
-pub(super) fn view(m: &Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildError> {
+pub(super) fn view(m: &Model) -> impl Scene {
     let t = m.theme();
     let full = wide(Length::Fill(1));
     let padding = EdgeInsets::all(10);
     let gap = t.spacing;
-    let tabs_height = if !m.landscape && m.page.is_tab() {
-        t.control_height + 8
-    } else {
-        0
-    };
-    let viewport = m.height.saturating_sub(68 + tabs_height);
-    out.root(
+    layout(
         Key(1),
         NodeProps {
             bg: Some(t.background),
             ..full
         },
-        |root| {
+        move |root| {
+            let page = root.variant_with(m.page, PAGES.len() + 1, |i| {
+                if i == 0 { Page::Home } else { PAGES[i - 1].0 }
+            });
+            let tabs_height = if !m.landscape && page.is_tab() {
+                t.control_height + 8
+            } else {
+                0
+            };
+            let viewport = m.height.saturating_sub(68 + tabs_height);
             let mut ui = ThemedUi::new(root, t);
             ui.column(
                 Key(2),
@@ -59,7 +62,7 @@ pub(super) fn view(m: &Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildErro
                             ..wide(Length::Px(40))
                         },
                         |bar| {
-                            let title = PAGES.iter().find(|p| p.0 == m.page).map_or(
+                            let title = PAGES.iter().find(|p| p.0 == page).map_or(
                                 if m.landscape {
                                     "Spool    /    Field recorder"
                                 } else {
@@ -68,7 +71,7 @@ pub(super) fn view(m: &Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildErro
                                 |p| p.1,
                             );
                             bar.title(Key(8), TextRef::Static(title))?;
-                            if m.landscape && m.page.is_tab() {
+                            if m.landscape && page.is_tab() {
                                 bar.column(
                                     Key(95),
                                     NodeProps {
@@ -76,10 +79,10 @@ pub(super) fn view(m: &Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildErro
                                         height: Length::Content,
                                         ..NodeProps::new()
                                     },
-                                    |nav| navigation(nav, m),
+                                    |nav| navigation(nav, page),
                                 )?;
                             }
-                            let home = m.page == Page::Home;
+                            let home = page == Page::Home;
                             bar.button_props(
                                 if home { Key(5) } else { Key(3) },
                                 ButtonVariant::Secondary,
@@ -98,10 +101,10 @@ pub(super) fn view(m: &Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildErro
                             )
                         },
                     )?;
-                    if !m.landscape && m.page.is_tab() {
-                        navigation(ui, m)?;
+                    if !m.landscape && page.is_tab() {
+                        navigation(ui, page)?;
                     }
-                    if m.page == Page::List {
+                    if page == Page::List {
                         return if m.landscape {
                             ui.row(Key(470), studio::group(), |columns| {
                                 columns.column(
@@ -142,10 +145,7 @@ pub(super) fn view(m: &Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildErro
                                 },
                                 |body| {
                                     if m.landscape
-                                        && !matches!(
-                                            m.page,
-                                            Page::Home | Page::Inputs | Page::Depth
-                                        )
+                                        && !matches!(page, Page::Home | Page::Inputs | Page::Depth)
                                     {
                                         body.row(Key(470), studio::group(), |columns| {
                                             columns.column(
@@ -154,7 +154,7 @@ pub(super) fn view(m: &Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildErro
                                                     width: Length::Fill(3),
                                                     ..t.card()
                                                 },
-                                                |left| contents(left, m),
+                                                |left| contents(left, m, page),
                                             )?;
                                             columns.column(
                                                 Key(472),
@@ -166,7 +166,7 @@ pub(super) fn view(m: &Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildErro
                                             )
                                         })
                                     } else {
-                                        contents(body, m)
+                                        contents(body, m, page)
                                     }
                                 },
                             )
@@ -174,7 +174,7 @@ pub(super) fn view(m: &Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildErro
                     )
                 },
             )?;
-            if m.confirm.is_some() {
+            if ui.raw().optional(m.confirm.is_some()) {
                 ui.centered_confirm_dialog(
                     [Key(61), Key(62), Key(63), Key(64)],
                     [TextRef::Static("Save take"), TextRef::Static("Discard")],
@@ -184,7 +184,7 @@ pub(super) fn view(m: &Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildErro
         },
     )
 }
-fn navigation(ui: &mut ThemedUi<'_, '_, '_>, m: &Model) -> Result<(), BuildError> {
+fn navigation(ui: &mut ThemedUi<'_, '_, '_>, page: Page) -> Result<(), BuildError> {
     ui.tabs(
         Key(96),
         &[
@@ -192,7 +192,7 @@ fn navigation(ui: &mut ThemedUi<'_, '_, '_>, m: &Model) -> Result<(), BuildError
             (Page::List.route_key(), TextRef::Static("Tapes")),
             (Page::Inputs.route_key(), TextRef::Static("Mixer")),
         ],
-        m.page.route_key(),
+        page.route_key(),
     )
 }
 fn tape_rows(ui: &mut ThemedUi<'_, '_, '_>, m: &Model, viewport: u16) -> Result<(), BuildError> {
@@ -269,9 +269,9 @@ fn tape_rows(ui: &mut ThemedUi<'_, '_, '_>, m: &Model, viewport: u16) -> Result<
         },
     )
 }
-fn contents(ui: &mut ThemedUi<'_, '_, '_>, m: &Model) -> Result<(), BuildError> {
+fn contents(ui: &mut ThemedUi<'_, '_, '_>, m: &Model, page: Page) -> Result<(), BuildError> {
     let t = ui.theme();
-    match m.page {
+    match page {
         Page::Home => return studio::deck(ui, m),
         Page::Depth => return depth::page(ui, m),
         Page::Motion => return m.motion.page(ui),
@@ -309,7 +309,7 @@ fn contents(ui: &mut ThemedUi<'_, '_, '_>, m: &Model) -> Result<(), BuildError> 
                 ],
                 m.tab,
             )?;
-            if m.tab == Key(50) {
+            if ui.raw().variant(m.tab == Key(50), &[true, false]) {
                 ui.caption(Key(21), TextRef::Static("Select an input"))?;
                 ui.selector(
                     Key(52),

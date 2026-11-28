@@ -38,9 +38,10 @@ opt-level = 3
 opt-level = 3
 
 [features]
-effects-benchmark=["widget-demo"]
+diagnostics=[]
+effects-benchmark=["widget-demo","diagnostics"]
 input-trace=[]
 enhanced=["liuli/enhanced"]
-benchmark=["enhanced"]
+benchmark=["enhanced","diagnostics"]
 sleep-benchmark=["benchmark"]
 widget-demo=["enhanced","dep:liuli-widget-demo","liuli-widget-demo/enhanced"]

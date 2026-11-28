@@ -91,8 +91,8 @@ fn custom_animation_accepts_overdue_absolute_deadlines() {
         fn animations(m: &mut Alarm, bind: &mut dyn FnMut(Key, &mut dyn Animation)) {
             bind(Key(1), m);
         }
-        fn view(_: &Alarm, ui: &mut ViewBuilder<'_>) -> Result<(), BuildError> {
-            ui.root(Key(1), NodeProps::new(), |_| Ok(()))
+        fn view(_: &Alarm) -> impl Scene {
+            layout(Key(1), NodeProps::new(), move |_| Ok(()))
         }
         fn update(_: &mut Alarm, (): (), _: InstantMs) -> Change {
             Change::Unchanged
@@ -130,74 +130,8 @@ impl App for FaultApp {
         }
     }
 
-    fn view(model: &Self::Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildError> {
-        let mut root_p = NodeProps::new();
-        root_p.bg = Some(Rgb565::new(2, 4, 2));
-        root_p.width = Length::Px(120);
-        root_p.height = Length::Px(80);
-        out.begin(Key(1), NodeKind::Root, root_p)?;
-
-        match model.mode {
-            FaultMode::Normal => {
-                let mut col_p = NodeProps::new();
-                col_p.width = Length::Fill(1);
-                col_p.height = Length::Fill(1);
-                out.begin(Key(2), NodeKind::Column, col_p)?;
-
-                let mut bp = NodeProps::new();
-                bp.width = Length::Px(80);
-                bp.height = Length::Px(30);
-                bp.bg = Some(Rgb565::new(8, 20, 12));
-                bp.fg = Rgb565::new(31, 63, 31);
-                bp.focusable = true;
-                bp.text = out.text_fmt(format_args!("OK {}", model.counter))?;
-                out.leaf(Key(10), NodeKind::Button, bp)?;
-
-                out.end()?;
-                out.end()?;
-                Ok(())
-            }
-            FaultMode::DuplicateKey => {
-                out.leaf(Key(10), NodeKind::Label, NodeProps::new())?;
-                out.leaf(Key(10), NodeKind::Label, NodeProps::new())?;
-                out.end()
-            }
-            FaultMode::UnmatchedEnd => {
-                out.leaf(Key(10), NodeKind::Label, NodeProps::new())?;
-                // Missing out.end() for Root
-                Ok(())
-            }
-            FaultMode::DepthOverflow => {
-                for i in 0..MAX_DEPTH {
-                    out.begin(Key(100 + i as u32), NodeKind::Column, NodeProps::new())?;
-                }
-                Ok(())
-            }
-            FaultMode::TextOverflow => {
-                let mut p = NodeProps::new();
-                let s = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-                let iters = (liuli::core::capacity::MAX_TEXT_BYTES / 128) + 2;
-                for i in 0..iters {
-                    p.text = out.text_fmt(format_args!("{s}{s}{i}"))?;
-                }
-                out.leaf(Key(10), NodeKind::Label, p)?;
-                out.end()
-            }
-            FaultMode::NodeOverflow => {
-                for i in 0..MAX_NODES {
-                    out.leaf(Key(200 + i as u32), NodeKind::Label, NodeProps::new())?;
-                }
-                out.end()
-            }
-            FaultMode::KindChangedToLabel => {
-                let mut lp = NodeProps::new();
-                lp.width = Length::Px(80);
-                lp.height = Length::Px(30);
-                lp.text = TextRef::Static("Label");
-                out.leaf(Key(10), NodeKind::Label, lp)?;
-                out.end()
-            }
-        }
+    fn view(model: &Self::Model) -> impl Scene {
+        BrokenScene(model)
     }
 
     fn on_action(_model: &Self::Model, _event: UiAction) -> Option<Self::Msg> {
@@ -651,11 +585,11 @@ impl App for RepeatApp {
         }
     }
 
-    fn view(model: &Self::Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildError> {
+    fn view(model: &Self::Model) -> impl Scene {
         let mut root_p = NodeProps::new();
         root_p.width = Length::Fill(1);
         root_p.height = Length::Fill(1);
-        out.root(Key(1), root_p, |ui| {
+        layout(Key(1), root_p, move |ui| {
             ui.stack(
                 Key(90),
                 NodeProps {
@@ -1021,8 +955,8 @@ fn nested_focus_notifies_each_viewport_and_restores_the_declared_key() {
             }
             Change::View
         }
-        fn view(m: &Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildError> {
-            out.root(Key(1), NodeProps::new(), |ui| {
+        fn view(m: &Model) -> impl Scene {
+            layout(Key(1), NodeProps::new(), move |ui| {
                 if m.page == 1 {
                     return ui.label(Key(9), NodeProps::new());
                 }
@@ -1236,4 +1170,78 @@ fn failed_page_switch_preserves_old_page_memory_focus_and_repeat() {
     )
     .unwrap();
     assert_eq!(check_scr.fb, baseline);
+}
+
+struct BrokenScene<'a>(&'a FaultModel);
+impl Scene for BrokenScene<'_> {
+    fn build(self, out: &mut ViewBuilder<'_>) -> Result<(), BuildError> {
+        let model = self.0;
+        let mut root_p = NodeProps::new();
+        root_p.bg = Some(Rgb565::new(2, 4, 2));
+        root_p.width = Length::Px(120);
+        root_p.height = Length::Px(80);
+        out.begin(Key(1), NodeKind::Root, root_p)?;
+
+        match model.mode {
+            FaultMode::Normal => {
+                let mut col_p = NodeProps::new();
+                col_p.width = Length::Fill(1);
+                col_p.height = Length::Fill(1);
+                out.begin(Key(2), NodeKind::Column, col_p)?;
+
+                let mut bp = NodeProps::new();
+                bp.width = Length::Px(80);
+                bp.height = Length::Px(30);
+                bp.bg = Some(Rgb565::new(8, 20, 12));
+                bp.fg = Rgb565::new(31, 63, 31);
+                bp.focusable = true;
+                bp.text = out.text_fmt(format_args!("OK {}", model.counter))?;
+                out.leaf(Key(10), NodeKind::Button, bp)?;
+
+                out.end()?;
+                out.end()?;
+                Ok(())
+            }
+            FaultMode::DuplicateKey => {
+                out.leaf(Key(10), NodeKind::Label, NodeProps::new())?;
+                out.leaf(Key(10), NodeKind::Label, NodeProps::new())?;
+                out.end()
+            }
+            FaultMode::UnmatchedEnd => {
+                out.leaf(Key(10), NodeKind::Label, NodeProps::new())?;
+                // Missing out.end() for Root
+                Ok(())
+            }
+            FaultMode::DepthOverflow => {
+                for i in 0..MAX_DEPTH {
+                    out.begin(Key(100 + i as u32), NodeKind::Column, NodeProps::new())?;
+                }
+                Ok(())
+            }
+            FaultMode::TextOverflow => {
+                let mut p = NodeProps::new();
+                let s = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+                let iters = (liuli::core::capacity::MAX_TEXT_BYTES / 128) + 2;
+                for i in 0..iters {
+                    p.text = out.text_fmt(format_args!("{s}{s}{i}"))?;
+                }
+                out.leaf(Key(10), NodeKind::Label, p)?;
+                out.end()
+            }
+            FaultMode::NodeOverflow => {
+                for i in 0..MAX_NODES {
+                    out.leaf(Key(200 + i as u32), NodeKind::Label, NodeProps::new())?;
+                }
+                out.end()
+            }
+            FaultMode::KindChangedToLabel => {
+                let mut lp = NodeProps::new();
+                lp.width = Length::Px(80);
+                lp.height = Length::Px(30);
+                lp.text = TextRef::Static("Label");
+                out.leaf(Key(10), NodeKind::Label, lp)?;
+                out.end()
+            }
+        }
+    }
 }

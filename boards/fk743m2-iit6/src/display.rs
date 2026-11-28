@@ -41,11 +41,13 @@ impl Display {
             self.repair_active = false;
         }
     }
+    #[cfg(feature = "diagnostics")]
     pub fn front(&self) -> usize {
         self.front
     }
     /// Lossless SWD snapshot in the unused SDRAM gap before the UI heap.
     /// Each word holds a run length in its upper half and an RGB565 pixel below.
+    #[cfg(feature = "diagnostics")]
     pub fn snapshot(&self) -> u32 {
         hw::dma2d_wait();
         const CAPTURE: usize = 0xc018_0000;

@@ -99,11 +99,11 @@ impl App for ThirdParty {
     fn on_action(_: &u8, _: UiAction) -> Option<u8> {
         None
     }
-    fn view(m: &u8, v: &mut ViewBuilder<'_>) -> Result<(), BuildError> {
-        v.root(
+    fn view(m: &u8) -> impl Scene {
+        layout(
             Key(0),
             NodeProps::new().bg(WHITE).padding(EdgeInsets::all(10)),
-            |ui| {
+            move |ui| {
                 let geom = match m {
                     0 | 3 => &TRIANGLE,
                     1 => &WidgetGeometry::DIAL,
@@ -294,8 +294,8 @@ fn widget_shapes_do_not_use_effect_slots() {
         fn on_action(_: &(), _: UiAction) -> Option<()> {
             None
         }
-        fn view(_: &(), v: &mut ViewBuilder<'_>) -> Result<(), BuildError> {
-            v.root(Key(0), NodeProps::new(), |ui| {
+        fn view(_: &()) -> impl Scene {
+            layout(Key(0), NodeProps::new(), move |ui| {
                 for key in 1..=20 {
                     ui.button(
                         Key(key),

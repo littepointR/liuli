@@ -1,0 +1,27 @@
+[workspace]
+[package]
+name = "cost-probe"
+version = "0.1.0"
+edition = "2024"
+[dependencies]
+liuli = { path = "../../crates/liuli", features = ["host-testing"] }
+liuli-widgets = { path = "../../crates/liuli-widgets", optional = true }
+[features]
+widgets = ["dep:liuli-widgets"]
+dict = ["widgets"]
+blend = ["liuli/platform-blend"]
+layers = ["liuli/layers"]
+owned = ["liuli/owned-images"]
+enhanced = ["liuli/enhanced"]
+inspection = ["liuli/inspector"]
+dynamic-wire = []
+heap = []
+[dependencies.liuli-render]
+path = "../../crates/liuli-render"
+[dependencies.liuli-core]
+path = "../../crates/liuli-core"
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+codegen-units = 1

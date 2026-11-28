@@ -10,7 +10,7 @@ use crate::node::{NodeId, RetainedTree};
 use crate::time::{InstantMs, NextWakeup};
 use crate::view::{Key, NodeKind, SlotLink};
 
-const DRAG_THRESHOLD_PX: i32 = 6;
+const DRAG_THRESHOLD_PX: i32 = crate::capacity::DRAG_THRESHOLD_PX as i32;
 const _: () = assert!(MAX_NODES < u8::MAX as usize);
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
@@ -120,7 +120,7 @@ impl Default for PointerState {
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct FocusState {
     // The most recent eight panels retain a stable child key without keeping their trees alive.
-    panel_history: [(Key, Key); 8],
+    panel_history: [(Key, Key); crate::capacity::FOCUS_HISTORY],
     history_len: u8,
     has_focus: bool,
     focused_key: Key,
@@ -133,7 +133,7 @@ pub struct FocusState {
 
 impl FocusState {
     pub const ZERO: Self = Self {
-        panel_history: [(Key(0), Key(0)); 8],
+        panel_history: [(Key(0), Key(0)); crate::capacity::FOCUS_HISTORY],
         history_len: 0,
         has_focus: false,
         focused_key: Key(0),

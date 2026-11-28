@@ -139,6 +139,7 @@ pub fn reconcile_into(
         }
     };
 
+    let mut text_count = 0;
     for d_idx in 0..d_count {
         let d = &draft.nodes[d_idx];
         let c_slot = draft_to_cand[d_idx] as usize;
@@ -153,9 +154,23 @@ pub fn reconcile_into(
             candidate.nodes[c_slot].clear_fresh(new_gen);
         }
 
+        if matches!(d.kind, NodeKind::Label | NodeKind::Button | NodeKind::Tab) {
+            let cache = if old_slot == NO_MAP {
+                TextCache::ZERO
+            } else {
+                *active.text_cache(usize::from(old_slot))
+            };
+            candidate.text_geometry.bind(c_slot, text_count, cache)?;
+            text_count += 1;
+        }
         let node = &mut candidate.nodes[c_slot];
         node.occupied = true;
         node.key = d.key;
+        if d.kind.is_scroll_view()
+            && let Some(slots) = candidate.scroll_views.first_mut()
+        {
+            slots.set(c_slot);
+        }
         node.kind = d.kind;
         node.props = d.props;
         if old_slot == NO_MAP && matches!(d.kind, NodeKind::ScrollX | NodeKind::ScrollY) {
@@ -233,6 +248,7 @@ pub fn reconcile_into(
         let button_part_measure =
             matches!(node.kind, NodeKind::Button | NodeKind::Tab) && part_btn_measure;
 
+        let old_cache = active.text_cache(usize::from(old_slot));
         let op = &old.props;
         let np = &node.props;
         let structural_changed = op.width != np.width
@@ -277,8 +293,8 @@ pub fn reconcile_into(
         let mut updated_cache: Option<TextCache> = None;
 
         if text_changed {
-            if !structural_changed && !order_changed && old.text_cache.valid {
-                let wrap_w = old.text_cache.wrap_width;
+            if !structural_changed && !order_changed && old_cache.valid {
+                let wrap_w = old_cache.wrap_width;
                 let max_lines = if matches!(node.kind, NodeKind::Button | NodeKind::Tab) {
                     np.max_lines.max(1)
                 } else {
@@ -297,8 +313,8 @@ pub fn reconcile_into(
                     np.letter_spacing,
                     np.line_spacing,
                 );
-                let size_same = new_tm.size == old.text_cache.size;
-                let ink_same_or_inside = new_tm.ink == old.text_cache.rel_ink
+                let size_same = new_tm.size == old_cache.size;
+                let ink_same_or_inside = new_tm.ink == old_cache.rel_ink
                     || (new_tm.ink.x >= 0
                         && new_tm.ink.y >= 0
                         && new_tm.ink.right64() <= old.layout_rect.w as i64
@@ -310,10 +326,7 @@ pub fn reconcile_into(
                     rel_ink: new_tm.ink,
                     lines: new_tm.lines,
                     valid: true,
-                    font,
                     align,
-                    max_lines,
-                    ellipsis: np.ellipsis(),
                 });
                 if !size_same || !ink_same_or_inside {
                     text_changed_measure = true;
@@ -380,10 +393,15 @@ pub fn reconcile_into(
             || (np.geometry.is_some() && (part_changed || op != np));
         let c_node = &mut candidate.nodes[c_idx];
         if let Some(cache) = updated_cache {
-            c_node.text_cache = cache;
+            candidate.text_geometry.set(c_idx, cache);
         }
         if !text_changed_measure && (updated_cache.is_some() || focus_ink_changed) {
-            refresh_node_ink_rect_with(c_node, new_part, &new_effect);
+            refresh_node_ink_rect_with(
+                c_node,
+                candidate.text_geometry.get(c_idx),
+                new_part,
+                &new_effect,
+            );
         }
         if order_changed || structural_changed || text_changed_measure {
             outcome.tree_changed = true;

@@ -5,14 +5,19 @@ rust-version.workspace = true
 version.workspace = true
 license.workspace = true
 
+[package.metadata.liuli]
+capacity-example = "alarms-capacity"
+
 [dependencies]
 liuli.workspace = true
 liuli-widgets = { version = "=1.0.0", path = "../../crates/liuli-widgets" }
 
 [dev-dependencies]
+liuli = { workspace = true, features = ["host-testing"] }
 liuli-sim = { version = "=1.0.0", path = "../../host/liuli-sim", default-features = false }
 
 [features]
+scene-planner = ["liuli/scene-planner"]
 enhanced = ["liuli/enhanced"]
 
 [[example]]

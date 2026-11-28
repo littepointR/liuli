@@ -52,8 +52,10 @@ unsafe extern "C" {
     fn board_flush() -> i32;
     fn board_now_us() -> i64;
     fn board_touch(points: *mut Contact) -> i32;
+    #[cfg(any(feature = "benchmark", feature = "effects-benchmark"))]
     fn board_wait();
-    fn board_wait_ms(ms: u32);
+    fn board_wait_input(deadline_ms: u32, since_read_ms: u32, active: i32) -> i32;
+    #[cfg(feature = "diagnostics")]
     fn board_frame(pixels: u32, elapsed_us: i64);
     #[cfg(feature = "enhanced")]
     fn board_blend(p: *mut u16, len: usize, fg: u16, a: u32);
@@ -216,15 +218,25 @@ pub unsafe extern "C" fn liuli_run(ptr: *const u8, len: usize) -> i32 {
         return -8;
     }
     let mut tracker = TouchTracker::<2>::new();
+    let mut read_touch = true;
+    let mut last_read = now;
+    let mut retry_touch = false;
     #[cfg(feature = "input-trace")]
     let mut trace = input_trace::Recorder::start(now);
     loop {
         let start = unsafe { board_now_us() };
         let now = InstantMs(start as u64 / 1000);
         let mut points = [Contact::default(); 2];
-        let status = unsafe { board_touch(points.as_mut_ptr()) };
+        let status = if read_touch {
+            last_read = now;
+            unsafe { board_touch(points.as_mut_ptr()) }
+        } else {
+            0
+        };
         let count = status.clamp(0, 2) as usize;
-        if engine.tick(now).is_err() {
+        if (cfg!(feature = "input-trace") || engine.wakeup(now) == NextWakeup::Now)
+            && engine.tick(now).is_err()
+        {
             return -3;
         }
         #[cfg(feature = "input-trace")]
@@ -241,7 +253,12 @@ pub unsafe extern "C" fn liuli_run(ptr: *const u8, len: usize) -> i32 {
             }
             result.map(|_| ()).map_err(|_| ())
         };
-        let diff_res = if status < 0 {
+        if read_touch {
+            retry_touch = status < 0;
+        }
+        let diff_res = if !read_touch {
+            Ok(())
+        } else if status < 0 {
             tracker.try_cancel_all(&mut dispatch)
         } else {
             tracker.try_update(&contacts[..count], &mut dispatch)
@@ -250,6 +267,7 @@ pub unsafe extern "C" fn liuli_run(ptr: *const u8, len: usize) -> i32 {
             return -4;
         }
         match present(&mut engine, &mut display, scratch, &mut glyphs) {
+            #[cfg(feature = "diagnostics")]
             Ok(PresentStatus::Presented) => unsafe {
                 board_frame(engine.last_metrics().pixels_sent, board_now_us() - start)
             },
@@ -257,13 +275,13 @@ pub unsafe extern "C" fn liuli_run(ptr: *const u8, len: usize) -> i32 {
             Err(_) => return -5,
         }
         let after = InstantMs(unsafe { board_now_us() } as u64 / 1000);
-        match engine.wakeup(after) {
-            NextWakeup::Now => {}
-            NextWakeup::At(t) => {
-                let wait_ms = t.0.saturating_sub(after.0).clamp(1, 10) as u32;
-                unsafe { board_wait_ms(wait_ms) };
-            }
-            NextWakeup::OnEvent => unsafe { board_wait() },
-        }
+        let deadline_ms = match engine.wakeup(after) {
+            NextWakeup::Now => 0,
+            NextWakeup::At(t) => t.0.saturating_sub(after.0).min(u64::from(u32::MAX - 1)) as u32,
+            NextWakeup::OnEvent => u32::MAX,
+        };
+        let active = tracker.active_count() != 0 || retry_touch || cfg!(feature = "input-trace");
+        let since_read = after.0.saturating_sub(last_read.0).min(u64::from(u32::MAX)) as u32;
+        read_touch = unsafe { board_wait_input(deadline_ms, since_read, i32::from(active)) } != 0;
     }
 }

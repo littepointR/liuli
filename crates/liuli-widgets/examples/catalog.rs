@@ -12,15 +12,15 @@ struct State {
 impl App for Catalog {
     type Model = State;
     type Msg = UiAction;
-    fn view(m: &State, out: &mut ViewBuilder<'_>) -> Result<(), BuildError> {
+    fn view(m: &State) -> impl Scene {
         let t = Theme::DARK;
-        out.root(
+        layout(
             Key(1),
             NodeProps {
                 bg: Some(t.background),
                 ..NodeProps::new()
             },
-            |root| {
+            move |root| {
                 root.column(
                     Key(2),
                     NodeProps {
@@ -39,7 +39,7 @@ impl App for Catalog {
                             m.tab,
                             t,
                         )?;
-                        if m.tab == Key(4) {
+                        if ui.variant(m.tab == Key(4), &[true, false]) {
                             selector(
                                 ui,
                                 Key(6),
@@ -58,7 +58,7 @@ impl App for Catalog {
                                     ..t.control()
                                 },
                             )?;
-                            if m.saved {
+                            if ui.optional(m.saved) {
                                 toast(ui, Key(11), TextRef::Static("Saved"), t)?;
                             }
                         } else {
@@ -76,7 +76,7 @@ impl App for Catalog {
                         Ok(())
                     },
                 )?;
-                if m.confirm {
+                if root.optional(m.confirm) {
                     confirm_dialog(
                         root,
                         [Key(20), Key(21), Key(22), Key(23)],
@@ -120,12 +120,6 @@ impl App for Catalog {
     }
 }
 fn main() -> Result<(), String> {
-    let path = std::env::args_os()
-        .nth(1)
-        .ok_or("usage: catalog font.lf4 [--headless]")?;
-    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-    let font = Lf4Font::from_bytes(&bytes).map_err(|e| format!("{e:?}"))?;
-    let mut store = Storage::new();
     let model = State {
         tab: Key(4),
         choice: Key(7),
@@ -133,6 +127,18 @@ fn main() -> Result<(), String> {
         confirm: false,
         saved: false,
     };
+    #[cfg(feature = "scene-planner")]
+    if std::env::var_os("LIULI_PRINT_CAPACITY").is_some() {
+        let d = liuli::scene::capacity::<Catalog>(&model).map_err(|e| format!("{e:?}"))?;
+        println!("liuli-capacity-v1 {} {} {}", d.nodes, d.depth, d.text_slots);
+        return Ok(());
+    }
+    let path = std::env::args_os()
+        .nth(1)
+        .ok_or("usage: catalog font.lf4 [--headless]")?;
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let font = Lf4Font::from_bytes(&bytes).map_err(|e| format!("{e:?}"))?;
+    let mut store = Storage::new();
     let mut app = AppSession::<Catalog>::new(
         &mut store,
         model,

@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import re
 import tempfile
 import tomllib
 import zipfile
@@ -82,18 +83,20 @@ def package(output, fetch=False):
         config.mkdir()
         (config / "config.toml").write_text('[source.crates-io]\nreplace-with="sdk"\n[source.sdk]\ndirectory="vendor"\n')
         app = stage / "device-ui"
-        shutil.copytree(ROOT / "templates/device-ui", app)
+        shutil.copytree(ROOT / "templates/device-ui", app, ignore=shutil.ignore_patterns("target"))
         shutil.copytree(ROOT / "apps/liuli-alarms/assets", app / "assets")
         shutil.copytree(ROOT / "docs", stage / "docs")
         shutil.copyfile(ROOT / "LICENSE", stage / "LICENSE")
         shutil.copyfile(ROOT / "README.md", stage / "README.md")
         shutil.copyfile(ROOT / "checks/package-firmware.py", stage / "package-firmware.py")
         (stage/"tools").mkdir()
-        for script in ("check-ui.py", "export-touch-trace.py"):
+        for script in ("check-ui.py", "export-touch-trace.py", "build-ui.py"):
             shutil.copyfile(ROOT/"tools"/script, stage/"tools"/script)
         fk743 = stage / "boards/fk743m2-iit6"
         shutil.copytree(ROOT / "boards/fk743m2-iit6", fk743,
                         ignore=shutil.ignore_patterns("target", "__pycache__"))
+        fk_tool = fk743 / "build.py"
+        fk_tool.write_text(fk_tool.read_text().replace("apps/liuli-widget-demo/Cargo.toml", "liuli-widget-demo/Cargo.toml"))
         bundle_probe_wheels(fk743, fetch)
         fk_manifest = fk743 / "Cargo.toml"
         contents = fk_manifest.read_text()
@@ -104,6 +107,8 @@ def package(output, fetch=False):
         board = stage / "boards/waveshare-s3-amoled"
         shutil.copytree(ROOT / "boards/waveshare-s3-amoled", board, ignore=shutil.ignore_patterns("target", "build", "sdkconfig"))
         shutil.copytree(ROOT / "crates/liuli-enhanced/tests/fonts", board / "bench-fonts")
+        board_tool = board / "build.py"
+        board_tool.write_text(board_tool.read_text().replace("apps/liuli-alarms/Cargo.toml", "liuli-alarms/Cargo.toml").replace("apps/liuli-widget-demo/Cargo.toml", "liuli-widget-demo/Cargo.toml"))
         manifest = board / "rust/Cargo.toml"
         text = manifest.read_text()
         for path in ("../../../crates/liuli", "../../../apps/liuli-alarms", "../../../apps/liuli-widget-demo"):
@@ -115,7 +120,7 @@ def package(output, fetch=False):
         starter_board = app / "board"
         shutil.copytree(board, starter_board, ignore=shutil.ignore_patterns("bench-fonts"))
         starter_tool = starter_board / "build.py"
-        starter_tool.write_text(starter_tool.read_text().replace('("basic", "enhanced", "benchmark", "sleep-benchmark", "widget-demo")','("basic", "enhanced")'))
+        starter_tool.write_text(starter_tool.read_text().replace('BOARD.parents[1] / "liuli-alarms/Cargo.toml"', 'BOARD.parent / "Cargo.toml"').replace('("basic", "enhanced", "benchmark", "sleep-benchmark", "widget-demo")','("basic", "enhanced")'))
         starter_manifest = starter_board / "rust/Cargo.toml"
         starter_manifest.write_text(starter_manifest.read_text().replace(f'liuli-alarms={{version="={VERSION}"}}', 'device-ui={path="../.."}'))
         (starter_board / "rust/src/application.rs").write_text(
@@ -127,13 +132,15 @@ def package(output, fetch=False):
         shutil.copytree(vendor / f"liuli-widgets-{VERSION}", widgets)
         catalog = stage / "liuli-widget-demo"
         shutil.copytree(vendor / f"liuli-widget-demo-{VERSION}", catalog)
-        for consumer in (product, widgets, catalog):
+        settings = stage/"liuli-settings"
+        shutil.copytree(vendor / f"liuli-settings-{VERSION}", settings)
+        for consumer in (product, widgets, catalog, settings):
             with (consumer/"Cargo.toml").open("a") as manifest:
                 manifest.write("\n[workspace]\n")
         # Exercise the packaged product and template without the workspace, registry cache or network.
         env = dict(os.environ, CARGO_HOME=str(Path(scratch)/"cargo-home"), CARGO_NET_OFFLINE="true",
                    CARGO_TARGET_DIR=str(Path(scratch)/"build"))
-        cargo("run", "--offline", "--example", "preview", "--", "--headless", cwd=app, env=env)
+        subprocess.run([sys.executable,str(stage/"tools/build-ui.py"),"--app",str(app/"Cargo.toml"),"--offline","--action","run","--","--example","preview","--","--headless"],cwd=app,env=env,check=True)
         cargo("generate-lockfile", "--offline", cwd=product, env=env)
         cargo("generate-lockfile", "--offline", cwd=catalog, env=env)
         cargo("generate-lockfile", "--offline", cwd=starter_board/"rust", env=env)
@@ -149,11 +156,11 @@ def package(output, fetch=False):
                 digests = []
                 for backend in ("st-hal", "embassy"):
                     for profile in ("basic", "enhanced"):
-                        subprocess.run([sys.executable, str(fk743/"build.py"), "--backend", backend,
+                        subprocess.run([sys.executable, str(fk743/"build.py"), "--diagnostics", "--backend", backend,
                                         "--profile", profile, "--offline", "--out",
-                                        str(Path(cross)/f"{backend}-{profile}")], cwd=fk743,env=env,check=True)
+                                        str(Path(cross)/"build")], cwd=fk743,env=env,check=True)
                         name = f"{backend}-{profile}.bin"
-                        image = (Path(cross)/f"{backend}-{profile}"/"widget-demo.bin").read_bytes()
+                        image = (Path(cross)/"build/widget-demo.bin").read_bytes()
                         (firmware / name).write_bytes(image)
                         digests.append(f"{hashlib.sha256(image).hexdigest()}  {name}")
                 subprocess.run([sys.executable, str(fk743/"st/compile.py"), cross, "--writer"], check=True)
@@ -161,12 +168,18 @@ def package(output, fetch=False):
                 (firmware/"flash-writer.bin").write_bytes(helper)
                 digests.append(f"{hashlib.sha256(helper).hexdigest()}  flash-writer.bin")
                 (firmware/"SHA256SUMS").write_text("\n".join(digests) + "\n", encoding="ascii")
-        cargo("run", "--offline", "--example", "catalog", "--", str(app/"assets/body.lf4"), "--headless", cwd=widgets, env=env)
+        planner = [sys.executable, str(stage/"tools/build-ui.py"), "--offline"]
+        def planned_env(manifest, features=()):
+            output = subprocess.check_output([*planner, "--app", str(manifest), "--plan-only", *features], cwd=stage, env=env, text=True)
+            _, nodes, depth, slots = output.split()
+            return dict(env, LIULI_PLANNED="1", LIULI_MAX_NODES=nodes, LIULI_MAX_DEPTH=depth, LIULI_TEXT_SLOTS_LIMIT=slots)
+        subprocess.run([*planner, "--action", "run", "--app", str(widgets/"Cargo.toml"), "--plan-example", "catalog",
+                        "--", "--example", "catalog", "--", str(app/"assets/body.lf4"), "--headless"], cwd=stage, env=env, check=True)
         for name, binaries in (("liuli-fontpack",["--bin","liuli-fontpack"]),("liuli-sim",["--bins"])):
             cargo("install","--offline","--root",str(stage/"tools"),"--path",str(vendor/f"{name}-{VERSION}"),
-                  *binaries,cwd=stage,env=env)
+                  *binaries,cwd=stage,env=planned_env(settings/"Cargo.toml") if name == "liuli-sim" else env)
         cargo("install", "--offline", "--root", str(stage/"tools"), "--path", str(catalog),
-              "--features", "desktop,enhanced", "--bin", "liuli-widget-demo", cwd=stage, env=env)
+              "--features", "desktop,enhanced", "--bin", "liuli-widget-demo", cwd=stage, env=planned_env(catalog/"Cargo.toml", ["--app-features", "enhanced"]))
         (stage/"tools/.crates2.json").unlink(missing_ok=True)
         (stage/"tools/.crates.toml").unlink(missing_ok=True)
         exe_suffix = ".exe" if os.name == "nt" else ""
@@ -197,8 +210,19 @@ def package(output, fetch=False):
         missing = subprocess.run([fontpack,"pack","--project","fonts.toml"],cwd=digits,env=env,capture_output=True)
         if missing.returncode==0 or b"U+10FFFF" not in missing.stderr:
             raise ValueError("missing-glyph diagnostic for numeric project")
+        subprocess.run([sys.executable, str(stage/"tools/build-ui.py"), "--app", str(app/"Cargo.toml"),
+                        "--offline", "--", "--release"], cwd=app, env=env, check=True)
+        consumer = stage/"capacity-consumer"
+        shutil.copytree(ROOT/"checks/capacity-consumer", consumer,
+                        ignore=shutil.ignore_patterns("target", "Cargo.lock"))
+        for manifest in consumer.rglob("Cargo.toml"):
+            manifest.write_text(re.sub(r', path = "(?:\.\./)+crates/liuli(?:-widgets)?"', "", manifest.read_text()))
+        subprocess.run([sys.executable, str(stage/"tools/build-ui.py"), "--app", str(consumer/"Cargo.toml"),
+                        "--offline", "--", "--release"], cwd=consumer, env=env, check=True)
+        subprocess.run([str(Path(env["CARGO_TARGET_DIR"])/"release"/("planned-product"+exe_suffix)),
+                        str(app/"assets/body.lf4")], cwd=consumer, env=env, check=True)
         cargo("test", "--offline", cwd=widgets, env=env)
-        cargo("test", "--offline", "--release", "--features", "desktop,enhanced",
+        cargo("test", "--offline", "--release", "--features", "desktop,enhanced,part-painters",
               "--test", "showcase", cwd=catalog, env=env)
         cargo("generate-lockfile", "--offline", cwd=board / "rust", env=env)
         cargo("doc", "--offline", "--no-deps", "--features", "enhanced", "-p", "liuli-alarms",

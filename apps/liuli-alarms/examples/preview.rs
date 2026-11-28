@@ -1,5 +1,5 @@
 use liuli::prelude::*;
-use liuli_alarms::{Alarms, Model};
+use liuli_alarms::{AlarmApp, LIST_VIEWPORT, Model};
 use liuli_sim::{preview::PreviewServer, session::AppSession};
 fn main() -> Result<(), String> {
     let file = std::env::args_os()
@@ -8,7 +8,7 @@ fn main() -> Result<(), String> {
     let bytes = std::fs::read(file).map_err(|e| e.to_string())?;
     let fonts = FontSet::single(Lf4Font::from_bytes(&bytes).map_err(|e| format!("{e:?}"))?);
     let mut storage = Storage::new();
-    let mut app = AppSession::<Alarms>::new(
+    let mut app = AppSession::<AlarmApp<LIST_VIEWPORT>>::new(
         &mut storage,
         Model::new(536),
         fonts,

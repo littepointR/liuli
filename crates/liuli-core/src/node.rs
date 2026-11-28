@@ -1,8 +1,6 @@
 use crate::capacity::{MAX_NODES, MAX_TEXT_BYTES};
 use crate::geometry::{Rect, Size};
-use crate::view::{
-    FontId, Key, NodeKind, SlotLink, SparklinePool, StoredProps, TextAlign, TextRef,
-};
+use crate::view::{Key, NodeKind, SlotLink, SparklinePool, StoredProps, TextAlign, TextRef};
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub struct NodeId {
@@ -36,10 +34,7 @@ pub struct TextCache {
     pub rel_ink: Rect,
     pub lines: u16,
     pub valid: bool,
-    pub font: FontId,
     pub align: TextAlign,
-    pub max_lines: u8,
-    pub ellipsis: bool,
 }
 
 impl TextCache {
@@ -49,10 +44,7 @@ impl TextCache {
         rel_ink: Rect::ZERO,
         lines: 0,
         valid: false,
-        font: FontId::Body16,
         align: TextAlign::Start,
-        max_lines: 0,
-        ellipsis: false,
     };
 }
 
@@ -72,7 +64,6 @@ pub struct RetainedNode {
     pub ink_rect: Rect,
     pub clip_rect: Rect,
     pub visible_rect: Rect,
-    pub text_cache: TextCache,
     pub dirty_measure: bool,
     pub dirty_paint: bool,
     pub scroll_y: i32,
@@ -127,7 +118,6 @@ impl RetainedNode {
         ink_rect: Rect::ZERO,
         clip_rect: Rect::ZERO,
         visible_rect: Rect::ZERO,
-        text_cache: TextCache::ZERO,
         dirty_measure: false,
         dirty_paint: false,
         scroll_y: 0,
@@ -153,7 +143,6 @@ impl RetainedNode {
         self.ink_rect = Rect::ZERO;
         self.clip_rect = Rect::ZERO;
         self.visible_rect = Rect::ZERO;
-        self.text_cache = TextCache::ZERO;
         self.dirty_measure = true;
         self.dirty_paint = true;
         self.scroll_y = 0;
@@ -218,22 +207,104 @@ impl RetainedNode {
     }
 }
 
+use crate::capacity::MAX_TEXT_SLOTS;
+const SPARSE_BINDINGS: usize = if MAX_TEXT_SLOTS != 0 && MAX_TEXT_SLOTS < MAX_NODES {
+    MAX_NODES
+} else {
+    0
+};
+
+pub(crate) struct TextGeometry {
+    entries: [TextCache; MAX_TEXT_SLOTS],
+    // Zero means absent. Full-size pools address the original slot directly.
+    binding: [u8; SPARSE_BINDINGS],
+}
+impl TextGeometry {
+    const EMPTY: Self = Self {
+        entries: [TextCache::ZERO; MAX_TEXT_SLOTS],
+        binding: [0; SPARSE_BINDINGS],
+    };
+
+    pub(crate) fn get(&self, slot: usize) -> &TextCache {
+        let index = if SPARSE_BINDINGS == 0 {
+            Some(slot)
+        } else {
+            self.binding
+                .get(slot)
+                .and_then(|tag| tag.checked_sub(1))
+                .map(usize::from)
+        };
+        index
+            .and_then(|i| self.entries.get(i))
+            .unwrap_or(&TextCache::ZERO)
+    }
+
+    pub(crate) fn bind(
+        &mut self,
+        slot: usize,
+        ordinal: usize,
+        cache: TextCache,
+    ) -> Result<(), crate::capacity::BuildError> {
+        if ordinal >= MAX_TEXT_SLOTS {
+            return Err(crate::capacity::BuildError::TextSlots);
+        }
+        if let Some(tag) = self.binding.get_mut(slot) {
+            *tag = (ordinal + 1) as u8;
+        }
+        self.set(slot, cache);
+        Ok(())
+    }
+
+    pub(crate) fn set(&mut self, slot: usize, cache: TextCache) {
+        let i = self
+            .binding
+            .get(slot)
+            .map_or(slot, |tag| usize::from(*tag) - 1);
+        self.entries[i] = cache;
+    }
+}
+
 pub struct RetainedTree {
     pub(crate) curves: crate::view::CurvePalette,
     pub effects: crate::effects::Effects,
     pub part_styles: crate::part_style::PartStyles,
     pub layout_extras: crate::part_style::LayoutExtras,
+    pub(crate) text_geometry: TextGeometry,
     pub nodes: [RetainedNode; MAX_NODES],
     pub text_buf: [u8; MAX_TEXT_BYTES],
     pub text_len: u16,
     pub sparklines: SparklinePool,
     pub root: SlotLink,
     pub modal: SlotLink,
+    pub(crate) scroll_views: [crate::capacity::NodeMask; crate::capacity::SCROLL as usize],
     pub active_count: u16,
     pub generation_hwm: [u32; MAX_NODES],
 }
 
 impl RetainedTree {
+    pub fn scroll_slots(&self) -> impl Iterator<Item = (usize, &RetainedNode)> {
+        let mut slots = self
+            .scroll_views
+            .first()
+            .copied()
+            .unwrap_or(crate::capacity::NodeMask::ZERO);
+        core::iter::from_fn(move || slots.pop_first().map(|i| (i, &self.nodes[i])))
+    }
+
+    pub fn text_cache(&self, slot: usize) -> &TextCache {
+        if self.nodes.get(slot).is_some_and(|n| {
+            n.occupied && matches!(n.kind, NodeKind::Label | NodeKind::Button | NodeKind::Tab)
+        }) {
+            self.text_geometry.get(slot)
+        } else {
+            &TextCache::ZERO
+        }
+    }
+
+    pub fn invalidate_text_measurements(&mut self) {
+        self.text_geometry.entries.fill(TextCache::ZERO);
+    }
+
     pub fn part_style(&self, key: Key) -> &crate::part_style::WidgetPartStyle {
         self.find_slot_by_key(key)
             .map_or(&crate::part_style::WidgetPartStyle::ZERO, |i| {
@@ -304,6 +375,9 @@ impl RetainedTree {
         focused: Option<u16>,
         capture: crate::focus::CaptureKind,
     ) {
+        if crate::capacity::MAX_ANIMATIONS == 0 {
+            return;
+        }
         use crate::focus::CaptureKind;
         use crate::time::AnimProp;
         use crate::view::MotionState;
@@ -356,12 +430,14 @@ impl RetainedTree {
         curves: [None; crate::capacity::MAX_ANIMATIONS],
         part_styles: crate::part_style::PartStyles::EMPTY,
         layout_extras: crate::part_style::LayoutExtras::EMPTY,
+        text_geometry: TextGeometry::EMPTY,
         nodes: [RetainedNode::EMPTY; MAX_NODES],
         text_buf: [0; MAX_TEXT_BYTES],
         text_len: 0,
         sparklines: SparklinePool::ZERO,
         root: SlotLink::NONE,
         modal: SlotLink::NONE,
+        scroll_views: [crate::capacity::NodeMask::ZERO; crate::capacity::SCROLL as usize],
         active_count: 0,
         generation_hwm: [0; MAX_NODES],
     };
@@ -390,6 +466,8 @@ impl RetainedTree {
         self.layout_extras = crate::part_style::LayoutExtras::EMPTY;
         self.root = SlotLink::NONE;
         self.modal = SlotLink::NONE;
+        self.text_geometry.binding.fill(0);
+        self.scroll_views.fill(crate::capacity::NodeMask::ZERO);
         self.active_count = 0;
     }
 

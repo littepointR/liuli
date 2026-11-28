@@ -1,12 +1,17 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
-#[cfg(any(feature = "owned-images", feature = "inspector"))]
+#[cfg(any(
+    feature = "owned-images",
+    feature = "inspector",
+    all(feature = "scene-planner", not(target_os = "none"))
+))]
 extern crate alloc;
 pub mod animation;
 pub mod bitmap;
 pub mod capacity;
 pub mod color;
+pub mod component;
 pub mod composition;
 pub mod damage;
 pub mod dither;
@@ -24,6 +29,7 @@ pub mod part_style;
 pub mod path;
 pub mod path_ring;
 pub mod reconcile;
+pub mod scene;
 pub mod style_source;
 pub mod time;
 pub mod view;
@@ -53,6 +59,7 @@ mod tests {
                 crate::view::FontId::Small12 => 12,
                 crate::view::FontId::Title20 => 20,
                 crate::view::FontId::Display28 => 28,
+                _ => 16,
             }
         }
 
@@ -70,6 +77,7 @@ mod tests {
                 crate::view::FontId::Small12 => 6,
                 crate::view::FontId::Title20 => 10,
                 crate::view::FontId::Display28 => 14,
+                _ => 8,
             };
             let lh = self.line_height(font);
             let chars = text.chars().count() as u32;

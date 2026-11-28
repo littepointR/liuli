@@ -68,6 +68,6 @@ Timestamps (`u64` milliseconds) must be non-decreasing across lines. Every mutat
 ## CLI Usage
 
 ```powershell
-cargo run -p liuli-sim --locked -- replay host/liuli-sim/tests/fixtures/terminal.events --out target/liuli-v02-png --format png
-cargo run -p liuli-sim --locked -- preview --port 7878 --scenario terminal
+python tools/build-ui.py --app apps/liuli-settings/Cargo.toml --firmware host/liuli-sim/Cargo.toml --action run --locked -- --bin liuli-sim -- replay host/liuli-sim/tests/fixtures/terminal.events --out target/liuli-v02-png --format png
+python tools/build-ui.py --app apps/liuli-settings/Cargo.toml --firmware host/liuli-sim/Cargo.toml --action run --locked -- --bin liuli-sim -- preview --port 7878 --scenario terminal
 ```

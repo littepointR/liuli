@@ -1,6 +1,22 @@
 use std::{env, path::Path, process::Command};
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=FK743_TOUCH_POLL_MS");
+    let poll: u16 = env::var("FK743_TOUCH_POLL_MS")
+        .unwrap_or_else(|_| "4".into())
+        .parse()
+        .unwrap();
+    assert!((1..=1000).contains(&poll));
+    std::fs::write(
+        Path::new(&env::var("OUT_DIR").unwrap()).join("poll.rs"),
+        poll.to_string(),
+    )
+    .unwrap();
+    let diagnostics = env::var_os("CARGO_FEATURE_DIAGNOSTICS").is_some();
+    println!(
+        "cargo:rustc-link-arg=--defsym=LIULI_REPORT_BYTES={}",
+        if diagnostics { 64 } else { 0 }
+    );
     let st = env::var_os("CARGO_FEATURE_ST_HAL").is_some();
     let embassy = env::var_os("CARGO_FEATURE_EMBASSY").is_some();
     assert!(

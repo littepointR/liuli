@@ -4,6 +4,7 @@
 
 | 从这里开始 | 内容 |
 |---|---|
+| [容量推导与按需裁剪](docs/capacity.md) | 动态组件的业务上限、独立控件包与产品构建 |
 | [Widget Demo 全控件演示](docs/widget-demo.md) | 直接运行桌面程序，或刷入独立的参考板演示固件 |
 | [独立 SDK 与组件教程](docs/sdk.md) | 离线安装、应用模板、控件、主题、字体、回放和事务恢复 |
 | [FK743M2-IIT6 排针版与 5 寸 RGB 屏](docs/fk743m2-iit6.md) | ST HAL + LL 与 Embassy 双后端，800 × 480 横屏 Widget Demo、J-Link 烧录和整帧像素校验 |
@@ -16,7 +17,7 @@
 从源码运行产品应用：
 
 ```sh
-cargo run -p liuli-alarms --example preview -- apps/liuli-alarms/assets/body.lf4
+python tools/build-ui.py --app apps/liuli-alarms/Cargo.toml --action run -- --example preview -- apps/liuli-alarms/assets/body.lf4
 cargo test -p liuli-alarms --release
 cargo run -p liuli-fontpack -- verify --project apps/liuli-alarms/assets/fonts.toml
 cargo fetch --locked
@@ -53,18 +54,18 @@ cargo tree -p liuli-settings -e features --locked
 
 # Dual-slot font verification, headless PPM output, v0.1 & v0.2 replays (PNG)
 cargo run -p liuli-fontpack --locked -- verify
-cargo run -p liuli-sim --example headless --locked
-cargo run -p liuli-sim --locked -- replay host/liuli-sim/tests/fixtures/settings.events --out target/liuli-v01 --format png
-cargo run -p liuli-sim --locked -- replay host/liuli-sim/tests/fixtures/terminal.events --out target/liuli-v02 --format png
+python tools/build-ui.py --app apps/liuli-settings/Cargo.toml --firmware host/liuli-sim/Cargo.toml --locked --action run -- --example headless
+python tools/build-ui.py --app apps/liuli-settings/Cargo.toml --firmware host/liuli-sim/Cargo.toml --locked --action run -- --bin liuli-sim -- replay host/liuli-sim/tests/fixtures/settings.events --out target/liuli-v01 --format png
+python tools/build-ui.py --app apps/liuli-settings/Cargo.toml --firmware host/liuli-sim/Cargo.toml --locked --action run -- --bin liuli-sim -- replay host/liuli-sim/tests/fixtures/terminal.events --out target/liuli-v02 --format png
 
 # Interactive browser preview (opens HTTP server on http://127.0.0.1:7878/)
-cargo run -p liuli-sim --locked -- preview --scenario terminal --port 7878
+python tools/build-ui.py --app apps/liuli-settings/Cargo.toml --firmware host/liuli-sim/Cargo.toml --locked --action run -- --bin liuli-sim -- preview --scenario terminal --port 7878
 
 # Bare-metal Cortex-M4F check, ELF section/BSS/stack audits, and StartupProbe (.data copy)
 rustup target add thumbv7em-none-eabihf
 cargo check -p liuli-settings --target thumbv7em-none-eabihf --no-default-features --locked
 Push-Location checks/firmware
-cargo build --target thumbv7em-none-eabihf --release --locked
+python ../../tools/build-ui.py --app ../../apps/liuli-settings/Cargo.toml --firmware Cargo.toml --plan-arg terminal --locked -- --target thumbv7em-none-eabihf --release
 Pop-Location
 .\checks\audit-firmware.ps1 -Elf checks/firmware/target/thumbv7em-none-eabihf/release/liuli-firmware -Profile Demo
 .\checks\audit-stack.ps1 -Elf checks/firmware/target/thumbv7em-none-eabihf/release/liuli-firmware -MaxThreadBytes 6144

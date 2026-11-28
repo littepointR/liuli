@@ -50,7 +50,9 @@ __attribute__((noreturn)) static void stop(uint32_t error) {
     __DSB();
     request->state = error ? WRITE_FAILED : DONE;
     __DSB();
-    for (;;) __WFI();
+    // The probe reads the result over the AXI bus before issuing the next reset.
+    // Keep the dedicated RAM writer awake until the host has acknowledged it.
+    for (;;) __NOP();
 }
 
 void fk_write(void) {

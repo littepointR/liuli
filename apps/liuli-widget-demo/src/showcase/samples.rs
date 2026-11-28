@@ -411,7 +411,7 @@ impl Samples {
             t.accent,
             t,
         )?;
-        if self.toast_until.is_some() {
+        if ui.optional(self.toast_until.is_some()) {
             widgets::toast(
                 ui,
                 Key(718),
@@ -673,7 +673,7 @@ impl Samples {
         )?;
         widgets::soft_keyboard(ui, KEYBOARD, &self.ime, 154, t)?;
         #[cfg(feature = "enhanced")]
-        if self.shaped.is_some() {
+        if ui.optional(self.shaped.is_some()) {
             ui.custom(Key(743), row_props(44).bg(t.surface))?;
             ui.set_custom_rev(Key(743), self.script as u32)?;
             ui.button(

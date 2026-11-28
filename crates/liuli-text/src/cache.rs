@@ -73,13 +73,31 @@ impl MetricsEntry {
     };
 }
 
+// Capability selection also removes each counter field from cache storage.
+#[derive(Clone, Copy)]
+struct Counter([u64; liuli_core::capacity::METRICS as usize]);
+impl Counter {
+    const ZERO: Self = Self([0; liuli_core::capacity::METRICS as usize]);
+    const fn get(self) -> u64 {
+        match self.0.first() {
+            Some(n) => *n,
+            None => 0,
+        }
+    }
+    fn increment(&mut self) {
+        if let Some(n) = self.0.first_mut() {
+            *n = n.saturating_add(1);
+        }
+    }
+}
+
 /// L1 fixed-slot LRU cache mapping `(font_slot, unicode)` -> `Option<GlyphMetrics>`.
 /// Caches both present and missing glyphs so repeated fallback scans avoid backing storage I/O.
 pub struct MetricsCache<const SLOTS: usize> {
     entries: [MetricsEntry; SLOTS],
     clock: u64,
-    hits: u64,
-    misses: u64,
+    hits: Counter,
+    misses: Counter,
 }
 
 impl<const SLOTS: usize> Default for MetricsCache<SLOTS> {
@@ -93,8 +111,8 @@ impl<const SLOTS: usize> MetricsCache<SLOTS> {
         Self {
             entries: [MetricsEntry::EMPTY; SLOTS],
             clock: 0,
-            hits: 0,
-            misses: 0,
+            hits: Counter::ZERO,
+            misses: Counter::ZERO,
         }
     }
 
@@ -109,26 +127,26 @@ impl<const SLOTS: usize> MetricsCache<SLOTS> {
     }
 
     pub const fn hits(&self) -> u64 {
-        self.hits
+        self.hits.get()
     }
 
     pub const fn misses(&self) -> u64 {
-        self.misses
+        self.misses.get()
     }
 
     pub fn get(&mut self, slot: u8, ch: char) -> Option<Option<GlyphMetrics>> {
         if SLOTS == 0 {
-            self.misses = self.misses.saturating_add(1);
+            self.misses.increment();
             return None;
         }
         let k = Self::key(slot, ch);
         if let Some(entry) = self.entries.iter_mut().find(|e| e.valid && e.key == k) {
             self.clock = self.clock.saturating_add(1);
             entry.used = self.clock;
-            self.hits = self.hits.saturating_add(1);
+            self.hits.increment();
             return Some(entry.found.then_some(entry.metrics));
         }
-        self.misses = self.misses.saturating_add(1);
+        self.misses.increment();
         None
     }
 
@@ -191,10 +209,10 @@ pub struct GlyphPoolCache<'a, const SLOTS: usize> {
     entries: [PoolEntry; SLOTS],
     bump: usize,
     clock: u64,
-    hits: u64,
-    misses: u64,
-    evictions: u64,
-    rle_decodes: u64,
+    hits: Counter,
+    misses: Counter,
+    evictions: Counter,
+    rle_decodes: Counter,
 }
 
 impl<'a, const SLOTS: usize> GlyphPoolCache<'a, SLOTS> {
@@ -204,10 +222,10 @@ impl<'a, const SLOTS: usize> GlyphPoolCache<'a, SLOTS> {
             entries: [PoolEntry::EMPTY; SLOTS],
             bump: 0,
             clock: 0,
-            hits: 0,
-            misses: 0,
-            evictions: 0,
-            rle_decodes: 0,
+            hits: Counter::ZERO,
+            misses: Counter::ZERO,
+            evictions: Counter::ZERO,
+            rle_decodes: Counter::ZERO,
         }
     }
 
@@ -235,28 +253,28 @@ impl<'a, const SLOTS: usize> GlyphPoolCache<'a, SLOTS> {
     }
 
     pub const fn hits(&self) -> u64 {
-        self.hits
+        self.hits.get()
     }
 
     pub const fn misses(&self) -> u64 {
-        self.misses
+        self.misses.get()
     }
 
     pub const fn evictions(&self) -> u64 {
-        self.evictions
+        self.evictions.get()
     }
 
     pub const fn rle_decodes(&self) -> u64 {
-        self.rle_decodes
+        self.rle_decodes.get()
     }
 
     pub fn record_rle_decode(&mut self) {
-        self.rle_decodes = self.rle_decodes.saturating_add(1);
+        self.rle_decodes.increment();
     }
 
     pub fn get(&mut self, slot: u8, ch_u32: u32) -> Option<(&[u8], bool)> {
         if SLOTS == 0 {
-            self.misses = self.misses.saturating_add(1);
+            self.misses.increment();
             return None;
         }
         let k = Self::key(slot, ch_u32);
@@ -264,12 +282,12 @@ impl<'a, const SLOTS: usize> GlyphPoolCache<'a, SLOTS> {
         if let Some(i) = pos {
             self.clock = self.clock.saturating_add(1);
             self.entries[i].used = self.clock;
-            self.hits = self.hits.saturating_add(1);
+            self.hits.increment();
             let off = self.entries[i].offset as usize;
             let len = self.entries[i].len as usize;
             return Some((&self.pool[off..off + len], self.entries[i].decoded));
         }
-        self.misses = self.misses.saturating_add(1);
+        self.misses.increment();
         None
     }
 
@@ -284,7 +302,7 @@ impl<'a, const SLOTS: usize> GlyphPoolCache<'a, SLOTS> {
             return false;
         };
         self.entries[victim] = PoolEntry::EMPTY;
-        self.evictions = self.evictions.saturating_add(1);
+        self.evictions.increment();
         true
     }
 
@@ -375,7 +393,7 @@ impl<'a, const SLOTS: usize> GlyphPoolCache<'a, SLOTS> {
         };
         fill(&mut self.pool[off..off + len])?;
         if decoded {
-            self.rle_decodes = self.rle_decodes.saturating_add(1);
+            self.rle_decodes.increment();
         }
         self.bump = off + len;
         self.clock = self.clock.saturating_add(1);
@@ -391,7 +409,7 @@ impl<'a, const SLOTS: usize> GlyphPoolCache<'a, SLOTS> {
     }
 }
 
-const KERN_CACHE_SLOTS: usize = 32;
+use liuli_core::capacity::KERN_CACHE_SLOTS;
 
 #[derive(Copy, Clone)]
 struct KernCacheEntry {
@@ -422,13 +440,13 @@ impl KernCache {
     }
 
     #[inline]
-    const fn index(left: u32, right: u32) -> usize {
-        ((left.wrapping_mul(31)) ^ right) as usize & (KERN_CACHE_SLOTS - 1)
+    fn index(left: u32, right: u32) -> usize {
+        ((left.wrapping_mul(31)) ^ right) as usize % KERN_CACHE_SLOTS.max(1)
     }
 
     #[inline]
     fn get(&self, left: u32, right: u32) -> Option<i16> {
-        let e = self.slots[Self::index(left, right)];
+        let e = *self.slots.get(Self::index(left, right))?;
         if e.occupied && e.left == left && e.right == right {
             Some(e.delta)
         } else {
@@ -438,7 +456,10 @@ impl KernCache {
 
     #[inline]
     fn insert(&mut self, left: u32, right: u32, delta: i16) {
-        self.slots[Self::index(left, right)] = KernCacheEntry {
+        let Some(slot) = self.slots.get_mut(Self::index(left, right)) else {
+            return;
+        };
+        *slot = KernCacheEntry {
             left,
             right,
             delta,

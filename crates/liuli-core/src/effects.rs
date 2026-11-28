@@ -371,19 +371,19 @@ impl SurfaceStyle {
     }
 }
 
-pub const MAX_EFFECTS: usize = 8;
+pub use crate::capacity::MAX_EFFECTS;
 #[derive(Clone, Copy)]
 pub struct Effects {
     items: [(Key, SurfaceStyle); MAX_EFFECTS],
-    len: u8,
+    len: [u8; (MAX_EFFECTS != 0) as usize],
 }
 impl Effects {
     pub const EMPTY: Self = Self {
         items: [(Key(0), SurfaceStyle::FLAT); MAX_EFFECTS],
-        len: 0,
+        len: [0; (MAX_EFFECTS != 0) as usize],
     };
     pub fn iter(&self) -> &[(Key, SurfaceStyle)] {
-        &self.items[..usize::from(self.len)]
+        &self.items[..usize::from(self.len.first().copied().unwrap_or(0))]
     }
     pub fn get(&self, key: Key) -> SurfaceStyle {
         self.iter()
@@ -399,6 +399,11 @@ impl Effects {
                 .is_some_and(|s| s.opacity > 15 || s.backdrop_radius > 8 || s.tint_alpha > 15)
         {
             return Err(BuildError::InvalidRange);
+        }
+        if (!crate::capacity::SHADOWS && style.shadow.is_some())
+            || (!crate::capacity::MASKS && style.composition.is_some_and(|c| c.masks_content()))
+        {
+            return Err(BuildError::UnsupportedEffect);
         }
         if !cfg!(feature = "layers")
             && style.shadow.is_some()
@@ -416,10 +421,12 @@ impl Effects {
         }
         let entry = self
             .items
-            .get_mut(usize::from(self.len))
+            .get_mut(usize::from(self.len.first().copied().unwrap_or(0)))
             .ok_or(BuildError::Effects)?;
         *entry = (key, style);
-        self.len += 1;
+        if let Some(n) = self.len.first_mut() {
+            *n += 1;
+        }
         Ok(())
     }
     #[cfg(feature = "layers")]
@@ -440,7 +447,7 @@ impl Effects {
         layer.opacity = ((u16::from(layer.opacity) * u16::from(opacity) + 7) / 15) as u8;
         layer.projection.0 = layer.projection.0.wrapping_add(turn);
         style.layer = Some(layer);
-        if let Some(entry) = self.items[..usize::from(self.len)]
+        if let Some(entry) = self.items[..usize::from(self.len.first().copied().unwrap_or(0))]
             .iter_mut()
             .find(|e| e.0 == key)
         {

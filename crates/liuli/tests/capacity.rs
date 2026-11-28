@@ -27,7 +27,6 @@ fn static_ram_sizes_fit_128_kib_budget() {
         total_core
     );
 
-    #[cfg(not(any(feature = "capacity-128", feature = "capacity-256")))]
     assert!(
         total_core <= 128 * 1024,
         "Storage + 2 DMA bands ({total_core} B) exceeded 128 KiB!"

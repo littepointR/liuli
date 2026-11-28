@@ -58,7 +58,7 @@ python tools/export-touch-trace.py --port PORT --seconds 45 --out touch.trace
 
 ~~~sh
 python tools/export-touch-trace.py --log serial.log --out touch.trace
-cargo run --offline --manifest-path liuli-alarms/Cargo.toml --example preview -- liuli-alarms/assets/body.lf4 --replay touch.trace
+python tools/build-ui.py --offline --app liuli-alarms/Cargo.toml --action run -- --example preview -- liuli-alarms/assets/body.lf4 --replay touch.trace
 ~~~
 
 随包的 `liuli-alarms/tests/fixtures/touch-workflow.trace` 全程通过原始指针坐标操作列表、详情、编辑器和模态框。运行 `cargo test --offline --manifest-path liuli-alarms/Cargo.toml --test workflow` 可断言第 12 条记录从 50 变为 75，返回后恢复偏移 320 和焦点，下一条记录仍为 50。
@@ -67,7 +67,7 @@ cargo run --offline --manifest-path liuli-alarms/Cargo.toml --example preview --
 
 ~~~sh
 python tools/export-touch-trace.py --log liuli-alarms/tests/fixtures/s3-long-press.serial.gz --out hardware.trace
-cargo run --offline --manifest-path liuli-alarms/Cargo.toml --example preview -- liuli-alarms/assets/body.lf4 --replay hardware.trace
+python tools/build-ui.py --offline --app liuli-alarms/Cargo.toml --action run -- --example preview -- liuli-alarms/assets/body.lf4 --replay hardware.trace
 ~~~
 
 ## 生成固件分发包
@@ -77,3 +77,9 @@ cargo run --offline --manifest-path liuli-alarms/Cargo.toml --example preview --
 ~~~
 python package-firmware.py --sdk . --basic target/basic/idf --enhanced target/enhanced/idf --benchmark target/benchmark/idf --starter target/starter/idf --widget-demo target/widget-demo/idf --input-trace target/trace-input/idf --out liuli-waveshare-s3.zip
 ~~~
+
+## 输入唤醒与生产配置
+
+基础和增强告警固件、独立模板固件在构建前读取应用声明并设置目标容量。Widget Demo 沿用兼容容量档。普通运行默认每 10 ms 轮询 FT3168，可用 `--touch-poll-ms` 设置间隔。已接出 FT3168 INT 的板型可以用 `--touch-irq GPIO` 指定引脚。空闲时 FreeRTOS 等待边沿或 UI 截止时间，活动触点和 I/O 失败使用有限间隔复读。输入录制保留时钟推进。
+
+`--diagnostics` 开启帧、字体及传输计时。基准配置自动启用。普通镜像默认裁掉引擎指标与异步 DMA 会话。QSPI 仍由板包使用 DMA 传输。

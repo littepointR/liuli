@@ -1,5 +1,6 @@
 [package]
 name = "liuli-core"
+links = "liuli_profile"
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true
@@ -9,8 +10,9 @@ license.workspace = true
 embedded-graphics-core.workspace = true
 
 [features]
+host-testing=[]
+scene-planner=[]
+part-painters=[]
 owned-images=[]
 layers=["owned-images"]
 inspector=[]
-capacity-128=[]
-capacity-256=["capacity-128"]

@@ -234,13 +234,13 @@ fn wave3_widgets_dual_fonts_icons_and_offscreen_sparkline_match_reference() {
             }
         }
 
-        fn view(model: &Self::Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildError> {
+        fn view(model: &Self::Model) -> impl Scene {
             let mut root_p = NodeProps::new();
             root_p.width = Length::Fill(1);
             root_p.height = Length::Fill(1);
             root_p.bg = Some(Rgb565::new(2, 4, 3));
 
-            out.root(Key(1), root_p, |ui| {
+            layout(Key(1), root_p, move |ui| {
                 ui.column(
                     Key(2),
                     NodeProps {

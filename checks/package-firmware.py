@@ -25,7 +25,7 @@ python -m esptool --chip esp32s3 -p PORT --after watchdog_reset write_flash 0x10
 python -m esptool --chip esp32s3 -p PORT --after watchdog_reset write_flash --flash_mode dio --flash_size 16MB --flash_freq 80m 0x0 bootloader.bin 0x8000 partition-table.bin 0x10000 enhanced.bin 0x310000 body.lf4
 ~~~
 
-按住 BOOT，轻按并释放 RESET，再松开 BOOT 可进入 ROM 下载模式。启动串口为 115200，首帧日志包含 pixels=128640。各版本的实板测量和覆盖范围见 SDK 内的 docs/qualification.md。
+按住 BOOT，轻按并释放 RESET，再松开 BOOT 可进入 ROM 下载模式。启动串口为 115200，启用 --diagnostics 时首帧日志包含 pixels=128640。各版本的实板测量和覆盖范围见 SDK 内的 docs/qualification.md。
 """
 
 

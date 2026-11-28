@@ -551,7 +551,7 @@ impl App for TerminalApp {
         }
     }
 
-    fn view(model: &Self::Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildError> {
+    fn view(model: &Self::Model) -> impl Scene {
         use terminal_keys as tk;
 
         let t = Self::theme(model);
@@ -562,7 +562,7 @@ impl App for TerminalApp {
         root_p.bg = Some(t.bg);
         root_p.theme_id = t.id;
 
-        out.root(tk::ROOT, root_p, |ui| {
+        layout(tk::ROOT, root_p, move |ui| {
             let mut stack_p = NodeProps::new();
             stack_p.width = Length::Fill(1);
             stack_p.height = Length::Fill(1);
@@ -612,7 +612,10 @@ impl App for TerminalApp {
                     })?;
 
                     // 2. Active page content (186 px via Fill(1))
-                    match model.active_page {
+                    match ui.variant(
+                        model.active_page,
+                        &[PageId::Dashboard, PageId::Settings, PageId::Diagnostics],
+                    ) {
                         PageId::Dashboard => pages::dashboard::build_dashboard(model, ui, t)?,
                         PageId::Settings => pages::settings::build_settings(model, ui, t)?,
                         PageId::Diagnostics => pages::diagnostics::build_diagnostics(model, ui, t)?,
@@ -640,7 +643,8 @@ impl App for TerminalApp {
                 })?;
 
                 // 4. Optional non-focusable click-through Toast
-                if let Some(toast) = model.toast {
+                if ui.optional(model.toast.is_some()) {
+                    let text = model.toast.map_or("", |toast| toast.text);
                     let mut layer_p = NodeProps::new();
                     layer_p.width = Length::Fill(1);
                     layer_p.height = Length::Fill(1);
@@ -668,7 +672,7 @@ impl App for TerminalApp {
                             tl_p.fg = t.on_accent;
                             tl_p.font = FontId::Body16;
                             tl_p.text_align = TextAlign::Center;
-                            tl_p.text = TextRef::Static(toast.text);
+                            tl_p.text = TextRef::Static(text);
                             tl_p.max_lines = 1;
                             ui.label(tk::TOAST_LABEL, tl_p)
                         })
@@ -676,7 +680,7 @@ impl App for TerminalApp {
                 }
 
                 // 5. Optional Confirm Reset Modal
-                if model.settings.reset_modal_open {
+                if ui.optional(model.settings.reset_modal_open) {
                     let mut modal_p = NodeProps::new();
                     modal_p.width = Length::Fill(1);
                     modal_p.height = Length::Fill(1);

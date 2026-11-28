@@ -901,7 +901,20 @@ fn showcase_800x480_tabs_interactions_and_incremental_rendering_pass() {
             tile.layout_rect.w >= cell_width,
             "tile {key} leaves its grid cell empty"
         );
-        assert!(tile.text_cache.size.width + 16 <= tile.layout_rect.w);
+        assert!(
+            app.engine()
+                .active_tree()
+                .text_cache(usize::from(
+                    app.engine()
+                        .active_tree()
+                        .find_slot_by_key(Key(key))
+                        .unwrap()
+                ))
+                .size
+                .width
+                + 16
+                <= tile.layout_rect.w
+        );
         let pos = Point::new(
             tile.layout_rect.x + cell_width as i32 - 6,
             tile.layout_rect.y + 23,

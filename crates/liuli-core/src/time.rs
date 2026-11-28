@@ -435,15 +435,16 @@ impl AnimOverride {
     };
 }
 
-pub const ANIM_SAMPLE_INTERVAL_MS: u64 = 16;
+pub const ANIM_SAMPLE_INTERVAL_MS: u64 = crate::capacity::SAMPLE_INTERVAL_MS as u64;
 pub const TOGGLE_ANIM_DURATION_MS: u32 = 160;
 pub const ANIM_SCALE: i32 = 1000;
-pub const REPEAT_DELAY_MS: u64 = 400;
-pub const REPEAT_PERIOD_MS: u64 = 80;
+pub const REPEAT_DELAY_MS: u64 = crate::capacity::REPEAT_DELAY_MS as u64;
+pub const REPEAT_PERIOD_MS: u64 = crate::capacity::REPEAT_PERIOD_MS as u64;
 pub const MAX_REPEAT_STEPS_PER_ADVANCE: u16 = 8;
 
 #[derive(Clone, Debug)]
 pub struct AnimPool {
+    active_count: [u8; (MAX_ANIMATIONS != 0) as usize],
     tracks: [AnimTrack; MAX_ANIMATIONS],
     curves: [Option<&'static crate::animation::StyleCurve>; MAX_ANIMATIONS],
     // Keep the zero-initialized pool in .bss. Tags are zero for empty or 1 + AnimProp.
@@ -453,6 +454,7 @@ pub struct AnimPool {
 
 impl AnimPool {
     pub const ZERO: Self = Self {
+        active_count: [0; (MAX_ANIMATIONS != 0) as usize],
         tracks: [AnimTrack::ZERO; MAX_ANIMATIONS],
         curves: [None; MAX_ANIMATIONS],
         overrides: [(Key(0), 0); MAX_ANIMATIONS],
@@ -464,12 +466,14 @@ impl AnimPool {
     }
 
     pub fn reset(&mut self) {
+        self.active_count.fill(0);
         self.tracks = [AnimTrack::ZERO; MAX_ANIMATIONS];
         self.override_props = [0; MAX_ANIMATIONS];
     }
 
     #[inline]
     pub fn copy_from(&mut self, other: &Self) {
+        self.active_count = other.active_count;
         self.tracks = other.tracks;
         self.curves = other.curves;
         self.overrides = other.overrides;
@@ -570,6 +574,9 @@ impl AnimPool {
         for (i, t) in self.tracks.iter_mut().enumerate() {
             if !t.active {
                 self.curves[i] = curve;
+                for n in &mut self.active_count {
+                    *n += 1;
+                }
                 *t = AnimTrack {
                     active: true,
                     easing,
@@ -654,6 +661,9 @@ impl AnimPool {
         for t in &mut self.tracks {
             if t.active && t.key == key {
                 t.active = false;
+                for n in &mut self.active_count {
+                    *n -= 1;
+                }
             }
         }
         for (entry, prop) in self.overrides.iter().zip(&mut self.override_props) {
@@ -682,6 +692,9 @@ impl AnimPool {
                 let prop = self.tracks[idx].prop;
                 let end_val = self.tracks[idx].end_val;
                 self.tracks[idx].active = false;
+                for n in &mut self.active_count {
+                    *n -= 1;
+                }
                 self.set_override(key, prop, end_val);
             }
         }
@@ -689,10 +702,13 @@ impl AnimPool {
     }
 
     pub fn has_active(&self) -> bool {
-        self.tracks.iter().any(|t| t.active)
+        self.active_count.first().copied().unwrap_or(0) != 0
     }
 
     pub fn next_wakeup(&self, now: InstantMs) -> NextWakeup {
+        if !self.has_active() {
+            return NextWakeup::OnEvent;
+        }
         let mut earliest: Option<InstantMs> = None;
         for t in &self.tracks {
             if !t.active {
@@ -728,6 +744,9 @@ impl AnimPool {
         for t in &mut self.tracks {
             if t.active && t.key == key && t.prop == prop {
                 t.active = false;
+                for n in &mut self.active_count {
+                    *n -= 1;
+                }
             }
         }
     }
@@ -740,6 +759,9 @@ impl AnimPool {
     }
 
     fn set_override(&mut self, key: Key, prop: AnimProp, val: i32) {
+        if MAX_ANIMATIONS == 0 {
+            return;
+        }
         let slot = self
             .override_slot(key, prop)
             .or_else(|| self.override_props.iter().position(|&tag| tag == 0))
@@ -783,7 +805,7 @@ impl ScrollPhysics {
     // No fresh displacement for this long is a hold, even if no Move was emitted.
     const RELEASE_WINDOW_MS: u64 = 100;
     // Fraction of velocity retained after each fixed step.
-    const FRICTION_NUM: i64 = 235;
+    const FRICTION_NUM: i64 = crate::capacity::FRICTION_NUM as i64;
     const FRICTION_DEN: i64 = 256;
 
     pub const ZERO: Self = Self {

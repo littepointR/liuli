@@ -65,7 +65,9 @@ void board_sample(unsigned kind, unsigned n, int64_t elapsed, unsigned pixels) {
 
 static spi_transaction_t pending_tr;
 static bool pending_active = false;
+#ifdef LIULI_DIAGNOSTICS
 static int64_t pending_start = 0;
+#endif
 
 int board_flush(void) {
   if (!pending_active)
@@ -73,7 +75,9 @@ int board_flush(void) {
   spi_transaction_t *ret = NULL;
   esp_err_t e = spi_device_get_trans_result(panel, &ret, portMAX_DELAY);
   pending_active = false;
+#ifdef LIULI_DIAGNOSTICS
   transfer_us += esp_timer_get_time() - pending_start;
+#endif
   return e;
 }
 
@@ -85,6 +89,15 @@ static esp_err_t send(uint8_t op, uint8_t reg, const void *bytes, size_t n) {
                           .flags = op == 0x32 ? SPI_TRANS_MODE_QIO : 0};
   return spi_device_polling_transmit(panel, &tr);
 }
+#if LIULI_TOUCH_IRQ >= 0
+static TaskHandle_t input_task;
+static void touch_edge(void *arg) {
+  BaseType_t wake = pdFALSE;
+  vTaskNotifyGiveFromISR(input_task, &wake);
+  if (wake) portYIELD_FROM_ISR();
+}
+#endif
+
 static void setup(void) {
   const spi_bus_config_t bus = {.sclk_io_num = 47,
                                 .data0_io_num = 18,
@@ -129,6 +142,16 @@ static void setup(void) {
                                   .scl_speed_hz = 300000};
   ESP_ERROR_CHECK(i2c_master_bus_add_device(i2c, &ft, &touch));
   ESP_ERROR_CHECK(i2c_master_transmit(touch, (uint8_t[]){0, 0}, 2, 100));
+#if LIULI_TOUCH_IRQ >= 0
+  input_task = xTaskGetCurrentTaskHandle();
+  gpio_config_t irq = {.pin_bit_mask = 1ULL << LIULI_TOUCH_IRQ,
+                       .mode = GPIO_MODE_INPUT, .pull_up_en = GPIO_PULLUP_ENABLE,
+                       .intr_type = GPIO_INTR_NEGEDGE};
+  ESP_ERROR_CHECK(gpio_config(&irq));
+  esp_err_t installed = gpio_install_isr_service(0);
+  if (installed != ESP_ERR_INVALID_STATE) ESP_ERROR_CHECK(installed);
+  ESP_ERROR_CHECK(gpio_isr_handler_add(LIULI_TOUCH_IRQ, touch_edge, NULL));
+#endif
 }
 int board_pixels(int x, int y, unsigned w, unsigned h, const uint16_t *pixels) {
   if (x < 0 || y < 0 || w == 0 || h == 0 || x + w > 240 || y + h > 536)
@@ -136,12 +159,16 @@ int board_pixels(int x, int y, unsigned w, unsigned h, const uint16_t *pixels) {
   esp_err_t e = board_flush();
   if (e != ESP_OK)
     return e;
+#ifdef LIULI_DIAGNOSTICS
   const int64_t setup_start = esp_timer_get_time();
+#endif
   unsigned x1 = x + w - 1, y1 = y + h - 1;
   e = send(2, 0x2A, (uint8_t[]){x >> 8, x, x1 >> 8, x1}, 4);
   if (e == ESP_OK)
     e = send(2, 0x2B, (uint8_t[]){y >> 8, y, y1 >> 8, y1}, 4);
+#ifdef LIULI_DIAGNOSTICS
   transfer_us += esp_timer_get_time() - setup_start;
+#endif
   if (e != ESP_OK)
     return e;
   pending_tr = (spi_transaction_t){.cmd = 0x32,
@@ -149,7 +176,9 @@ int board_pixels(int x, int y, unsigned w, unsigned h, const uint16_t *pixels) {
                                    .length = w * h * 16,
                                    .tx_buffer = pixels,
                                    .flags = SPI_TRANS_MODE_QIO};
+#ifdef LIULI_DIAGNOSTICS
   pending_start = esp_timer_get_time();
+#endif
   e = spi_device_queue_trans(panel, &pending_tr, portMAX_DELAY);
   pending_active = (e == ESP_OK);
   return e;
@@ -166,11 +195,13 @@ int board_touch(board_contact_t *points) {
   const unsigned count = data[0] & 15;
   if (count > 2)
     return -1;
+#ifdef LIULI_DIAGNOSTICS
   static unsigned peak = 0;
   if (count > peak) {
     peak = count;
     ESP_LOGI("liuli", "touch_contacts_peak=%u", peak);
   }
+#endif
   for (unsigned i = 0; i < count; i++) {
     const uint8_t *pt = &data[1 + 6 * i];
     points[i] = (board_contact_t){.x = ((pt[0] & 15) << 8) | pt[1],
@@ -204,7 +235,24 @@ int board_sleep_cycle(void) {
 }
 int64_t board_now_us(void) { return esp_timer_get_time(); }
 void board_wait(void) { vTaskDelay(pdMS_TO_TICKS(10)); }
-void board_wait_ms(uint32_t ms) { vTaskDelay(pdMS_TO_TICKS(ms ? ms : 1)); }
+// Return true when the next loop should read the touch controller.
+int board_wait_input(uint32_t deadline_ms, uint32_t since_read_ms, int active) {
+  uint32_t interval = LIULI_TOUCH_POLL_MS;
+#if LIULI_TOUCH_IRQ >= 0
+  if (!active) interval = UINT32_MAX;
+#endif
+  uint32_t until_poll = interval == UINT32_MAX ? UINT32_MAX :
+      (since_read_ms >= interval ? 0 : interval - since_read_ms);
+  uint32_t ms = deadline_ms < until_poll ? deadline_ms : until_poll;
+  TickType_t ticks = ms == UINT32_MAX ? portMAX_DELAY :
+      (TickType_t)(((uint64_t)ms * configTICK_RATE_HZ + 999) / 1000);
+#if LIULI_TOUCH_IRQ >= 0
+  if (ulTaskNotifyTake(pdTRUE, ticks)) return 1;
+#else
+  if (ticks) vTaskDelay(ticks);
+#endif
+  return until_poll != UINT32_MAX && until_poll <= deadline_ms;
+}
 void board_frame(unsigned pixels, int64_t elapsed_us) {
   ESP_LOGI("liuli",
            "timestamp_us=%lld pixels=%u frame_us=%lld transfer_us=%lld "

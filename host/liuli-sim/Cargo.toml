@@ -43,3 +43,6 @@ required-features = ["demos"]
 [[test]]
 name = "replay"
 required-features = ["demos"]
+
+[dev-dependencies]
+liuli = { workspace = true, features = ["host-testing"] }

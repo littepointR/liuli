@@ -3,8 +3,8 @@
 解压对应操作系统的 SDK 到空目录。桌面开发需要 Rust 1.100 和系统链接器。SDK 内的 .cargo/config.toml 已指向随包供应的 Cargo 源。保留该目录和 vendor，然后在 SDK 根目录运行：
 
 ~~~
-cargo run --offline --manifest-path device-ui/Cargo.toml --example preview -- --headless
-cargo run --offline --manifest-path device-ui/Cargo.toml --example preview
+python tools/build-ui.py --offline --app device-ui/Cargo.toml --action run -- --example preview -- --headless
+python tools/build-ui.py --offline --app device-ui/Cargo.toml --action run -- --example preview
 ~~~
 
 浏览器打开终端打印的本机地址。第一条命令会用模板应用构建两帧，对照完整重绘。第二条命令会提供交互预览。在 device-ui/src/lib.rs 实现 App，Model 保存业务数据，update 返回 Change::View 时框架重建视图。桌面和设备使用相同的键、布局和逻辑坐标。在 api/liuli/index.html 和 api/liuli_widgets/index.html 查看 API。
@@ -38,8 +38,8 @@ liuli-trace 1
 用下面的命令启动控件目录，切换 Controls / Meter，操作选择器、数值编辑器和确认框。控件目录可独立从供应的控件包构建。
 
 ~~~
-cargo run --offline --manifest-path liuli-widgets/Cargo.toml --example catalog -- device-ui/assets/body.lf4
-cargo run --offline --manifest-path liuli-alarms/Cargo.toml --example preview -- liuli-alarms/assets/body.lf4
+python tools/build-ui.py --offline --app liuli-widgets/Cargo.toml --action run --plan-example catalog -- --example catalog -- device-ui/assets/body.lf4
+python tools/build-ui.py --offline --app liuli-alarms/Cargo.toml --action run -- --example preview -- liuli-alarms/assets/body.lf4
 cargo test --offline --manifest-path liuli-alarms/Cargo.toml --release
 ~~~
 
@@ -233,7 +233,7 @@ let props = NodeProps {
 
 固定图形可以在编译期准备，用 `WidgetCanvas::static_path` 提交一次绘制命令。动态路径使用 `WidgetCanvas::path`，引擎将边复制到有界命令表，每四条边占一个槽位，另需一个头部槽位。命令容量不足返回 `BuildError::Commands`。路径填充与描边使用每像素 2×2 覆盖采样。
 
-主题表面通过 `SurfaceSpec::with_composition` 设置轮廓、子树裁剪、透明度遮罩与阴影来源。底层 `ViewBuilder::decorate` 和第三方控件可以传入同一份 `SurfaceComposition`。例如，带外阴影的卡片可以让内容沿主题圆角裁剪，并在底部 40 像素逐渐透明：
+主题表面通过 `SurfaceSpec::with_composition` 设置轮廓、子树裁剪、透明度遮罩与阴影来源。作用域内的 `Children::decorate` 和第三方控件可以传入同一份 `SurfaceComposition`。例如，带外阴影的卡片可以让内容沿主题圆角裁剪，并在底部 40 像素逐渐透明：
 
 ```rust
 use liuli::prelude::*;
@@ -271,7 +271,7 @@ tools/bin/liuli-image logo.ppm device-ui/assets/logo.l565
 用下面的命令打开单行编辑器。输入控件取得框架焦点后，预览器会显示“输入到当前文本框”。在此处使用系统输入法、粘贴文本或用左右方向键和退格键编辑。用 --headless 可重放组合更新、提交和取消，逐帧检查增量绘制与全屏参考图像。
 
 ~~~
-cargo run --offline --manifest-path liuli-alarms/Cargo.toml --example editor --features enhanced -- boards/waveshare-s3-amoled/bench-fonts/Arabic.ttf boards/waveshare-s3-amoled/bench-fonts/Devanagari.ttf
+python tools/build-ui.py --offline --app liuli-alarms/Cargo.toml --action run --plan-example editor --app-features enhanced -- --example editor -- boards/waveshare-s3-amoled/bench-fonts/Arabic.ttf boards/waveshare-s3-amoled/bench-fonts/Devanagari.ttf
 ~~~
 
 示例把 TextField 放在模型中，用 accepts_text 和 on_text 接收焦点路由的 TextInput。预编辑与已提交字符串分开保存，按字素进行删除，按视觉顺序移动光标。paint_model 提交不可变的 RGB565 文本图，保留到该帧被替换。单行控件在创建时指定最大 UTF-8 字节数，容量或栅格化失败时保留上次成功的文字和图像。
@@ -283,7 +283,7 @@ cargo run --offline --manifest-path liuli-alarms/Cargo.toml --example editor --f
 在浏览器里 Shift + 点击节点可查看键、祖先、声明尺寸、测量结果、裁剪与最终颜色，同时可对照实际输入目标。Theme::control 记录主题、声明位置以及每个局部覆盖的来源，检查器展示当前已提交视图的记录。帧诊断记录触发输入和命中路径、实际变色像素、传输字节、内嵌字形请求次数和字节数、跨条带重复请求及容量峰值。状态面板显示焦点、捕获者、节点数、命令数、文本池字节数和本帧传输像素。Damage 和 Bands 标注重绘与发送区域。点击“导出操作回放”，将文件放入应用的测试夹具目录。以下命令在从初始模型启动的模板上重放，包括计时器推进及触点 ID：
 
 ~~~
-cargo run --offline --manifest-path device-ui/Cargo.toml --example preview -- --replay recorded.trace
+python tools/build-ui.py --offline --app device-ui/Cargo.toml --action run -- --example preview -- --replay recorded.trace
 ~~~
 
 对告警应用，先给 preview 传入字库路径，再传 --replay 与文件路径。回放逐帧比较增量渲染与全屏重绘；用模型、焦点或截图断言额外验证业务结果。每次预览保留最近 16 帧的 PNG，完整事件记录最多 8 MiB，达到上限会明确报错。
@@ -291,11 +291,11 @@ cargo run --offline --manifest-path device-ui/Cargo.toml --example preview -- --
 在 SDK 根目录运行以下诊断和编辑器回放。两条命令都使用随包资源。
 
 ~~~sh
-cargo run --offline --manifest-path liuli-alarms/Cargo.toml --example diagnostics
-cargo run --offline --manifest-path liuli-alarms/Cargo.toml --example editor --features enhanced -- --replay docs/hardware/rc1-browser-ime.trace
+python tools/build-ui.py --offline --app liuli-alarms/Cargo.toml --action run --plan-example diagnostics -- --example diagnostics
+python tools/build-ui.py --offline --app liuli-alarms/Cargo.toml --action run --plan-example editor --app-features enhanced -- --example editor -- --replay docs/hardware/rc1-browser-ime.trace
 ~~~
 
-诊断示例在同一个 96 × 48 场景内重现三类故障。点 (8, 8) 应当选中按钮 11，命中报告给出挡住按钮的可点击标签 12。将覆盖层的 clickable 设为 false 即可让点击落到按钮。第二帧只修改根节点的 theme_id，报告显示像素变化为零，仍传输了 9,216 B；移除没有视觉变化的版本递增可避免这次整屏发送。最后一次更新耗尽节点容量，错误列出页面 7、键 160 和 Nodes。例子断言上一帧仍然可用，再通过 AppSession::recover 缩小活动窗口并提交视图。
+诊断示例在同一个 96 × 48 场景内重现三类故障。点 (8, 8) 应当选中按钮 11，命中报告给出挡住按钮的可点击标签 12。将覆盖层的 clickable 设为 false 即可让点击落到按钮。第二帧只修改根节点的 theme_id，报告显示像素变化为零，仍传输了 9,216 B；移除没有视觉变化的版本递增可避免这次整屏发送。最后一次更新超出列表的八条业务上限，错误列出页面 7、键 100 和 ItemLimit。例子断言上一帧仍然可用，再通过 AppSession::recover 缩小活动窗口并提交视图。
 
 ## 从 v0.2 迁移与恢复
 
@@ -339,16 +339,9 @@ try_message、try_dispatch 和 try_advance 提供事务结果。Busy 会交还�
 
 ## 容量档位与声明式布局进阶
 
-### 1. 编译期容量档位（无需堆分配）
-通过 Cargo feature 在编译期静态调整节点池、文本池、命令缓冲与脏矩形预算，保持零 `alloc` 与静态 `.bss` 分配：
+### 1. 从视图生成编译期容量
 
-| 档位 Feature | `MAX_NODES` | `MAX_DEPTH` | `MAX_TEXT_BYTES` | `MAX_COMMANDS` | `MAX_DAMAGE` | `MAX_ANIMATIONS` |
-|---|---|---|---|---|---|---|
-| 默认 (`default`) | 64 | 12 | 1024 | 256 | 12 | 8 |
-| `capacity-128` | 128 | 14 | 2048 | 512 | 16 | 12 |
-| `capacity-256` | 250 | 16 | 4096 | 1024 | 24 | 16 |
-
-32 位、64 节点配置的 `Storage` 编译上限为 67,456 字节。启用增强档图层后，三份效果表和两份绘制命令列表的元数据另有 256 字节预算。条带缓冲、引擎实例、应用模型和栈单独计量。
+应用返回 `impl Scene`。构建工具从实际场景推导节点数、嵌套深度和文字槽，生成固件的静态数组。条件面板、延迟挂载的页签和业务列表都能声明峰值。绘制命令、图片字节、动画池等预算可以独立设置。条带、引擎实例、业务模型和栈单独计量。[容量接口和构建示例](capacity.md)
 
 ### 2. 链式 `NodeProps`、网格、横向滚动与 2D 焦点
 - **`const fn` 构建器**：`NodeProps::new().width(...).height(...).padding(...).gap(...).justify(Justify::SpaceBetween).grid_cols(cols).bg(...).fg(...).accent(...).border(color, w).radius(r).focusable(true).clickable(true)`。

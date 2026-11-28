@@ -6,6 +6,7 @@ unsafe extern "C" {
     fn board_alloc(size: usize, alignment: usize) -> *mut u8;
     fn board_free(ptr: *mut u8);
     fn board_read_font(offset: usize, data: *mut u8, len: usize) -> i32;
+    #[cfg(feature = "diagnostics")]
     fn board_font_metrics(reads: u64, bytes: u64, hits: u64, cache_size: usize);
 }
 struct Psram;
@@ -41,15 +42,21 @@ pub struct Reader<'a> {
     band: u32,
     #[cfg(any(feature = "benchmark", feature = "effects-benchmark"))]
     seen: alloc::vec::Vec<(u32, u32)>,
+    #[cfg(feature = "diagnostics")]
     cross_band: u32,
+    #[cfg(feature = "diagnostics")]
     requests: u32,
+    #[cfg(feature = "diagnostics")]
     baseline: IoMetrics,
 }
 impl<'a> Reader<'a> {
     pub fn new(mapped: &[u8], cache: &'a mut [u8]) -> Result<Self, ReadError<i32>> {
+        #[cfg(feature = "diagnostics")]
         let cache_size = cache.len();
         let font = StoredFont::open(BlockCache::new(Partition(mapped.len()), cache))?;
+        #[cfg(feature = "diagnostics")]
         let m = font.source().metrics();
+        #[cfg(feature = "diagnostics")]
         unsafe {
             board_font_metrics(m.reads, m.bytes, m.cache_hits, cache_size);
         }
@@ -64,13 +71,17 @@ impl<'a> Reader<'a> {
             band: 0,
             #[cfg(any(feature = "benchmark", feature = "effects-benchmark"))]
             seen,
+            #[cfg(feature = "diagnostics")]
             cross_band: 0,
+            #[cfg(feature = "diagnostics")]
             requests: 0,
+            #[cfg(feature = "diagnostics")]
             baseline: m,
         })
     }
 }
 impl super::FrameGlyphs for Reader<'_> {
+    #[cfg(feature = "diagnostics")]
     fn start(&mut self) {
         self.baseline = self.font.source().metrics();
         self.cross_band = 0;
@@ -81,6 +92,7 @@ impl super::FrameGlyphs for Reader<'_> {
             self.band = 0;
         }
     }
+    #[cfg(feature = "diagnostics")]
     fn finish(&self) {
         let m = self.font.source().metrics();
         unsafe {
@@ -94,6 +106,7 @@ impl super::FrameGlyphs for Reader<'_> {
     }
 }
 unsafe extern "C" {
+    #[cfg(feature = "diagnostics")]
     fn board_font_frame(requests: u32, repeated: u32, reads: u32, bytes: u32);
 }
 impl GlyphPixels for Reader<'_> {
@@ -114,7 +127,10 @@ impl GlyphPixels for Reader<'_> {
         if !self.mapped.contains(&(g.data.as_ptr() as usize)) {
             return Ok(g.data);
         }
-        self.requests += 1;
+        #[cfg(feature = "diagnostics")]
+        {
+            self.requests += 1;
+        }
         #[cfg(any(feature = "benchmark", feature = "effects-benchmark"))]
         {
             let key = g.metrics.unicode;

@@ -325,3 +325,56 @@ def capture(commander, uid, checkpoints, lengths):
         return reports
     finally:
         link.close()
+
+
+def touch_wakeup(commander, uid, elf):
+    """Observe idle I2C and an EXTI3 software edge with hardware breakpoints."""
+    import re
+    import subprocess
+    from build import FLASH, binary
+
+    image = binary(elf.read_bytes())
+    symbols = subprocess.check_output(["llvm-nm", str(elf)], text=True)
+    def address(name):
+        match = re.search(r"(?m)^([0-9a-fA-F]+) T " + name + r"$", symbols)
+        if match is None:
+            raise ValueError(f"{elf} lacks {name}; build with --touch-irq")
+        return int(match[1], 16)
+    handler, pin_write = address("EXTI3"), address("fk_pin_write")
+    link = new_link(commander)
+    handles = []
+    verified = False
+    try:
+        attach(commander, link, uid)
+        for offset in range(0, len(image), 4096):
+            block = image[offset:offset+4096]
+            if bytes(link.memory_read8(FLASH + offset, len(block))) != block:
+                raise ValueError(f"installed flash differs from {elf} at block {offset:#x}")
+        verified = True
+        link.reset(halt=False)
+        time.sleep(3)
+        link.halt()
+        handles.append(link.hardware_breakpoint_set(pin_write))
+        handles.append(link.hardware_breakpoint_set(handler))
+        link.restart()
+        time.sleep(0.5)
+        if link.halted():
+            raise RuntimeError("touch interrupt or I2C activity during the idle sample")
+        # STM32H743 EXTI SWIER1 line 3. The GT911 remains in its normal electrical state.
+        swier = 0x58000008
+        link.memory_write32(swier, [link.memory_read32(swier, 1)[0] | (1 << 3)])
+        for name, expected in (("EXTI3", handler), ("GT911 bus", pin_write)):
+            deadline = time.monotonic() + 2
+            while not link.halted() and time.monotonic() < deadline:
+                time.sleep(0.005)
+            if not link.halted() or link.register_read(15) & ~1 != expected:
+                raise RuntimeError(f"software interrupt did not reach {name}")
+            link.breakpoint_clear(handles.pop())
+            link.restart()
+        print("500 ms idle with no GT911 I2C activity; EXTI3 woke the touch reader")
+    finally:
+        for handle in handles:
+            link.breakpoint_clear(handle)
+        if verified:
+            link.reset(halt=False)
+        link.close()

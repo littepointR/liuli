@@ -92,39 +92,37 @@ impl App for StreamApp {
         Change::View
     }
 
-    fn view(_model: &Self::Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildError> {
+    fn view(_model: &Self::Model) -> impl Scene {
         let mut root = NodeProps::new();
         root.bg = Some(Rgb565::new(2, 4, 2));
         root.width = Length::Px(160);
         root.height = Length::Px(96);
-        out.begin(Key(1), NodeKind::Root, root)?;
+        layout(Key(1), root, move |out| {
+            let mut col = NodeProps::new();
+            col.width = Length::Fill(1);
+            col.height = Length::Fill(1);
+            col.padding = EdgeInsets::all(8);
+            col.gap = 8;
+            out.column(Key(2), col, |out| {
+                let mut p1 = NodeProps::new();
+                p1.width = Length::Px(144);
+                p1.height = Length::Px(24);
+                p1.font = FontId::Body16;
+                p1.text = TextRef::Static("设备设置 60%");
+                p1.fg = Rgb565::new(31, 63, 31);
+                out.leaf(Key(3), NodeKind::Label, p1)?;
 
-        let mut col = NodeProps::new();
-        col.width = Length::Fill(1);
-        col.height = Length::Fill(1);
-        col.padding = EdgeInsets::all(8);
-        col.gap = 8;
-        out.begin(Key(2), NodeKind::Column, col)?;
+                let mut p2 = NodeProps::new();
+                p2.width = Length::Px(144);
+                p2.height = Length::Px(20);
+                p2.font = FontId::Small12;
+                p2.text = TextRef::Static("屏幕亮度 12:34");
+                p2.fg = Rgb565::new(20, 56, 31);
+                out.leaf(Key(4), NodeKind::Label, p2)?;
 
-        let mut p1 = NodeProps::new();
-        p1.width = Length::Px(144);
-        p1.height = Length::Px(24);
-        p1.font = FontId::Body16;
-        p1.text = TextRef::Static("设备设置 60%");
-        p1.fg = Rgb565::new(31, 63, 31);
-        out.leaf(Key(3), NodeKind::Label, p1)?;
-
-        let mut p2 = NodeProps::new();
-        p2.width = Length::Px(144);
-        p2.height = Length::Px(20);
-        p2.font = FontId::Small12;
-        p2.text = TextRef::Static("屏幕亮度 12:34");
-        p2.fg = Rgb565::new(20, 56, 31);
-        out.leaf(Key(4), NodeKind::Label, p2)?;
-
-        out.end()?;
-        out.end()?;
-        Ok(())
+                Ok(())
+            })
+        })
     }
 
     fn on_action(_model: &Self::Model, _event: UiAction) -> Option<Self::Msg> {

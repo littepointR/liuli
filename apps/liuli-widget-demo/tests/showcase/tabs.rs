@@ -71,9 +71,8 @@ impl App for Reader {
             .unwrap()
             .selection(action)
     }
-    fn view(m: &Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildError> {
+    fn view(m: &Model) -> impl Scene {
         let pages = declarations(m);
-        let tabs = Tabs::new(&pages, m.active)?;
         let mut t = Theme::DARK.map_parts(|p| p.with_tab(m.style).with_rules(RULES));
         t = t.with_motion(t.motion.with_reduced(m.reduced));
         if m.large {
@@ -81,7 +80,8 @@ impl App for Reader {
         } else {
             t.typography.body = FontId::Small12;
         }
-        out.root(Key(1), NodeProps::new().bg(t.background), |root| {
+        layout(Key(1), NodeProps::new().bg(t.background), move |root| {
+            let tabs = Tabs::new(&pages, m.active)?;
             root.column(Key(2), NodeProps::new().width(Length::Fill(1)), |col| {
                 tabs.header_with(
                     col,
@@ -591,4 +591,49 @@ fn theme_styles_share_capacity_across_widgets_and_local_overrides_are_isolated()
         Ok(())
     });
     assert_eq!(err, Err(BuildError::PartStyles));
+}
+
+#[cfg(feature = "part-painters")]
+#[test]
+fn strip_part_receives_selected_tab_and_follows_raw_touch() {
+    static CUSTOM: PartPainter = PartPainter(|part, props, canvas| {
+        if part.role != WidgetPart::Indicator {
+            return Ok(PaintOverride::Default);
+        }
+        assert!(canvas.state.checked && props.checked());
+        canvas.fill(part.bounds, MARK)?;
+        Ok(PaintOverride::Handled)
+    });
+    let mut storage = Storage::new();
+    let mut app = session(&mut storage, 300, TabLayout::Columns(3), false);
+    restyle(&mut app, 1, |m| {
+        m.style = WidgetPartStyle::new()
+            .with_indicator_motion(IndicatorMotion::Slide)
+            .with_painter(Some(&CUSTOM));
+    });
+    let first = rect(&app, 10);
+    let y = first.bottom64() as i32 - 2;
+    assert!(marked(&app, center(first).x, y));
+    let pos = center(rect(&app, 12));
+    let mut now = 2;
+    input(
+        &mut app,
+        &mut now,
+        RawInput::PointerDown {
+            id: PointerId(3),
+            pos,
+        },
+    );
+    input(
+        &mut app,
+        &mut now,
+        RawInput::PointerUp {
+            id: PointerId(3),
+            pos,
+        },
+    );
+    app.step(InstantMs(now + 450), None, true).unwrap();
+    verify_panel(&app, 2);
+    assert!(marked(&app, pos.x, y));
+    assert!(!marked(&app, center(first).x, y));
 }

@@ -69,7 +69,7 @@ pub struct BlockCache<'a, R, const PAGES: usize = 8> {
     buf: &'a mut [u8],
     pages: [Page; PAGES],
     clock: u64,
-    metrics: IoMetrics,
+    metrics: [IoMetrics; liuli_core::capacity::METRICS as usize],
 }
 
 /// Default 8-page LRU block cache alias preserved for backward compatibility.
@@ -82,14 +82,14 @@ impl<'a, R: ReadAt, const PAGES: usize> BlockCache<'a, R, PAGES> {
             buf,
             pages: [Page::default(); PAGES],
             clock: 0,
-            metrics: IoMetrics::default(),
+            metrics: [IoMetrics::default(); liuli_core::capacity::METRICS as usize],
         }
     }
     pub fn metrics(&self) -> IoMetrics {
-        self.metrics
+        self.metrics.first().copied().unwrap_or_default()
     }
     pub fn reset_metrics(&mut self) {
-        self.metrics = IoMetrics::default();
+        self.metrics.fill(IoMetrics::default());
     }
     pub fn clear(&mut self) {
         self.pages = [Page::default(); PAGES];
@@ -114,9 +114,13 @@ impl<R: ReadAt, const PAGES: usize> ReadAt for BlockCache<'_, R, PAGES> {
             return Ok(0);
         }
         if PAGES == 0 || self.buf.is_empty() {
-            self.metrics.reads += 1;
+            if let Some(m) = self.metrics.first_mut() {
+                m.reads = m.reads.saturating_add(1);
+            }
             let n = self.source.read_at(pos, out)?;
-            self.metrics.bytes += n as u64;
+            if let Some(m) = self.metrics.first_mut() {
+                m.bytes = m.bytes.saturating_add(n as u64);
+            }
             return Ok(n);
         }
         let slots = self.buf.len().min(PAGES);
@@ -128,7 +132,9 @@ impl<R: ReadAt, const PAGES: usize> ReadAt for BlockCache<'_, R, PAGES> {
             .iter()
             .position(|p| p.start == start && offset < p.valid)
         {
-            self.metrics.cache_hits += 1;
+            if let Some(m) = self.metrics.first_mut() {
+                m.cache_hits = m.cache_hits.saturating_add(1);
+            }
             slot
         } else {
             let slot = self.pages[..slots]
@@ -142,12 +148,16 @@ impl<R: ReadAt, const PAGES: usize> ReadAt for BlockCache<'_, R, PAGES> {
             let dest = &mut self.buf[slot * page_size..slot * page_size + len];
             let mut filled = 0;
             while filled < len {
-                self.metrics.reads += 1;
+                if let Some(m) = self.metrics.first_mut() {
+                    m.reads = m.reads.saturating_add(1);
+                }
                 let count = self.source.read_at(start + filled, &mut dest[filled..])?;
                 if count == 0 || count > len - filled {
                     break;
                 }
-                self.metrics.bytes += count as u64;
+                if let Some(m) = self.metrics.first_mut() {
+                    m.bytes = m.bytes.saturating_add(count as u64);
+                }
                 filled += count;
             }
             if filled <= offset {
@@ -561,6 +571,11 @@ impl<R: ReadAt> StoredFont<R> {
             .get_mut(..len)
             .ok_or(ReadError::Scratch { needed: len })?;
         exact(&mut self.source, range.start, data)?;
+        if self.encoding == GlyphEncoding::Rle
+            && !crate::coverage::validate_rle(data, self.raw_bitmap_len(g))
+        {
+            return Err(ReadError::Format(FontError::TruncatedBitmap));
+        }
         Ok(GlyphBitmap { metrics: g, data })
     }
 }

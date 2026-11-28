@@ -1,8 +1,8 @@
 #![no_std]
 #![forbid(unsafe_code)]
-use core::num::NonZeroU16;
+use liuli::component::{Component, Either, container, leaf, text_leaf};
 use liuli::prelude::*;
-use liuli_widgets::{Navigator, Theme, paint_meter, virtual_list_with_policy};
+use liuli_widgets::{Navigator, Theme, VirtualRows, paint_meter};
 const LIST: Key = Key(10);
 const METER: Key = Key(20);
 const FIRST: u32 = 100;
@@ -51,8 +51,102 @@ pub enum Msg {
     Scroll(i32),
     Theme,
 }
-pub struct Alarms;
-impl App for Alarms {
+/// Select a viewport bound when building an automatically sized firmware.
+pub struct AlarmApp<const MAX_VIEWPORT: u16>;
+/// Maximum list viewport on the official 240 × 536 product.
+pub const LIST_VIEWPORT: u16 = 536 - 32;
+
+fn controls<const MAX_VIEWPORT: u16>(
+    m: &Model,
+    t: &'static Theme,
+) -> impl Component + use<MAX_VIEWPORT> {
+    let button = move |key, text| {
+        leaf(key, NodeKind::Button, move || NodeProps {
+            text: TextRef::Static(text),
+            ..t.control()
+        })
+    };
+    let page = match m.routes.current() {
+        Page::List => Either::First((
+            button(Key(3), "告警 / 主题"),
+            VirtualRows::<COUNT, ROW, MAX_VIEWPORT>::rows(
+                [LIST, Key(11), Key(12)],
+                COUNT,
+                m.offset,
+                m.viewport,
+                t.scroll_policy(ScrollPolicy::FREE),
+                move |id| {
+                    text_leaf(Key(FIRST + id), NodeKind::Button, move |buf| {
+                        Ok(NodeProps {
+                            text: buf.format(format_args!("告警 {:04}", id + 1))?,
+                            long_press: true,
+                            swipeable: true,
+                            ..t.control()
+                        })
+                    })
+                },
+            ),
+        )),
+        Page::Detail(id) | Page::Edit(id) => {
+            let edit = matches!(m.routes.current(), Page::Edit(_));
+            let value = if edit { m.draft } else { m.threshold };
+            Either::Second((
+                text_leaf(Key(4), NodeKind::Label, move |buf| {
+                    Ok(NodeProps {
+                        text: buf.format(format_args!("告警 {:04}", id + 1))?,
+                        fg: t.text,
+                        height: Length::Px(32),
+                        ..NodeProps::new()
+                    })
+                }),
+                leaf(METER, NodeKind::Custom, move || NodeProps {
+                    value,
+                    height: Length::Px(12),
+                    width: Length::Fill(1),
+                    bg: Some(t.surface),
+                    accent: t.accent,
+                    ..NodeProps::new()
+                }),
+                if edit {
+                    Either::First((
+                        liuli_widgets::numeric_control(Key(5), 0..=100, value, 1, t),
+                        button(Key(6), "保存"),
+                    ))
+                } else {
+                    Either::Second(button(Key(7), "编辑阈值"))
+                },
+                button(Key(8), "Back"),
+            ))
+        }
+    };
+    (
+        container(
+            Key(2),
+            NodeKind::Column,
+            move || NodeProps {
+                align_cross: Align::Stretch,
+                ..fill(t)
+            },
+            page,
+        ),
+        m.confirm.then(|| {
+            liuli_widgets::confirmation(
+                [Key(30), Key(31), Key(32), Key(33)],
+                [TextRef::Static("确认"), TextRef::Static("取消")],
+                t,
+            )
+        }),
+    )
+}
+fn fill(t: &Theme) -> NodeProps {
+    NodeProps {
+        width: Length::Fill(1),
+        height: Length::Fill(1),
+        bg: Some(t.background),
+        ..NodeProps::new()
+    }
+}
+impl<const MAX_VIEWPORT: u16> App for AlarmApp<MAX_VIEWPORT> {
     type Model = Model;
     type Msg = Msg;
     fn update(m: &mut Model, msg: Msg, _: InstantMs) -> Change {
@@ -91,97 +185,9 @@ impl App for Alarms {
         }
         Change::View
     }
-    fn view(m: &Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildError> {
-        let t = if m.light { Theme::LIGHT } else { Theme::DARK };
-        let button = |s| NodeProps {
-            text: TextRef::Static(s),
-            ..t.control()
-        };
-        let fill = NodeProps {
-            width: Length::Fill(1),
-            height: Length::Fill(1),
-            bg: Some(t.background),
-            ..NodeProps::new()
-        };
-        out.root(Key(1), fill, |root| {
-            root.column(
-                Key(2),
-                NodeProps {
-                    align_cross: Align::Stretch,
-                    ..fill
-                },
-                |ui| {
-                    match m.routes.current() {
-                        Page::List => {
-                            ui.button(Key(3), button("告警 / 主题"))?;
-                            virtual_list_with_policy(
-                                ui,
-                                [LIST, Key(11), Key(12)],
-                                COUNT,
-                                NonZeroU16::new(ROW).unwrap(),
-                                m.offset,
-                                m.viewport,
-                                t.scroll_policy(ScrollPolicy::FREE),
-                                |list, id| {
-                                    let text = list.text_fmt(format_args!("告警 {:04}", id + 1))?;
-                                    list.button(
-                                        Key(FIRST + id),
-                                        NodeProps {
-                                            text,
-                                            long_press: true,
-                                            swipeable: true,
-                                            ..t.control()
-                                        },
-                                    )
-                                },
-                            )?;
-                        }
-                        Page::Detail(id) | Page::Edit(id) => {
-                            let text = ui.text_fmt(format_args!("告警 {:04}", id + 1))?;
-                            ui.label(
-                                Key(4),
-                                NodeProps {
-                                    text,
-                                    fg: t.text,
-                                    height: Length::Px(32),
-                                    ..NodeProps::new()
-                                },
-                            )?;
-                            let edit = matches!(m.routes.current(), Page::Edit(_));
-                            let value = if edit { m.draft } else { m.threshold };
-                            ui.custom(
-                                METER,
-                                NodeProps {
-                                    value,
-                                    height: Length::Px(12),
-                                    width: Length::Fill(1),
-                                    bg: Some(t.surface),
-                                    accent: t.accent,
-                                    ..NodeProps::new()
-                                },
-                            )?;
-                            if edit {
-                                liuli_widgets::number_editor(ui, Key(5), 0..=100, value, 1, t)?;
-                                ui.button(Key(6), button("保存"))?;
-                            } else {
-                                ui.button(Key(7), button("编辑阈值"))?;
-                            }
-                            ui.button(Key(8), button("Back"))?;
-                        }
-                    }
-                    Ok(())
-                },
-            )?;
-            if m.confirm {
-                liuli_widgets::confirm_dialog(
-                    root,
-                    [Key(30), Key(31), Key(32), Key(33)],
-                    [TextRef::Static("确认"), TextRef::Static("取消")],
-                    t,
-                )?;
-            }
-            Ok(())
-        })
+    fn view(m: &Model) -> impl Scene {
+        let theme = if m.light { &Theme::LIGHT } else { &Theme::DARK };
+        scene(Key(1), fill(theme), controls::<MAX_VIEWPORT>(m, theme))
     }
     fn on_action(_: &Model, a: UiAction) -> Option<Msg> {
         Some(match (a.key.0, a.kind) {

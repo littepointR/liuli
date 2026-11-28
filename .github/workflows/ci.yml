@@ -26,9 +26,9 @@ jobs:
       - run: cargo test -p liuli --test capacity --locked -- --nocapture
       - run: cargo test -p liuli-sim --test allocation --release --locked -- --test-threads=1
       - run: cargo run -p liuli-fontpack --locked -- verify
-      - run: cargo run -p liuli-sim --example headless --locked
-      - run: cargo run -p liuli-sim --locked -- replay host/liuli-sim/tests/fixtures/settings.events --out target/liuli-v01 --format png
-      - run: cargo run -p liuli-sim --locked -- replay host/liuli-sim/tests/fixtures/terminal.events --out target/liuli-v02 --format png
+      - run: python tools/build-ui.py --app apps/liuli-settings/Cargo.toml --firmware host/liuli-sim/Cargo.toml --action run --locked -- --example headless
+      - run: python tools/build-ui.py --app apps/liuli-settings/Cargo.toml --firmware host/liuli-sim/Cargo.toml --action run --locked -- --bin liuli-sim -- replay host/liuli-sim/tests/fixtures/settings.events --out target/liuli-v01 --format png
+      - run: python tools/build-ui.py --app apps/liuli-settings/Cargo.toml --firmware host/liuli-sim/Cargo.toml --action run --locked -- --bin liuli-sim -- replay host/liuli-sim/tests/fixtures/terminal.events --out target/liuli-v02 --format png
       - run: cargo tree -p liuli-settings -e features --locked
 
   bare-metal-thumbv7em:
@@ -53,9 +53,17 @@ jobs:
           name: liuli-fk743m2-firmware
           path: target/fk743-*/widget-demo.bin
           if-no-files-found: error
+      - run: cargo fetch --locked --manifest-path checks/cost-probe/Cargo.toml
+      - run: python checks/cost-probe/measure.py
+      - shell: pwsh
+        run: |
+          foreach ($feature in 'layers', 'owned-images', 'multitouch', 'complex-text', 'text-field', 'part-painters') {
+            cargo check --locked --target thumbv7em-none-eabihf -p liuli --no-default-features --features $feature
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
       - run: cargo check -p liuli-settings --target thumbv7em-none-eabihf --no-default-features --locked
       - working-directory: checks/firmware
-        run: cargo build --target thumbv7em-none-eabihf --release --locked
+        run: python ../../tools/build-ui.py --app ../../apps/liuli-settings/Cargo.toml --firmware Cargo.toml --plan-arg terminal --locked -- --target thumbv7em-none-eabihf --release
       - shell: pwsh
         run: .\checks\audit-firmware.ps1 -Elf checks/firmware/target/thumbv7em-none-eabihf/release/liuli-firmware -Profile Demo
       - shell: pwsh
@@ -65,7 +73,7 @@ jobs:
           if ($llvmBin) { $env:PATH = "$llvmBin;$env:PATH" }
           .\checks\audit-stack.ps1 -Elf checks/firmware/target/thumbv7em-none-eabihf/release/liuli-firmware -MaxThreadBytes 6144
       - working-directory: checks/firmware
-        run: cargo build --target thumbv7em-none-eabihf --release --locked --features startup-probe --target-dir target/startup-probe
+        run: python ../../tools/build-ui.py --app ../../apps/liuli-settings/Cargo.toml --firmware Cargo.toml --plan-arg terminal --locked -- --target thumbv7em-none-eabihf --release --features startup-probe --target-dir target/startup-probe
       - shell: pwsh
         run: .\checks\audit-firmware.ps1 -Elf checks/firmware/target/startup-probe/thumbv7em-none-eabihf/release/liuli-firmware -Profile StartupProbe
 
@@ -95,6 +103,8 @@ jobs:
 
   esp32s3:
     runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: stable
     permissions:
       contents: read
     strategy:
@@ -103,6 +113,7 @@ jobs:
         profile: [basic, enhanced, benchmark, sleep-benchmark, widget-demo, enhanced-trace]
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
       - uses: esp-rs/xtensa-toolchain@v1.5
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -118,4 +129,4 @@ jobs:
           esp_idf_version: v5.5.2
           target: esp32s3
           path: boards/waveshare-s3-amoled
-          command: idf.py -DLIULI_RUNTIME=$PWD/../../target/s3/rust/xtensa-esp32s3-none-elf/release/libliuli_s3_runtime.a build
+          command: idf.py -DLIULI_DIAGNOSTICS=${{ contains(matrix.profile, 'benchmark') && 'ON' || 'OFF' }} -DLIULI_RUNTIME=$PWD/../../target/s3/rust/xtensa-esp32s3-none-elf/release/libliuli_s3_runtime.a build

@@ -23,7 +23,7 @@ pub fn paint_checkbox(
         .min(sz.height.saturating_sub(4))
         .max(8);
     let by = ((sz.height.saturating_sub(box_sz)) / 2) as i32;
-    let bx = 2i32;
+    let bx = i32::from(parts.indicator_inset().unwrap_or(2));
     let progress = checked_progress(props, state);
     let fill = liuli::core::paint::blend_rgb565_scale(
         parts
@@ -59,7 +59,7 @@ pub fn paint_checkbox(
         canvas.line(p0, p1, tick, 2, true)?;
         canvas.line(p1, p2, tick, 2, true)?;
     }
-    let tx = bx + box_sz as i32 + 8;
+    let tx = bx + box_sz as i32 + i32::from(parts.icon_gap().unwrap_or(8));
     let tw = sz.width.saturating_sub(tx as u32);
     if tw > 0 {
         canvas.node_text(
@@ -253,7 +253,7 @@ pub fn dropdown(
                 .focusable(true)
                 .clickable(true),
         )?;
-        if state.open && !options.is_empty() {
+        if col.optional(state.open) && !options.is_empty() {
             let panel = NodeProps::new()
                 .width(Length::Fill(1))
                 .height(Length::Content)

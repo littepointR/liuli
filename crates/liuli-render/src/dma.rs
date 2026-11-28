@@ -1,3 +1,4 @@
+use liuli_core::capacity::FrameCounters;
 use liuli_core::capacity::{FrameMetrics, MAX_DAMAGE, PresentError, PresentStatus};
 use liuli_core::damage::DamageSet;
 use liuli_core::geometry::Rect;
@@ -458,7 +459,7 @@ pub struct DmaCoordinator<'a> {
     cur_y: i32,
     configured_band_h: u32,
     screen: Rect,
-    metrics: FrameMetrics,
+    metrics: FrameCounters,
 }
 
 impl<'a> DmaCoordinator<'a> {
@@ -482,7 +483,7 @@ impl<'a> DmaCoordinator<'a> {
             cur_y: 0,
             configured_band_h: 8,
             screen: Rect::ZERO,
-            metrics: FrameMetrics::default(),
+            metrics: FrameCounters::default(),
         }
     }
 
@@ -593,7 +594,7 @@ impl<'a> DmaCoordinator<'a> {
         self.next_seq = 0;
         self.session_token = session_token;
         self.active_frame = true;
-        self.metrics = FrameMetrics::default();
+        self.metrics = FrameCounters::default();
         Ok(())
     }
 
@@ -645,6 +646,30 @@ impl<'a> DmaCoordinator<'a> {
         live_damage: &mut DamageSet,
         resources: &R,
         fonts: &F,
+    ) -> Result<(PresentStatus, FrameMetrics), crate::sync::FrameError<S::Error, F::Error>>
+    where
+        S: DmaSink<'a>,
+        R: SceneResources + ?Sized,
+        F: liuli_text::FontProvider,
+    {
+        self.step_with_accel(
+            sink,
+            cmds,
+            live_damage,
+            resources,
+            fonts,
+            &mut crate::SoftAccel,
+        )
+    }
+
+    pub fn step_with_accel<S, R, F>(
+        &mut self,
+        sink: &mut S,
+        cmds: &CommandList,
+        live_damage: &mut DamageSet,
+        resources: &R,
+        fonts: &F,
+        accel: &mut impl crate::DrawAccel,
     ) -> Result<(PresentStatus, FrameMetrics), crate::sync::FrameError<S::Error, F::Error>>
     where
         S: DmaSink<'a>,
@@ -706,7 +731,7 @@ impl<'a> DmaCoordinator<'a> {
         }
 
         if !self.active_frame {
-            return Ok((PresentStatus::Idle, self.metrics));
+            return Ok((PresentStatus::Idle, self.metrics.snapshot()));
         }
 
         // 2. If DMA is idle and we have a queued ReadyBand, try to start it.
@@ -717,11 +742,7 @@ impl<'a> DmaCoordinator<'a> {
             match sink.try_start(ready) {
                 StartOutcome::Started => {
                     self.in_flight = Some((meta.frame, meta.seq, meta.slot));
-                    self.metrics.bands += 1;
-                    self.metrics.pixels_sent = self
-                        .metrics
-                        .pixels_sent
-                        .saturating_add(meta.rect.w.saturating_mul(meta.rect.h));
+                    self.metrics.sent(meta.rect.w.saturating_mul(meta.rect.h));
                 }
                 StartOutcome::Busy(returned) => {
                     self.queued = Some(returned);
@@ -762,16 +783,16 @@ impl<'a> DmaCoordinator<'a> {
                 if self.next_seq == 0 {
                     fonts.begin_frame();
                 }
-                match crate::raster::render_band_with_provider(
+                match crate::raster::render_band_with_provider_accel(
                     &mut target,
                     cmds,
                     resources,
                     fonts,
                     crate::raster::blend_solid,
+                    accel,
                 ) {
                     Ok(replayed) => {
-                        self.metrics.commands_replayed =
-                            self.metrics.commands_replayed.saturating_add(replayed);
+                        self.metrics.replayed(replayed);
                     }
                     Err(err) => {
                         self.slots[free_idx] = Some(free);
@@ -798,11 +819,7 @@ impl<'a> DmaCoordinator<'a> {
                 match sink.try_start(ready) {
                     StartOutcome::Started => {
                         self.in_flight = Some((meta.frame, meta.seq, meta.slot));
-                        self.metrics.bands += 1;
-                        self.metrics.pixels_sent = self
-                            .metrics
-                            .pixels_sent
-                            .saturating_add(meta.rect.w.saturating_mul(meta.rect.h));
+                        self.metrics.sent(meta.rect.w.saturating_mul(meta.rect.h));
                     }
                     StartOutcome::Busy(returned) => {
                         self.queued = Some(returned);
@@ -827,10 +844,10 @@ impl<'a> DmaCoordinator<'a> {
             live_damage.clear();
             self.active_frame = false;
             self.session_token = 0;
-            return Ok((PresentStatus::Presented, self.metrics));
+            return Ok((PresentStatus::Presented, self.metrics.snapshot()));
         }
 
-        Ok((PresentStatus::Pending, self.metrics))
+        Ok((PresentStatus::Pending, self.metrics.snapshot()))
     }
 
     fn take_free_slot_idx(&self) -> Option<usize> {

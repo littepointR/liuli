@@ -24,30 +24,30 @@
 从源码运行横屏、竖屏和固定轨迹回放：
 
 ~~~sh
-cargo run --release -p liuli-widget-demo --features desktop,enhanced
-cargo run --release -p liuli-widget-demo --features desktop,enhanced -- --size 240x536
-cargo run --release -p liuli-widget-demo --features desktop,enhanced -- --replay apps/liuli-widget-demo/tests/fixtures/h743-style.trace --scanout target/theme.rgb565
+python tools/build-ui.py --app apps/liuli-widget-demo/Cargo.toml --app-features desktop,enhanced --action run -- --bin liuli-widget-demo --release
+python tools/build-ui.py --app apps/liuli-widget-demo/Cargo.toml --app-features desktop,enhanced --action run -- --bin liuli-widget-demo --release -- --size 240x536
+python tools/build-ui.py --app apps/liuli-widget-demo/Cargo.toml --app-features desktop,enhanced --action run -- --bin liuli-widget-demo --release -- --replay apps/liuli-widget-demo/tests/fixtures/h743-style.trace --scanout target/theme.rgb565
 ~~~
 
 动效页的竖屏轨迹为 `portrait-motion.trace`。控件页的横竖屏轨迹分别为 `h743-widgets.trace` 和 `portrait-widgets.trace`，覆盖顶部切页、预设确认、列表滚动、图形操作、按钮与软键盘输入。从解压的 SDK 运行时，把命令中的程序换成 `tools/bin/liuli-widget-demo`，轨迹路径从 `liuli-widget-demo/tests/fixtures/` 开始。H743 可通过 J-Link 注入同一条横屏轨迹，并与桌面输出比对。
 
 ~~~sh
 python boards/fk743m2-iit6/jlink.py --speed 12000 --themed-motion apps/liuli-widget-demo/tests/fixtures/h743-style.trace target/theme.rgb565
-cargo run --release -p liuli-widget-demo --features desktop,enhanced -- --replay apps/liuli-widget-demo/tests/fixtures/h743-widgets.trace --scanout target/widgets.rgb565
+python tools/build-ui.py --app apps/liuli-widget-demo/Cargo.toml --app-features desktop,enhanced --action run -- --bin liuli-widget-demo --release -- --replay apps/liuli-widget-demo/tests/fixtures/h743-widgets.trace --scanout target/widgets.rgb565
 python boards/fk743m2-iit6/jlink.py --speed 12000 --widget-samples apps/liuli-widget-demo/tests/fixtures/h743-widgets.trace target/widgets.rgb565
 ~~~
 
 布局页的 `h743-strip-fling.trace` 在横滚区中段松手。下面的实板回放自动注入触摸，从 LTDC 帧缓冲采样松手后的卡片边缘，并将停止后的内容区与桌面逐像素比较。
 
 ~~~sh
-cargo run --release -p liuli-widget-demo --features desktop,enhanced -- --replay apps/liuli-widget-demo/tests/fixtures/h743-strip-fling.trace --scanout target/fling.rgb565
+python tools/build-ui.py --app apps/liuli-widget-demo/Cargo.toml --app-features desktop,enhanced --action run -- --bin liuli-widget-demo --release -- --replay apps/liuli-widget-demo/tests/fixtures/h743-strip-fling.trace --scanout target/fling.rgb565
 python boards/fk743m2-iit6/jlink.py --speed 12000 --strip-fling apps/liuli-widget-demo/tests/fixtures/h743-strip-fling.trace target/fling.rgb565
 ~~~
 
 图形页的 `h743-composition.trace` 从首页进入展台，滑动图形页，使渐隐卡片完整进入视口。桌面回放逐帧核对增量输出和整屏参考渲染。H743 使用同一轨迹，比对停止后的页签和内容区域。
 
 ~~~sh
-cargo run --release -p liuli-widget-demo --features desktop,enhanced -- --size 800x480 --replay apps/liuli-widget-demo/tests/fixtures/h743-composition.trace --scanout target/h743-composition.rgb565
+python tools/build-ui.py --app apps/liuli-widget-demo/Cargo.toml --app-features desktop,enhanced --action run -- --bin liuli-widget-demo --release -- --size 800x480 --replay apps/liuli-widget-demo/tests/fixtures/h743-composition.trace --scanout target/h743-composition.rgb565
 python boards/fk743m2-iit6/jlink.py --speed 12000 --widget-samples apps/liuli-widget-demo/tests/fixtures/h743-composition.trace target/h743-composition.rgb565
 ~~~
 
@@ -56,7 +56,7 @@ python boards/fk743m2-iit6/jlink.py --speed 12000 --widget-samples apps/liuli-wi
 调节页的 `h743-focus-shapes.trace` 用触摸打开控件页，再用前进和后退导航在旋钮、滑块间切换。结束时焦点回到旋钮，手柄位置和页签选择保留。模拟器逐帧验证重绘，H743 通过 SWD 向相同的输入入口注入导航，读取 LTDC 帧缓冲比对页签及内容区。
 
 ~~~sh
-cargo run --locked --offline --release -p liuli-widget-demo --features desktop,enhanced -- --size 800x480 --replay apps/liuli-widget-demo/tests/fixtures/h743-focus-shapes.trace --scanout target/h743-focus-shapes.rgb565
+python tools/build-ui.py --app apps/liuli-widget-demo/Cargo.toml --app-features desktop,enhanced --action run --locked --offline -- --bin liuli-widget-demo --release -- --size 800x480 --replay apps/liuli-widget-demo/tests/fixtures/h743-focus-shapes.trace --scanout target/h743-focus-shapes.rgb565
 python boards/fk743m2-iit6/jlink.py --speed 12000 --widget-samples apps/liuli-widget-demo/tests/fixtures/h743-focus-shapes.trace target/h743-focus-shapes.rgb565
 ~~~
 
@@ -65,7 +65,7 @@ python boards/fk743m2-iit6/jlink.py --speed 12000 --widget-samples apps/liuli-wi
 首屏回归 `startup-focus.trace` 依次覆盖冷启动、向前导航、向后导航、按下空白区和松手。2026-11-28 在 FK743M2-IIT6 的 ST HAL+LL 增强档 Widget Demo（固件 CRC32 `a8053f03`）上验证。五个检查点分别对照整条 800×48 顶栏，均与桌面一致。结束后板子复位回到触摸首页。
 
 ~~~sh
-cargo build --release --locked --offline -p liuli-widget-demo --features desktop,enhanced
+python tools/build-ui.py --app apps/liuli-widget-demo/Cargo.toml --app-features desktop,enhanced --action build --locked --offline -- --bin liuli-widget-demo --release
 python boards/fk743m2-iit6/jlink.py --speed 12000 --startup-focus target/release/liuli-widget-demo.exe
 ~~~
 
@@ -113,7 +113,7 @@ tools/bin/liuli-widget-demo --studio --replay recorded.trace
 从仓库源码启动录音台：
 
 ~~~sh
-cargo run -p liuli-widget-demo --features desktop,enhanced -- --studio
+python tools/build-ui.py --app apps/liuli-widget-demo/Cargo.toml --app-features desktop,enhanced --action run -- --bin liuli-widget-demo -- --studio
 ~~~
 
 参考板固件包内的 `widget-demo.bin` 与日常告警程序共用分区表。功能展台使用随应用链接的两档 LF4 字库。已安装本框架的板子可单独替换应用分区。空白板的完整写入步骤见板级指南。使用 SDK 从源码重建演示固件：
@@ -144,12 +144,12 @@ python boards/waveshare-s3-amoled/build.py --profile widget-demo --effects-bench
 进入「网格布局」，用底部左右箭头切换 16 种动效，点 Replay 重播。桌面可运行同一个 800×480 应用：
 
 ```sh
-cargo run --release -p liuli-widget-demo --features desktop,enhanced -- --showcase
+python tools/build-ui.py --app apps/liuli-widget-demo/Cargo.toml --app-features desktop,enhanced --action run -- --bin liuli-widget-demo --release -- --showcase
 ```
 
 以下命令用原始触摸和固定时钟回放切页、切到 Flip 和重播，并导出桌面 RGB565 参考帧。H743 上装入增强档 `--showcase` 固件后，第二条命令通过 J-Link 注入触摸并核对 LTDC 帧缓冲。指定多个探头时用 `--serial` 选择目标。
 
 ```sh
-cargo run --release -p liuli-widget-demo --features desktop,enhanced -- --showcase --replay apps/liuli-widget-demo/tests/fixtures/h743-motion.trace --scanout target/motion-flip.rgb565
+python tools/build-ui.py --app apps/liuli-widget-demo/Cargo.toml --app-features desktop,enhanced --action run -- --bin liuli-widget-demo --release -- --showcase --replay apps/liuli-widget-demo/tests/fixtures/h743-motion.trace --scanout target/motion-flip.rgb565
 python boards/fk743m2-iit6/jlink.py --speed 12000 --motion-gallery target/motion-flip.rgb565
 ```

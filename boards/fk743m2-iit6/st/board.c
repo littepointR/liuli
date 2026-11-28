@@ -50,6 +50,7 @@ void fk_core_init(void) {
         .IsShareable = MPU_ACCESS_NOT_SHAREABLE, .IsCacheable = MPU_ACCESS_NOT_CACHEABLE,
         .IsBufferable = MPU_ACCESS_NOT_BUFFERABLE
     };
+#ifdef LIULI_DIAGNOSTICS
     MPU_Region_InitTypeDef report_sram = {
         .Enable = MPU_REGION_ENABLE, .Number = MPU_REGION_NUMBER2, .BaseAddress = 0x24000000,
         .Size = MPU_REGION_SIZE_64B, .AccessPermission = MPU_REGION_FULL_ACCESS,
@@ -57,9 +58,12 @@ void fk_core_init(void) {
         .IsShareable = MPU_ACCESS_NOT_SHAREABLE, .IsCacheable = MPU_ACCESS_NOT_CACHEABLE,
         .IsBufferable = MPU_ACCESS_NOT_BUFFERABLE
     };
+#endif
     HAL_MPU_Disable();
     HAL_MPU_ConfigRegion(&sdram_nc);
+#ifdef LIULI_DIAGNOSTICS
     HAL_MPU_ConfigRegion(&report_sram);
+#endif
     HAL_MPU_Enable(MPU_PRIVILEGED_DEFAULT);
     SCB_EnableICache();
     LL_AHB4_GRP1_EnableClock(LL_AHB4_GRP1_PERIPH_GPIOA | LL_AHB4_GRP1_PERIPH_GPIOD |
@@ -241,3 +245,15 @@ void fk_pin_write(unsigned i, unsigned high) {
     else LL_GPIO_ResetOutputPin(touch_ports[i],touch_pins[i]);
 }
 unsigned fk_pin_read(unsigned i) { return LL_GPIO_IsInputPinSet(touch_ports[i],touch_pins[i]); }
+
+#ifdef LIULI_TOUCH_IRQ
+void fk_touch_irq_init(void) {
+    __HAL_RCC_SYSCFG_CLK_ENABLE();
+    GPIO_InitTypeDef gpio = {.Pin=GPIO_PIN_3, .Mode=GPIO_MODE_IT_RISING_FALLING, .Pull=GPIO_NOPULL};
+    HAL_GPIO_Init(GPIOG, &gpio);
+    __HAL_GPIO_EXTI_CLEAR_IT(GPIO_PIN_3);
+    HAL_NVIC_SetPriority(EXTI3_IRQn, 6, 0);
+    HAL_NVIC_EnableIRQ(EXTI3_IRQn);
+}
+void fk_touch_irq_ack(void) { __HAL_GPIO_EXTI_CLEAR_IT(GPIO_PIN_3); }
+#endif

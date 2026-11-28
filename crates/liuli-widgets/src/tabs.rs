@@ -116,9 +116,8 @@ impl<'a, Id: Copy + Eq, M> Tabs<'a, Id, M> {
         model: &M,
         t: Theme,
     ) -> Result<(), BuildError> {
-        ui.tab_panel(key, self.selected.key, props, |panel| {
-            (self.selected.build)(model, t, panel)
-        })
+        let page = ui.variant_with(self.selected, self.pages.len(), |i| &self.pages[i]);
+        ui.tab_panel(key, page.key, props, |panel| (page.build)(model, t, panel))
     }
 }
 

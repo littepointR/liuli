@@ -1,56 +1,13 @@
-#[cfg(feature = "capacity-256")]
-pub const MAX_NODES: usize = 250;
-#[cfg(all(feature = "capacity-128", not(feature = "capacity-256")))]
-pub const MAX_NODES: usize = 128;
-#[cfg(not(any(feature = "capacity-128", feature = "capacity-256")))]
-pub const MAX_NODES: usize = 64;
-
-#[cfg(feature = "capacity-256")]
-pub const MAX_DEPTH: usize = 16;
-#[cfg(all(feature = "capacity-128", not(feature = "capacity-256")))]
-pub const MAX_DEPTH: usize = 14;
-#[cfg(not(any(feature = "capacity-128", feature = "capacity-256")))]
-pub const MAX_DEPTH: usize = 12;
-
-#[cfg(feature = "capacity-256")]
-pub const MAX_TEXT_BYTES: usize = 4096;
-#[cfg(all(feature = "capacity-128", not(feature = "capacity-256")))]
-pub const MAX_TEXT_BYTES: usize = 2048;
-#[cfg(not(any(feature = "capacity-128", feature = "capacity-256")))]
-pub const MAX_TEXT_BYTES: usize = 1024;
-
-#[cfg(feature = "capacity-256")]
-pub const MAX_COMMANDS: usize = 1024;
-#[cfg(all(feature = "capacity-128", not(feature = "capacity-256")))]
-pub const MAX_COMMANDS: usize = 512;
-#[cfg(not(any(feature = "capacity-128", feature = "capacity-256")))]
-pub const MAX_COMMANDS: usize = 256;
-
-#[cfg(feature = "capacity-256")]
-pub const MAX_DAMAGE: usize = 24;
-#[cfg(all(feature = "capacity-128", not(feature = "capacity-256")))]
-pub const MAX_DAMAGE: usize = 16;
-#[cfg(not(any(feature = "capacity-128", feature = "capacity-256")))]
-pub const MAX_DAMAGE: usize = 12;
-
-#[cfg(feature = "capacity-256")]
-pub const MAX_ANIMATIONS: usize = 16;
-#[cfg(all(feature = "capacity-128", not(feature = "capacity-256")))]
-pub const MAX_ANIMATIONS: usize = 12;
-#[cfg(not(any(feature = "capacity-128", feature = "capacity-256")))]
-pub const MAX_ANIMATIONS: usize = 8;
-
+include!(concat!(env!("OUT_DIR"), "/capacity.rs"));
+/// A generic arena for host-only tests mounting unrelated and intentionally faulty scenes.
+pub const HOST_TESTING: bool = cfg!(all(feature = "host-testing", not(target_os = "none")));
+pub const MAX_TEXT_SLOTS: usize = if TEXT_SLOTS_LIMIT < MAX_NODES {
+    TEXT_SLOTS_LIMIT
+} else {
+    MAX_NODES
+};
 pub const MAX_MODALS: usize = 1;
 pub const MAX_ACTIONS: usize = 8;
-
-#[cfg(feature = "capacity-256")]
-pub const MAX_SPARKLINES: usize = 4;
-#[cfg(all(feature = "capacity-128", not(feature = "capacity-256")))]
-pub const MAX_SPARKLINES: usize = 4;
-#[cfg(not(any(feature = "capacity-128", feature = "capacity-256")))]
-pub const MAX_SPARKLINES: usize = 2;
-
-pub const MAX_SPARKLINE_SAMPLES: usize = 32;
 
 /// Compact fixed-size bitset spanning `0..MAX_NODES`.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
@@ -127,9 +84,12 @@ pub const DEFAULT_BAND_PIXELS: usize = DEFAULT_BAND_WIDTH * DEFAULT_BAND_HEIGHT;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum BuildError {
+    ItemLimit,
+    CustomChildren,
     Nodes,
     Depth,
     TextBytes,
+    TextSlots,
     Commands,
     DuplicateKey,
     UnmatchedEnd,
@@ -145,6 +105,7 @@ pub enum BuildError {
     MotionCurves,
     PartStyles,
     Effects,
+    LayoutExtras,
     LayerPixels,
     UnsupportedEffect,
     PathEdges,
@@ -213,4 +174,27 @@ pub struct FrameMetrics {
     pub bands: u32,
     pub pixels_sent: u32,
     pub commands_replayed: u32,
+}
+
+/// Internal counters disappear from presenters which do not collect frame metrics.
+#[derive(Default)]
+pub struct FrameCounters([FrameMetrics; METRICS as usize]);
+impl FrameCounters {
+    #[inline]
+    pub fn replayed(&mut self, n: u32) {
+        if let Some(m) = self.0.first_mut() {
+            m.commands_replayed = m.commands_replayed.saturating_add(n);
+        }
+    }
+    #[inline]
+    pub fn sent(&mut self, pixels: u32) {
+        if let Some(m) = self.0.first_mut() {
+            m.bands = m.bands.saturating_add(1);
+            m.pixels_sent = m.pixels_sent.saturating_add(pixels);
+        }
+    }
+    #[inline]
+    pub fn snapshot(&self) -> FrameMetrics {
+        self.0.first().copied().unwrap_or_default()
+    }
 }

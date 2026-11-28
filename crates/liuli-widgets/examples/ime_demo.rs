@@ -89,9 +89,9 @@ impl App for ImeDemoApp {
         }
     }
 
-    fn view(model: &Self::Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildError> {
+    fn view(model: &Self::Model) -> impl Scene {
         let t = model.theme;
-        out.root(
+        layout(
             Key(1),
             NodeProps {
                 bg: Some(t.background),
@@ -100,7 +100,7 @@ impl App for ImeDemoApp {
                 padding: EdgeInsets::all(6),
                 ..NodeProps::new()
             },
-            |root| {
+            move |root| {
                 root.column(
                     Key(2),
                     NodeProps {
@@ -371,18 +371,25 @@ fn main() -> Result<(), String> {
 
     let body = Lf4Font::from_bytes(BODY_LF4).map_err(|e| format!("{e:?}"))?;
     let small = Lf4Font::from_bytes(SMALL12_LF4).map_err(|e| format!("{e:?}"))?;
+    let model = DemoModel {
+        editor: FixedTextEditor::new(),
+        ime: ImeState::new(InputMode::ZhPinyin),
+        font: body,
+        small,
+        done_count: 0,
+        last_done: String::new(),
+        theme: Theme::DARK,
+    };
+    #[cfg(feature = "scene-planner")]
+    if std::env::var_os("LIULI_PRINT_CAPACITY").is_some() {
+        let d = liuli::scene::capacity::<ImeDemoApp>(&model).map_err(|e| format!("{e:?}"))?;
+        println!("liuli-capacity-v1 {} {} {}", d.nodes, d.depth, d.text_slots);
+        return Ok(());
+    }
     let mut storage = Storage::new();
     let mut session = AppSession::<ImeDemoApp>::new(
         &mut storage,
-        DemoModel {
-            editor: FixedTextEditor::new(),
-            ime: ImeState::new(InputMode::ZhPinyin),
-            font: body,
-            small,
-            done_count: 0,
-            last_done: String::new(),
-            theme: Theme::DARK,
-        },
+        model,
         FontSet::new(body, small),
         size,
         InstantMs(0),

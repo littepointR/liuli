@@ -142,8 +142,8 @@ impl App for Consumer {
     fn on_action(_: &Model, _: UiAction) -> Option<Model> {
         None
     }
-    fn view(m: &Model, v: &mut ViewBuilder<'_>) -> Result<(), BuildError> {
-        v.root(Key(0), NodeProps::new().bg(WHITE), |root| {
+    fn view(m: &Model) -> impl Scene {
+        layout(Key(0), NodeProps::new().bg(WHITE), move |root| {
             root.stack(
                 Key(1),
                 NodeProps::new().size(Length::Px(52), Length::Px(44)),

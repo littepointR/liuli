@@ -10,12 +10,21 @@ embedded-graphics-core.workspace = true
 liuli-core.workspace = true
 liuli-text.workspace = true
 liuli-render.workspace = true
-liuli-enhanced = { version = "=1.0.0", path = "../liuli-enhanced", optional = true }
+liuli-enhanced = { version = "=1.0.0", path = "../liuli-enhanced", optional = true, default-features = false }
+
+[dev-dependencies]
+liuli-core = { workspace = true, features = ["host-testing"] }
 
 [features]
+host-testing=["liuli-core/host-testing"]
+scene-planner=["liuli-core/scene-planner"]
+part-painters=["liuli-core/part-painters"]
 default = []
-enhanced = ["dep:liuli-enhanced", "liuli-render/layers"]
+owned-images = ["liuli-core/owned-images"]
+layers = ["owned-images", "liuli-render/layers"]
+multitouch = ["dep:liuli-enhanced", "liuli-enhanced/gestures"]
+complex-text = ["dep:liuli-enhanced", "liuli-enhanced/text"]
+text-field = ["complex-text", "owned-images", "liuli-enhanced/field"]
+enhanced = ["layers", "multitouch", "text-field"]
 platform-blend = []
 inspector=["liuli-core/inspector"]
-capacity-128=["liuli-core/capacity-128"]
-capacity-256=["liuli-core/capacity-256"]

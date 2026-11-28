@@ -1,5 +1,5 @@
 use liuli::prelude::*;
-use liuli_alarms::{Alarms, Model, Msg, Page};
+use liuli_alarms::{AlarmApp, LIST_VIEWPORT, Model, Msg, Page};
 use liuli_sim::preview::replay_trace;
 use liuli_sim::session::AppSession;
 
@@ -7,7 +7,7 @@ use liuli_sim::session::AppSession;
 fn virtual_list_tracks_inertia_and_stops_on_touch_hold_reverse_and_cancel() {
     let font = Lf4Font::from_bytes(include_bytes!("../assets/body.lf4")).unwrap();
     let mut storage = Storage::new();
-    let mut app = AppSession::<Alarms>::new(
+    let mut app = AppSession::<AlarmApp<LIST_VIEWPORT>>::new(
         &mut storage,
         Model::new(536),
         FontSet::single(font),
@@ -62,7 +62,7 @@ fn board_trace_opens_the_held_record_before_the_finger_lifts() {
     let trace = include_str!("fixtures/s3-long-press.trace");
     let font = Lf4Font::from_bytes(include_bytes!("../assets/body.lf4")).unwrap();
     let mut storage = Storage::new();
-    let mut app = AppSession::<Alarms>::new(
+    let mut app = AppSession::<AlarmApp<LIST_VIEWPORT>>::new(
         &mut storage,
         Model::new(536),
         FontSet::single(font),
@@ -89,7 +89,7 @@ fn touch_workflow_edits_only_the_selected_record_and_restores_the_list() {
     let trace = include_str!("fixtures/touch-workflow.trace");
     let font = Lf4Font::from_bytes(include_bytes!("../assets/body.lf4")).unwrap();
     let mut storage = Storage::new();
-    let mut app = AppSession::<Alarms>::new(
+    let mut app = AppSession::<AlarmApp<LIST_VIEWPORT>>::new(
         &mut storage,
         Model::new(536),
         FontSet::single(font),
@@ -100,7 +100,7 @@ fn touch_workflow_edits_only_the_selected_record_and_restores_the_list() {
     .unwrap();
     let mut lines = trace.lines();
     assert_eq!(lines.next(), Some("liuli-trace 1"));
-    let mut play = |app: &mut AppSession<'_, '_, Alarms>, count: usize| {
+    let mut play = |app: &mut AppSession<'_, '_, AlarmApp<LIST_VIEWPORT>>, count: usize| {
         let mut part = String::from("liuli-trace 1\n");
         for _ in 0..count {
             let line = lines.next().expect("complete raw pointer gesture");
@@ -146,7 +146,7 @@ fn touch_workflow_edits_only_the_selected_record_and_restores_the_list() {
     );
     assert_eq!(app.engine().focus().focused_key(), Some(Key(111)));
     // Reopen both records by touch to verify the stored values independently of the editor.
-    let tap = |app: &mut AppSession<'_, '_, Alarms>, ms: u64, y: i32| {
+    let tap = |app: &mut AppSession<'_, '_, AlarmApp<LIST_VIEWPORT>>, ms: u64, y: i32| {
         replay_trace(
             app,
             &format!(
@@ -168,7 +168,7 @@ fn touch_workflow_edits_only_the_selected_record_and_restores_the_list() {
 fn bounded_scroll_edit_and_return() {
     let font = Lf4Font::from_bytes(include_bytes!("../assets/body.lf4")).unwrap();
     let mut storage = Storage::new();
-    let mut app = AppSession::<Alarms>::new(
+    let mut app = AppSession::<AlarmApp<LIST_VIEWPORT>>::new(
         &mut storage,
         Model::new(536),
         FontSet::single(font),
@@ -255,7 +255,7 @@ fn bounded_scroll_edit_and_return() {
 fn rotary_navigation_crosses_materialized_window() {
     let font = Lf4Font::from_bytes(include_bytes!("../assets/body.lf4")).unwrap();
     let mut storage = Storage::new();
-    let mut app = AppSession::<Alarms>::new(
+    let mut app = AppSession::<AlarmApp<LIST_VIEWPORT>>::new(
         &mut storage,
         Model::new(536),
         FontSet::single(font),

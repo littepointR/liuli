@@ -5,10 +5,10 @@ use crate::Theme;
 use crate::pinyin_dict::{DEFAULT_PHRASES, DEFAULT_SYLLABLES};
 
 const TEXT_BOX_PAD_X: i32 = 8;
-const MAX_DISPLAY_BYTES: usize = 512;
-const MAX_PREEDIT_BYTES: usize = 32;
+use liuli::core::capacity::IME_DISPLAY_BYTES as MAX_DISPLAY_BYTES;
+const MAX_PREEDIT_BYTES: usize = liuli::core::capacity::IME_PREEDIT_BYTES;
 const MAX_CODE_BYTES: usize = 16;
-const MAX_CANDS_SHOWN: usize = 4;
+const MAX_CANDS_SHOWN: usize = liuli::core::capacity::IME_CANDIDATES;
 
 // ---------------------------------------------------------------------------
 // 1. FixedTextEditor<CAP> — Zero-heap UTF-8 text + preedit + cursor state

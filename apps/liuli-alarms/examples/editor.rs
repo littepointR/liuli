@@ -22,8 +22,8 @@ enum Edit {
 impl<'a> App for Editing<'a> {
     type Model = TextField<'a>;
     type Msg = Edit;
-    fn view(field: &Self::Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildError> {
-        out.root(Key(1), NodeProps::new(), |ui| {
+    fn view(field: &Self::Model) -> impl Scene {
+        layout(Key(1), NodeProps::new(), move |ui| {
             ui.custom(
                 FIELD,
                 NodeProps {
@@ -109,6 +109,12 @@ fn main() -> Result<(), String> {
         256,
     )
     .map_err(|e| format!("{e:?}"))?;
+    #[cfg(feature = "scene-planner")]
+    if std::env::var_os("LIULI_PRINT_CAPACITY").is_some() {
+        let d = liuli::scene::capacity::<Editing>(&field).map_err(|e| format!("{e:?}"))?;
+        println!("liuli-capacity-v1 {} {} {}", d.nodes, d.depth, d.text_slots);
+        return Ok(());
+    }
     let font =
         Lf4Font::from_bytes(include_bytes!("../assets/body.lf4")).map_err(|e| format!("{e:?}"))?;
     let mut storage = Storage::new();

@@ -93,8 +93,8 @@ impl App for PartsApp {
         Change::View
     }
 
-    fn view(model: &Self::Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildError> {
-        out.root(
+    fn view(model: &Self::Model) -> impl Scene {
+        layout(
             Key(1),
             NodeProps {
                 bg: Some(Rgb565::new(2, 4, 2)),
@@ -103,7 +103,7 @@ impl App for PartsApp {
                 padding: EdgeInsets::all(6),
                 ..NodeProps::new()
             },
-            |ui| {
+            move |ui| {
                 ui.column(
                     Key(2),
                     NodeProps {
@@ -407,8 +407,8 @@ impl App for OverrideApp {
         Change::View
     }
 
-    fn view(model: &Self::Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildError> {
-        out.root(
+    fn view(model: &Self::Model) -> impl Scene {
+        layout(
             Key(1),
             NodeProps {
                 bg: Some(Rgb565::new(2, 4, 2)),
@@ -417,7 +417,7 @@ impl App for OverrideApp {
                 padding: EdgeInsets::all(8),
                 ..NodeProps::new()
             },
-            |ui| {
+            move |ui| {
                 ui.column(
                     Key(2),
                     NodeProps {
@@ -679,8 +679,8 @@ impl App for CustomApp {
         }
     }
 
-    fn view(model: &Self::Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildError> {
-        out.root(
+    fn view(model: &Self::Model) -> impl Scene {
+        layout(
             Key(1),
             NodeProps {
                 bg: Some(Rgb565::new(2, 4, 2)),
@@ -688,7 +688,7 @@ impl App for CustomApp {
                 height: Length::Fill(1),
                 ..NodeProps::new()
             },
-            |ui| {
+            move |ui| {
                 ui.scroll_y(
                     Key(30),
                     NodeProps {
@@ -1054,8 +1054,8 @@ impl App for LayoutApp {
         Change::Unchanged
     }
 
-    fn view(_model: &Self::Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildError> {
-        out.root(
+    fn view(_model: &Self::Model) -> impl Scene {
+        layout(
             Key(1),
             NodeProps {
                 bg: Some(Rgb565::new(2, 4, 2)),
@@ -1063,7 +1063,7 @@ impl App for LayoutApp {
                 height: Length::Fill(1),
                 ..NodeProps::new()
             },
-            |ui| {
+            move |ui| {
                 ui.column(
                     Key(2),
                     NodeProps {

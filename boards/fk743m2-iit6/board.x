@@ -17,4 +17,4 @@ SECTIONS {
   _stack = ORIGIN(DTCM) + LENGTH(DTCM);
   /DISCARD/ : { *(.ARM.extab*) *(.comment) }
 }
-ASSERT(SIZEOF(.report) == 64, "J-Link report ABI")
+ASSERT(SIZEOF(.report) == LIULI_REPORT_BYTES, "J-Link report ABI")

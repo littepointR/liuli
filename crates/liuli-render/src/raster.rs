@@ -15,7 +15,7 @@ use liuli_core::view::{FontId, IconKind, SubpixelOrder, TextAlign, TextGamma, Te
 use liuli_text::{
     FontProvider, FontSet, GlyphEncoding, GlyphFormat, LineDecor, ProviderLayoutStyle,
     TextLayoutOptions, TextLayoutStyle, a2_pixel, blend_rgb565_a4_u16, blend_rgb565_a8_u16,
-    blend_rgb565_lcd_a4_u16, decode_rle_rows, gamma_remap_a4, gamma_remap_a8, lcd_rgb_pixel,
+    blend_rgb565_lcd_a4_u16, gamma_remap_a4, gamma_remap_a8, lcd_rgb_pixel,
     visit_layout_glyphs_provider, visit_layout_glyphs_styled,
 };
 
@@ -182,13 +182,33 @@ pub fn render_band_with_provider<R, F: FontProvider>(
 where
     R: SceneResources + ?Sized,
 {
-    let mut accel = crate::accel::SoftAccel;
+    render_band_with_provider_accel(
+        target,
+        cmds,
+        resources,
+        fonts,
+        blend,
+        &mut crate::accel::SoftAccel,
+    )
+}
+
+pub fn render_band_with_provider_accel<R, F: FontProvider>(
+    target: &mut BandTarget<'_>,
+    cmds: &CommandList,
+    resources: &R,
+    fonts: &F,
+    blend: impl Fn(&mut [u16], Rgb565, u8) + Copy,
+    accel: &mut impl crate::accel::DrawAccel,
+) -> Result<u32, F::Error>
+where
+    R: SceneResources + ?Sized,
+{
     render_range(
         target,
         cmds,
         resources,
         blend,
-        &mut accel,
+        accel,
         &mut ProviderTextSource { fonts },
         0..cmds.count,
         cmds.root_bg,
@@ -217,7 +237,6 @@ trait BandTextSource {
         letter_spacing: i8,
         line_spacing: i8,
         vis_y: Option<(i32, i32)>,
-        row_buf: &mut [u8],
     ) -> Result<(), Self::Error>;
 }
 
@@ -251,7 +270,6 @@ impl<G: liuli_text::storage::GlyphPixels> BandTextSource for LegacyTextSource<'_
         letter_spacing: i8,
         line_spacing: i8,
         vis_y: Option<(i32, i32)>,
-        row_buf: &mut [u8],
     ) -> Result<(), Self::Error> {
         let font = self.fonts.get(font_id);
         let fallback_face = self.fonts.fallback();
@@ -342,7 +360,6 @@ impl<G: liuli_text::storage::GlyphPixels> BandTextSource for LegacyTextSource<'_
                     subpixel,
                     fg_raw,
                     perceptual,
-                    row_buf,
                     data,
                 );
             },
@@ -401,7 +418,6 @@ impl<F: FontProvider> BandTextSource for ProviderTextSource<'_, F> {
         letter_spacing: i8,
         line_spacing: i8,
         vis_y: Option<(i32, i32)>,
-        row_buf: &mut [u8],
     ) -> Result<(), Self::Error> {
         let draw_decor = style.underline() || style.strikethrough();
         let perceptual = style.gamma() == TextGamma::Perceptual;
@@ -455,7 +471,7 @@ impl<F: FontProvider> BandTextSource for ProviderTextSource<'_, F> {
                     |data, enc| {
                         blit_decoded_glyph(
                             target, band_rect, stride, vis, gx, gy, gw, gh, pg.phase, pg.format,
-                            enc, subpixel, fg_raw, perceptual, row_buf, data,
+                            enc, subpixel, fg_raw, perceptual, data,
                         );
                     },
                 ) {
@@ -504,7 +520,6 @@ fn blit_decoded_glyph(
     subpixel: SubpixelOrder,
     fg_raw: u16,
     perceptual: bool,
-    row_buf: &mut [u8],
     data: &[u8],
 ) {
     let row_bytes = format.row_bytes(gw);
@@ -537,31 +552,26 @@ fn blit_decoded_glyph(
             }
         }
         GlyphEncoding::Rle => {
-            if row_bytes > row_buf.len() {
-                return;
-            }
-            let phase_start_row = usize::from(phase) * usize::from(gh);
-            let total_rows = phase_start_row + usize::from(gh);
-            let skip_rows = phase_start_row + (vis.y - gy) as usize;
-            let _ = decode_rle_rows(
+            let first = usize::from(phase) * usize::from(gh);
+            let _ = visit_glyph_chunks(
                 data,
-                row_bytes,
-                total_rows,
-                skip_rows,
+                format,
+                gw,
+                first + usize::from(gh),
+                first + (vis.y - gy) as usize,
                 vis.h as usize,
-                &mut row_buf[..row_bytes],
-                |row_idx, row| {
-                    let py = gy + (row_idx - phase_start_row) as i32;
-                    let ly = (py - band_rect.y) as usize;
+                |row, start, width, bytes| {
+                    let x = gx.saturating_add(i32::from(start));
+                    let py = gy + (row - first) as i32;
                     blit_glyph_row(
                         target,
-                        ly * stride,
+                        (py - band_rect.y) as usize * stride,
                         band_rect.x,
-                        gx,
-                        gw,
-                        vis_x0,
-                        vis_x1,
-                        row,
+                        x,
+                        width,
+                        vis_x0.max(x),
+                        vis_x1.min(x.saturating_add(i32::from(width))),
+                        bytes,
                         format,
                         subpixel,
                         fg_raw,
@@ -571,6 +581,39 @@ fn blit_decoded_glyph(
             );
         }
     }
+}
+
+// Three bytes contain two complete LCD RGB pixels. Raw glyphs never enter this frame.
+#[inline(never)]
+fn visit_glyph_chunks(
+    data: &[u8],
+    format: GlyphFormat,
+    width: u16,
+    rows: usize,
+    skip: usize,
+    count: usize,
+    mut draw: impl FnMut(usize, u16, u16, &[u8]),
+) -> Result<(), ()> {
+    let pixels = |n: usize| match format {
+        GlyphFormat::A1 => n * 8,
+        GlyphFormat::A2 => n * 4,
+        GlyphFormat::A4 => n * 2,
+        GlyphFormat::A8 => n,
+        GlyphFormat::LcdRgb => n * 2 / 3,
+    };
+    liuli_text::coverage::decode_rle_chunks(
+        data,
+        format.row_bytes(width),
+        rows,
+        skip,
+        count,
+        &mut [0; 48],
+        |row, offset, bytes| {
+            let first = pixels(offset);
+            let last = pixels(offset + bytes.len()).min(usize::from(width));
+            draw(row, first as u16, (last - first) as u16, bytes);
+        },
+    )
 }
 
 // A run of vertical fills (stripes, charts) writes the same opaque span on
@@ -654,7 +697,7 @@ fn paint_range<R: SceneResources + ?Sized, T: BandTextSource, A: crate::accel::D
     range: core::ops::Range<usize>,
     clear: Rgb565,
 ) -> Result<u32, T::Error> {
-    if !cmds.has_mask_groups() {
+    if !liuli_core::capacity::MASKS || !cmds.has_mask_groups() {
         return paint_flat(
             target,
             cmds,
@@ -752,9 +795,12 @@ fn paint_mask_tile<R: SceneResources + ?Sized, T: BandTextSource, A: crate::acce
 ) -> Result<u32, T::Error> {
     let mut frames = [MaskTile::default(); liuli_core::effects::MAX_EFFECTS];
     let mut depth = 0;
-    frames[0].command = root;
+    let Some(first) = frames.first_mut() else {
+        return Ok(0);
+    };
+    first.command = root;
     let mut cursor = root + 1;
-    let mut replayed = 1;
+    let mut replayed = u32::from(liuli_core::capacity::METRICS);
     loop {
         let frame = &mut frames[depth];
         let PaintCmd::MaskGroup {
@@ -882,7 +928,7 @@ fn paint_flat<R: SceneResources + ?Sized, T: BandTextSource, A: crate::accel::Dr
         if !cmd.bounds().intersects(band_rect) {
             continue;
         }
-        replayed += 1;
+        replayed += u32::from(liuli_core::capacity::METRICS);
 
         match *cmd {
             PaintCmd::Empty | PaintCmd::PathEdges { .. } => {}
@@ -971,6 +1017,12 @@ fn paint_flat<R: SceneResources + ?Sized, T: BandTextSource, A: crate::accel::Dr
                     });
                 crate::composition::draw_path(target, rect, clip, edges, paint, color)
             }
+            PaintCmd::WideRoundShadow { .. }
+            | PaintCmd::OutlineShadow { .. }
+            | PaintCmd::Shadow { .. }
+                if !liuli_core::capacity::SHADOWS => {}
+            PaintCmd::Icon { .. } if !liuli_core::capacity::ICONS => {}
+            PaintCmd::Sparkline { .. } if liuli_core::capacity::MAX_SPARKLINES == 0 => {}
             PaintCmd::WideRoundShadow {
                 rect,
                 clip,
@@ -1230,7 +1282,9 @@ fn paint_flat<R: SceneResources + ?Sized, T: BandTextSource, A: crate::accel::Dr
                     );
                     if used > 0 {
                         cursor += used;
-                        replayed += used as u32;
+                        if liuli_core::capacity::METRICS {
+                            replayed += used as u32;
+                        }
                         continue;
                     }
                 }
@@ -1552,7 +1606,6 @@ fn draw_text_cmd<T: BandTextSource>(
         width_limit_clip.y - pos.y - decor_pad.max(8),
         (width_limit_clip.y + width_limit_clip.h as i32) - pos.y + decor_pad.max(8),
     ));
-    let mut row_buf = [0u8; 256];
     text_source.draw_text(
         target,
         band_rect,
@@ -1570,7 +1623,6 @@ fn draw_text_cmd<T: BandTextSource>(
         letter_spacing,
         line_spacing,
         vis_y,
-        &mut row_buf,
     )
 }
 
@@ -1683,7 +1735,7 @@ fn draw_icon(target: &mut BandTarget<'_>, rect: Rect, clip: Rect, kind: IconKind
     let fill = PrimitiveStyle::with_fill(color);
 
     match kind {
-        IconKind::None => {}
+        IconKind::None | IconKind::Custom => {}
         IconKind::ChevronRight => {
             draw_icon_line(target, rect, eff_clip, 4, 3, 10, 7, stroke);
             draw_icon_line(target, rect, eff_clip, 10, 7, 4, 11, stroke);
@@ -2030,5 +2082,69 @@ fn draw_line_decor(
             .saturating_add(dec.baseline_y)
             .saturating_sub((i32::from(dec.ascent) * 3) / 8);
         draw_h_span(target, band_rect, stride, clip, x0, x1, sy, fg_raw);
+    }
+}
+
+#[cfg(test)]
+mod wide_glyph_tests {
+    extern crate std;
+    use super::*;
+    use std::vec::Vec;
+
+    #[test]
+    fn wide_streamed_rows_match_raw_with_clip_and_phase() {
+        let width = 2057;
+        let band = Rect::new(0, 2, 2020, 2);
+        let vis = Rect::new(7, 2, 2009, 2);
+        for format in [
+            GlyphFormat::A1,
+            GlyphFormat::A2,
+            GlyphFormat::A4,
+            GlyphFormat::A8,
+            GlyphFormat::LcdRgb,
+        ] {
+            let size = format.row_bytes(width) * 4 * 2;
+            let mut raw = Vec::new();
+            let mut rle = Vec::new();
+            while raw.len() < size {
+                let n = 113.min(size - raw.len());
+                if raw.len() % 2 == 0 && n >= 2 {
+                    rle.extend([128 + (n - 2) as u8, 0xc1]);
+                    raw.resize(raw.len() + n, 0xc1);
+                } else {
+                    rle.push((n - 1) as u8);
+                    for i in 0..n {
+                        let b = (raw.len() ^ (i * 11)) as u8;
+                        rle.push(b);
+                        raw.push(b);
+                    }
+                }
+            }
+            let render = |encoding, data: &[u8]| {
+                let mut words = std::vec![0x1082; 4040];
+                let mut surface = BandTarget::new::<()>(&mut words, band).unwrap();
+                blit_decoded_glyph(
+                    &mut surface,
+                    band,
+                    2020,
+                    vis,
+                    -13,
+                    0,
+                    width,
+                    4,
+                    1,
+                    format,
+                    encoding,
+                    SubpixelOrder::Bgr,
+                    0xffff,
+                    false,
+                    data,
+                );
+                words
+            };
+            let expected = render(GlyphEncoding::Raw, &raw);
+            assert!(expected.iter().any(|&v| v != 0x1082));
+            assert_eq!(render(GlyphEncoding::Rle, &rle), expected, "{format:?}");
+        }
     }
 }

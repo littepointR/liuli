@@ -7,12 +7,18 @@ license.workspace=true
 description="Unicode shaping and editing for heap-enabled MCU applications"
 
 [dependencies]
-harfrust={version="=0.12.0",default-features=false,features=["libm"]}
-unicode-bidi={version="=0.3.18",default-features=false,features=["hardcoded-data"]}
-unicode-script={version="0.5",default-features=false}
-unicode-segmentation={version="1.13",default-features=false}
-ttf-parser={version="=0.25.1",default-features=false,features=["no-std-float"]}
-liuli-core={workspace=true,features=["owned-images"]}
-libm="0.2"
-ab_glyph_rasterizer={version="=0.1.10",default-features=false,features=["libm"]}
-liuli-text.workspace=true
+harfrust={optional=true,version="=0.12.0",default-features=false,features=["libm"]}
+unicode-bidi={optional=true,version="=0.3.18",default-features=false,features=["hardcoded-data"]}
+unicode-script={optional=true,version="0.5",default-features=false}
+unicode-segmentation={optional=true,version="1.13",default-features=false}
+ttf-parser={optional=true,version="=0.25.1",default-features=false,features=["no-std-float"]}
+liuli-core.workspace=true
+libm={version="0.2",optional=true}
+ab_glyph_rasterizer={optional=true,version="=0.1.10",default-features=false,features=["libm"]}
+liuli-text={workspace=true,optional=true}
+
+[features]
+default=["gestures","text","field"]
+gestures=["dep:libm"]
+text=["dep:harfrust","dep:unicode-bidi","dep:unicode-script","dep:unicode-segmentation","dep:ttf-parser","dep:ab_glyph_rasterizer","dep:liuli-text","dep:libm"]
+field=["text","liuli-core/owned-images"]

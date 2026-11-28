@@ -25,7 +25,7 @@ impl liuli::text::storage::GlyphPixels for FontTraffic {
         self.bytes += g.data.len();
         if self
             .seen
-            .insert((slot as u8, g.metrics.unicode), self.band)
+            .insert((slot.0, g.metrics.unicode), self.band)
             .is_some_and(|last| last != self.band)
         {
             self.cross_band += 1;

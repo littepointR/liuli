@@ -34,6 +34,24 @@ pub fn data_table(
     row_height: u16,
     theme: Theme,
 ) -> Result<(), BuildError> {
+    let columns = u32::try_from(cols.len()).map_err(|_| BuildError::InvalidRange)?;
+    let header_end = 10u32.checked_add(columns).ok_or(BuildError::InvalidRange)?;
+    let first_row = header_end.max(100);
+    let stride = columns
+        .checked_add(1)
+        .ok_or(BuildError::InvalidRange)?
+        .max(16);
+    let last_row = u32::try_from(rows.len()).map_err(|_| BuildError::InvalidRange)?;
+    let end = if last_row == 0 {
+        header_end
+    } else {
+        (last_row - 1)
+            .checked_mul(stride)
+            .and_then(|n| n.checked_add(first_row))
+            .and_then(|n| n.checked_add(columns))
+            .ok_or(BuildError::InvalidRange)?
+    };
+    base_key.checked_add(end).ok_or(BuildError::InvalidRange)?;
     let rh = u32::from(row_height.max(20));
     let table_props = NodeProps::new()
         .width(Length::Fill(1))
@@ -59,7 +77,7 @@ pub fn data_table(
                             .width(col.width)
                             .height(Length::Content)
                             .fg(theme.accent)
-                            .font(FontId::Small12)
+                            .font(theme.typography.caption)
                             .text(TextRef::Static(col.title))
                             .text_align(col.align),
                     )?;
@@ -78,7 +96,7 @@ pub fn data_table(
                 theme.surface
             };
             let row_fg = if is_sel { theme.background } else { theme.text };
-            let rbase = base_key + 100 + (ri as u32) * 16;
+            let rbase = base_key + first_row + (ri as u32) * stride;
             tbl.row(
                 Key(rbase),
                 NodeProps::new()
@@ -471,6 +489,7 @@ pub fn paint_rich_text(
             FontId::Body16 => 8i32,
             FontId::Title20 => 10i32,
             FontId::Display28 => 14i32,
+            _ => 8,
         };
         let mut rest = span.text;
         while !rest.is_empty() && y < sz.height as i32 {

@@ -1,0 +1,16 @@
+[workspace]
+members = ["controls"]
+
+[package]
+name = "planned-product"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+liuli = { version = "=1.0.0", path = "../../crates/liuli", features = ["part-painters"] }
+liuli-widgets = { version = "=1.0.0", path = "../../crates/liuli-widgets" }
+product-controls = { path = "controls" }
+
+[[example]]
+name="capacity"
+required-features=["liuli/scene-planner"]

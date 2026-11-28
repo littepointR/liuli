@@ -35,7 +35,7 @@ impl App for GestureApp {
         }
         Change::View
     }
-    fn view(m: &Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildError> {
+    fn view(m: &Model) -> impl Scene {
         let props = NodeProps {
             width: Length::Px(64),
             height: Length::Px(64),
@@ -43,7 +43,7 @@ impl App for GestureApp {
             clickable: true,
             ..NodeProps::new()
         };
-        out.root(Key(1), NodeProps::new(), |ui| {
+        layout(Key(1), NodeProps::new(), move |ui| {
             if !m.removed {
                 ui.button(Key(2), props)?;
             }

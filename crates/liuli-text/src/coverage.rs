@@ -279,66 +279,79 @@ pub fn decode_rle_rows(
     row_buf: &mut [u8],
     mut on_row: impl FnMut(usize, &[u8]),
 ) -> Result<(), ()> {
-    if row_bytes == 0 || total_rows == 0 || max_rows == 0 || skip_rows >= total_rows {
+    if row_bytes > row_buf.len() {
+        return Err(());
+    }
+    decode_rle_chunks(
+        rle,
+        row_bytes,
+        total_rows,
+        skip_rows,
+        max_rows,
+        row_buf,
+        |row, _, data| on_row(row, data),
+    )
+}
+
+/// Visit visible rows in byte-aligned chunks. The caller chooses the working-set size.
+#[allow(clippy::result_unit_err)]
+pub fn decode_rle_chunks(
+    data: &[u8],
+    row_bytes: usize,
+    total_rows: usize,
+    skip_rows: usize,
+    max_rows: usize,
+    scratch: &mut [u8],
+    mut emit: impl FnMut(usize, usize, &[u8]),
+) -> Result<(), ()> {
+    let end = total_rows.min(skip_rows.saturating_add(max_rows));
+    if row_bytes == 0 || skip_rows >= end {
         return Ok(());
     }
-    if row_buf.len() < row_bytes {
+    if scratch.is_empty() {
         return Err(());
     }
-    let stop_row = total_rows.min(skip_rows.saturating_add(max_rows));
-    let mut row = 0usize;
-    let mut col = 0usize;
-    let mut pos = 0usize;
-    while pos < rle.len() && row < stop_row {
-        let ctrl = rle[pos];
-        pos += 1;
-        if ctrl < 128 {
-            let mut rem = usize::from(ctrl) + 1;
-            if pos + rem > rle.len() {
-                return Err(());
-            }
-            while rem > 0 && row < stop_row {
-                let take = rem.min(row_bytes - col);
-                if row >= skip_rows {
-                    row_buf[col..col + take].copy_from_slice(&rle[pos..pos + take]);
-                }
-                pos += take;
-                col += take;
-                rem -= take;
-                if col == row_bytes {
-                    if row >= skip_rows {
-                        on_row(row, &row_buf[..row_bytes]);
-                    }
-                    row += 1;
-                    col = 0;
-                }
-            }
+    let mut row = 0;
+    let mut col = 0;
+    let mut used = 0;
+    let mut input = data;
+    while row < end {
+        let (&ctrl, rest) = input.split_first().ok_or(())?;
+        let literal = ctrl < 128;
+        let mut remaining = if literal {
+            usize::from(ctrl) + 1
         } else {
-            let mut rem = usize::from(ctrl - 128) + 2;
-            if pos >= rle.len() {
-                return Err(());
+            usize::from(ctrl - 128) + 2
+        };
+        let size = if literal { remaining } else { 1 };
+        let (mut payload, rest) = rest.split_at_checked(size).ok_or(())?;
+        input = rest;
+        while remaining > 0 && row < end {
+            let mut take = remaining.min(row_bytes - col);
+            if row >= skip_rows {
+                take = take.min(scratch.len() - used);
+                let dest = &mut scratch[used..used + take];
+                if literal {
+                    dest.copy_from_slice(&payload[..take]);
+                } else {
+                    dest.fill(payload[0]);
+                }
+                used += take;
+                if used == scratch.len() || col + take == row_bytes {
+                    emit(row, col + take - used, &scratch[..used]);
+                    used = 0;
+                }
             }
-            let val = rle[pos];
-            pos += 1;
-            while rem > 0 && row < stop_row {
-                let take = rem.min(row_bytes - col);
-                if row >= skip_rows {
-                    row_buf[col..col + take].fill(val);
-                }
-                col += take;
-                rem -= take;
-                if col == row_bytes {
-                    if row >= skip_rows {
-                        on_row(row, &row_buf[..row_bytes]);
-                    }
-                    row += 1;
-                    col = 0;
-                }
+            if literal {
+                payload = &payload[take..];
+            }
+            col += take;
+            remaining -= take;
+            if col == row_bytes {
+                col = 0;
+                row += 1;
             }
         }
-    }
-    if row < stop_row {
-        return Err(());
     }
     Ok(())
 }

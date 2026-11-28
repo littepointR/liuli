@@ -336,7 +336,7 @@ pub(super) fn capture(ui: &mut ThemedUi<'_, '_, '_>, m: &Model) -> Result<(), Bu
         IconKind::Waveform,
         V::Primary,
     )?;
-    if recording {
+    if ui.raw().optional(recording) {
         let cue = ui.text_fmt(format_args!("Drop cue    {}", m.count))?;
         ui.button_props(
             Key(65),
@@ -348,7 +348,7 @@ pub(super) fn capture(ui: &mut ThemedUi<'_, '_, '_>, m: &Model) -> Result<(), Bu
             },
         )?;
     }
-    if m.toast_until.is_some() {
+    if ui.raw().optional(m.toast_until.is_some()) {
         ui.toast(
             Key(66),
             TextRef::Static(if recording {

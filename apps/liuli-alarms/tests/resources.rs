@@ -56,7 +56,7 @@ fn font_io_failure_preserves_damage_for_retry() {
     use liuli::prelude::*;
     use liuli::render::sync::FrameError;
     use liuli::text::{GlyphBitmap, storage::GlyphPixels};
-    use liuli_alarms::{Alarms, Model};
+    use liuli_alarms::{AlarmApp, LIST_VIEWPORT, Model};
     use liuli_sim::screen::{MemoryScreen, render_reference_fullscreen};
     struct FailsAfter(usize);
     impl GlyphPixels for FailsAfter {
@@ -68,7 +68,7 @@ fn font_io_failure_preserves_damage_for_retry() {
     }
     let mut storage = Storage::new();
     let font = Lf4Font::from_bytes(FONT).unwrap();
-    let mut app = Engine::<Alarms>::new_in_place(
+    let mut app = Engine::<AlarmApp<LIST_VIEWPORT>>::new_in_place(
         &mut storage,
         Model::new(536),
         font,

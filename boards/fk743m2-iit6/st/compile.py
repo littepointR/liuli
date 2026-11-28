@@ -16,6 +16,10 @@ args = [compiler, '--target=arm-none-eabihf', '-mcpu=cortex-m7', '-mfpu=fpv5-d16
         '-ffunction-sections', '-fdata-sections', '-fno-unwind-tables',
         '-DSTM32H743xx', '-DUSE_HAL_DRIVER', '-DUSE_PWR_LDO_SUPPLY',
         '-I', str(st), '-I', str(st / 'freestanding'), '-I', str(source / 'inc')]
+if 'CARGO_FEATURE_DIAGNOSTICS' in os.environ:
+    args.append('-DLIULI_DIAGNOSTICS')
+if 'CARGO_FEATURE_TOUCH_IRQ' in os.environ:
+    args.append('-DLIULI_TOUCH_IRQ')
 writer = '--writer' in sys.argv
 flash_sources = [source / 'src' / name for name in ('stm32h7xx_hal_flash.c', 'stm32h7xx_hal_flash_ex.c')]
 sources = [st / 'flash_writer.c', *flash_sources] if writer else [

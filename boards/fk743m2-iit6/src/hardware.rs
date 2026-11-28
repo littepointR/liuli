@@ -8,6 +8,7 @@ unsafe extern "C" {
     fn fk_panel_init(front: u32) -> u32;
     fn fk_panel_swap(front: u32) -> u32;
     fn fk_backlight();
+    #[cfg(feature = "diagnostics")]
     fn fk_display_status() -> u32;
     fn fk_dcache_clean(addr: u32, len: u32);
     fn fk_dcache_clean_invalidate(addr: u32, len: u32);
@@ -40,6 +41,7 @@ pub fn swap(addr: usize) -> Result<(), u32> {
 pub fn backlight() {
     unsafe { fk_backlight() }
 }
+#[cfg(feature = "diagnostics")]
 pub fn status() -> u32 {
     unsafe { fk_display_status() }
 }

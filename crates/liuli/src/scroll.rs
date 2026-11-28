@@ -5,6 +5,7 @@ use liuli_core::view::{App, Key, ScrollPolicy};
 
 /// One native trajectory for the primary pointer. Inactive viewports retain only
 /// their layout offset. A bound controller also accepts application commands.
+#[cfg(liuli_scroll)]
 #[derive(Clone, Copy, Default)]
 pub(crate) struct TouchScroll {
     pub owner: Option<(NodeId, Key)>,
@@ -13,7 +14,11 @@ pub(crate) struct TouchScroll {
     native: ScrollPhysics,
 }
 
+#[cfg(liuli_scroll)]
 impl TouchScroll {
+    pub fn set_pressed_at(&mut self, now: InstantMs) {
+        self.pressed_at = now;
+    }
     pub fn controller<'a, A: App>(
         &'a mut self,
         model: &'a mut A::Model,
@@ -32,9 +37,8 @@ impl TouchScroll {
         model: &mut A::Model,
         now: InstantMs,
     ) {
-        for (slot, node) in tree.nodes.iter().enumerate() {
-            if node.occupied
-                && let Some(limit) = node.scroll_limit()
+        for (slot, node) in tree.scroll_slots() {
+            if let Some(limit) = node.scroll_limit()
                 && let Some((motion, origin)) =
                     self.controller::<A>(model, node.id(slot as u16), node.key)
             {
@@ -60,10 +64,7 @@ impl TouchScroll {
     ) -> (bool, NextWakeup) {
         let mut changed = false;
         let mut wake = NextWakeup::OnEvent;
-        for (slot, node) in tree.nodes.iter().enumerate() {
-            if !node.occupied || !node.kind.is_scroll_view() {
-                continue;
-            }
+        for (slot, node) in tree.scroll_slots() {
             let Some((motion, origin)) =
                 self.controller::<A>(model, node.id(slot as u16), node.key)
             else {
@@ -90,6 +91,10 @@ impl TouchScroll {
         page_switched: bool,
         revealed_tabs: liuli_core::capacity::NodeMask,
     ) {
+        if active_tree.scroll_slots().next().is_none() && cand_tree.scroll_slots().next().is_none()
+        {
+            return;
+        }
         let scope = liuli_core::focus::active_scope_root(cand_tree);
         if let Some((id, _)) = self.owner
             && (page_switched
@@ -99,18 +104,15 @@ impl TouchScroll {
         {
             self.stop::<A>(model);
         }
-        for (idx, node) in active_tree.nodes.iter().enumerate() {
-            if node.occupied
-                && node.kind.is_scroll_view()
-                && (page_switched || !cand_tree.is_id_valid(node.id(idx as u16)))
+        for (idx, node) in active_tree.scroll_slots() {
+            if (page_switched || !cand_tree.is_id_valid(node.id(idx as u16)))
                 && let Some(controller) = A::scroll_controller(model, node.key)
             {
                 controller.set_offset(controller.offset());
             }
         }
-        for (idx, node) in cand_tree.nodes.iter().enumerate() {
-            if node.occupied
-                && let Some(limit) = node.scroll_limit()
+        for (idx, node) in cand_tree.scroll_slots() {
+            if let Some(limit) = node.scroll_limit()
                 && let Some((controller, origin)) =
                     self.controller::<A>(model, node.id(idx as u16), node.key)
             {
@@ -190,5 +192,58 @@ impl TouchScroll {
             }
         }
         motion.offset().saturating_add(origin).clamp(0, limit)
+    }
+}
+
+#[cfg(not(liuli_scroll))]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct TouchScroll;
+#[cfg(not(liuli_scroll))]
+#[allow(unused_variables)]
+impl TouchScroll {
+    pub fn set_pressed_at(&mut self, now: InstantMs) {}
+    pub fn stop<A: App>(&mut self, model: &mut A::Model) {}
+    pub fn controller<'a, A: App>(
+        &'a mut self,
+        model: &'a mut A::Model,
+        id: NodeId,
+        key: Key,
+    ) -> Option<(&'a mut ScrollPhysics, i32)> {
+        None
+    }
+    pub fn notify_offsets<A: App>(
+        &mut self,
+        tree: &RetainedTree,
+        model: &mut A::Model,
+        now: InstantMs,
+    ) {
+    }
+    pub fn sample<A: App>(
+        &mut self,
+        tree: &RetainedTree,
+        model: &mut A::Model,
+        now: InstantMs,
+        advance: bool,
+    ) -> (bool, NextWakeup) {
+        (false, NextWakeup::OnEvent)
+    }
+    pub fn did_commit<A: App>(
+        &mut self,
+        model: &mut A::Model,
+        old: &RetainedTree,
+        new: &RetainedTree,
+        switched: bool,
+        revealed: liuli_core::capacity::NodeMask,
+    ) {
+    }
+    pub fn input<A: App>(
+        &mut self,
+        model: &mut A::Model,
+        id: NodeId,
+        node: &RetainedNode,
+        gesture: ScrollGesture,
+        now: InstantMs,
+    ) -> i32 {
+        node.scroll_y
     }
 }

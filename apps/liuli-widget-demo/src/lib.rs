@@ -218,8 +218,8 @@ pub struct Catalog;
 impl App for Catalog {
     type Model = Model;
     type Msg = Message;
-    fn view(m: &Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildError> {
-        pages::view(m, out)
+    fn view(m: &Model) -> impl Scene {
+        pages::view(m)
     }
     fn on_action(_: &Model, action: UiAction) -> Option<Message> {
         Some(Message::Action(action))

@@ -5,7 +5,11 @@ use core::{
 };
 use linked_list_allocator::Heap;
 
-const EXTERNAL: usize = 0xc020_0000;
+const EXTERNAL: usize = if cfg!(feature = "diagnostics") {
+    0xc020_0000
+} else {
+    0xc018_0000
+};
 struct UiHeap(UnsafeCell<[Heap; 2]>);
 // The two backends share this single-core allocator. Each heap operation masks interrupts.
 unsafe impl Sync for UiHeap {}
@@ -41,6 +45,6 @@ pub unsafe fn init() {
         if internal >= 3 * size_of::<usize>() {
             fast.init(start, internal);
         }
-        external.init(EXTERNAL as *mut u8, 30 * 1024 * 1024);
+        external.init(EXTERNAL as *mut u8, 0xc200_0000 - EXTERNAL);
     }
 }

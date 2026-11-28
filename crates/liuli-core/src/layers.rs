@@ -85,7 +85,7 @@ impl CommandList {
             .saturating_mul(2)
             .saturating_add(source.area64().div_ceil(2))
             .saturating_add(capture.area64().saturating_mul(2));
-        let layers = self.layers.get_or_insert_with(Vec::new);
+        let layers = self.layers.items();
         let slot = usize::from(self.used_layers);
         let used: usize = layers[..slot].iter().map(|l| l.bytes).sum();
         if bytes
@@ -160,7 +160,12 @@ impl CommandList {
         Ok(start)
     }
     pub fn layer_bytes(&self) -> usize {
-        self.layers.iter().flatten().map(|l| l.bytes).sum()
+        self.layers
+            .as_ref()
+            .into_iter()
+            .flatten()
+            .map(|l| l.bytes)
+            .sum()
     }
 }
 
@@ -236,7 +241,7 @@ pub fn reuse_groups(
     } else {
         (&mut b[0], &mut a[0])
     };
-    let (Some(before), Some(after)) = (&prev.layers, &next.layers) else {
+    let (Some(before), Some(after)) = (prev.layers.as_ref(), next.layers.as_ref()) else {
         return;
     };
     for dst in after {

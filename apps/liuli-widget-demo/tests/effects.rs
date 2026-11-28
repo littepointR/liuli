@@ -13,19 +13,19 @@ impl App for MovingCard {
     fn on_action(_: &Self::Model, _: UiAction) -> Option<Self::Msg> {
         None
     }
-    fn view(y: &Self::Model, out: &mut ViewBuilder<'_>) -> Result<(), BuildError> {
+    fn view(y: &Self::Model) -> impl Scene {
         let full = NodeProps {
             width: Length::Fill(1),
             height: Length::Fill(1),
             ..NodeProps::new()
         };
-        out.root(
+        layout(
             Key(0),
             NodeProps {
                 bg: Some(Rgb565::new(31, 63, 31)),
                 ..full
             },
-            |root| {
+            move |root| {
                 root.column(Key(1), full, |ui| {
                     if let Some(y) = *y {
                         ui.label(
@@ -79,24 +79,25 @@ fn changing_focus_geometry_repaints_the_old_and_new_outline() {
             *model = msg;
             Change::View
         }
-        fn view(
-            &(ring, radius): &Self::Model,
-            out: &mut ViewBuilder<'_>,
-        ) -> Result<(), BuildError> {
-            out.root(Key(1), NodeProps::new().padding(EdgeInsets::all(8)), |ui| {
-                ui.button(
-                    Key(2),
-                    NodeProps {
-                        focus_ring: ring,
-                        focusable: true,
-                        width: Length::Px(32),
-                        height: Length::Px(20),
-                        radius,
-                        focus_color: Rgb565::new(31, 63, 31),
-                        ..NodeProps::new()
-                    },
-                )
-            })
+        fn view(&(ring, radius): &Self::Model) -> impl Scene {
+            layout(
+                Key(1),
+                NodeProps::new().padding(EdgeInsets::all(8)),
+                move |ui| {
+                    ui.button(
+                        Key(2),
+                        NodeProps {
+                            focus_ring: ring,
+                            focusable: true,
+                            width: Length::Px(32),
+                            height: Length::Px(20),
+                            radius,
+                            focus_color: Rgb565::new(31, 63, 31),
+                            ..NodeProps::new()
+                        },
+                    )
+                },
+            )
         }
         fn on_action(_: &Self::Model, _: UiAction) -> Option<Self::Msg> {
             None
@@ -300,19 +301,19 @@ fn glass_tint_only_and_press_depth_off_and_rounded_focus_match_reference() {
         fn on_action(_: &Cfg, _: UiAction) -> Option<Cfg> {
             None
         }
-        fn view(m: &Cfg, out: &mut ViewBuilder<'_>) -> Result<(), BuildError> {
+        fn view(m: &Cfg) -> impl Scene {
             let full = NodeProps {
                 width: Length::Fill(1),
                 height: Length::Fill(1),
                 ..NodeProps::new()
             };
-            out.root(
+            layout(
                 Key(1),
                 NodeProps {
                     bg: Some(Rgb565::new(28, 58, 30)),
                     ..full
                 },
-                |root| {
+                move |root| {
                     root.stack(Key(2), full, |stack| {
                         stack.button(
                             Key(3),
@@ -573,20 +574,20 @@ fn rounded_glass_and_outline_button_have_no_square_or_black_corners() {
         fn on_action(_: &(), _: UiAction) -> Option<()> {
             None
         }
-        fn view(_: &(), out: &mut ViewBuilder<'_>) -> Result<(), BuildError> {
+        fn view(_: &()) -> impl Scene {
             let t = Theme::DARK;
             let full = NodeProps {
                 width: Length::Fill(1),
                 height: Length::Fill(1),
                 ..NodeProps::new()
             };
-            out.root(
+            layout(
                 Key(0),
                 NodeProps {
                     bg: Some(t.background),
                     ..full
                 },
-                |root| {
+                move |root| {
                     let mut tui = ThemedUi::new(root, t.with_rounded_focus(true));
                     tui.column(Key(10), full, |col| {
                         col.stack(
