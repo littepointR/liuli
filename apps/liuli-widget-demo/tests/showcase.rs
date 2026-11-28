@@ -12,6 +12,115 @@ use liuli_widgets::TransitionKind;
 mod tabs;
 
 #[test]
+fn portrait_and_landscape_mount_the_same_catalog() {
+    let catalog = |size| {
+        let mut store = Storage::new();
+        let mut app = AppSession::<ShowcaseApp>::new(
+            &mut store,
+            ShowcaseModel::for_size(size),
+            showcase_fonts().unwrap(),
+            size,
+            InstantMs(0),
+            true,
+        )
+        .unwrap();
+        let mut now = 0;
+        let mut pages = Vec::new();
+        for key in [11, 12, 221, 13, 14, 19, 23, 702, 703, 704, 705] {
+            tap(&mut app, &mut now, key);
+            now += 500;
+            app.step(InstantMs(now), None, true).unwrap();
+            let tree = app.engine().active_tree();
+            let mut widgets: Vec<_> = tree
+                .nodes
+                .iter()
+                .filter(|n| {
+                    n.occupied
+                        && (n.first_child.get_u16().is_none() || n.props.clickable())
+                        && std::iter::successors(n.parent.get_u16(), |&slot| {
+                            tree.nodes[slot as usize].parent.get_u16()
+                        })
+                        .any(|slot| tree.nodes[slot as usize].kind == NodeKind::TabPanel)
+                })
+                .map(|n| (n.key.0, n.kind))
+                .collect();
+            widgets.sort_by_key(|&(key, _)| key);
+            pages.push((key, widgets));
+        }
+        pages
+    };
+    for ((page, portrait), (_, landscape)) in catalog(Size::new(240, 536))
+        .into_iter()
+        .zip(catalog(Size::new(800, 480)))
+    {
+        assert_eq!(
+            portrait, landscape,
+            "different catalog after touching {page}"
+        );
+    }
+}
+
+#[test]
+fn portrait_catalog_scrolls_to_and_activates_offscreen_controls() {
+    let size = Size::new(240, 536);
+    let mut store = Storage::new();
+    let mut app = AppSession::<ShowcaseApp>::new(
+        &mut store,
+        ShowcaseModel::for_size(size),
+        showcase_fonts().unwrap(),
+        size,
+        InstantMs(0),
+        true,
+    )
+    .unwrap();
+    let fully_visible = |app: &AppSession<'_, '_, ShowcaseApp>, key| {
+        app.engine()
+            .active_tree()
+            .node_by_key(Key(key))
+            .is_some_and(|n| {
+                n.layout_rect.w > 0
+                    && n.layout_rect.h > 0
+                    && n.layout_rect.intersect(n.clip_rect) == n.layout_rect
+            })
+    };
+    assert!(!fully_visible(&app, 140));
+    let mut saw_overview_summary = false;
+    let mut saw_last_column = false;
+    let trace = include_str!("fixtures/portrait-catalog.trace");
+    let (header, steps) = trace.split_once('\n').unwrap();
+    for step in steps.lines() {
+        liuli_sim::preview::replay_trace(&mut app, &format!("{header}\n{step}")).unwrap();
+        match app.engine().model().tab {
+            ShowcaseTab::Overview => saw_overview_summary |= fully_visible(&app, 140),
+            ShowcaseTab::Charts => {
+                saw_last_column |= fully_visible(&app, 333) && fully_visible(&app, 456)
+            }
+            _ => (),
+        }
+    }
+    assert!(saw_overview_summary, "rich text below the overview cards");
+    assert!(saw_last_column, "State header and last row's State cell");
+    let m = app.engine().model();
+    assert_eq!(
+        m.trans_kind,
+        TransitionKind::SlideUp,
+        "overview transition control"
+    );
+    assert!(m.chk_diag, "diagnostics checkbox");
+    assert!(
+        m.editor.text().ends_with("\nSTM32H7"),
+        "editor newline button"
+    );
+    assert_eq!(
+        m.selected_row,
+        Some(2),
+        "last row after scrolling the table"
+    );
+    assert_eq!(m.justify, Justify::SpaceEvenly);
+    assert_eq!(m.preset_index, 1, "animation gallery below the grid");
+}
+
+#[test]
 fn gallery_navigation_and_widget_samples_replay_on_both_panels() {
     use liuli_widget_demo::showcase::SamplePage;
     for size in [Size::new(800, 480), Size::new(240, 536)] {
@@ -553,6 +662,12 @@ fn layout_strip_drag_and_arrow_share_bounds_and_pixels() {
         app.step(InstantMs(clock), None, true).unwrap();
         let strip = app.engine().active_tree().node_by_key(Key(450)).unwrap();
         let r = strip.layout_rect;
+        let first = app.engine().active_tree().node_by_key(Key(452)).unwrap();
+        assert_eq!(
+            first.layout_rect.intersect(first.clip_rect).w,
+            first.layout_rect.w,
+            "first card is cropped horizontally at {width}x{height}"
+        );
         let last_card = app
             .engine()
             .active_tree()
@@ -603,6 +718,12 @@ fn layout_strip_drag_and_arrow_share_bounds_and_pixels() {
             }
         }
         check(&app, limit);
+        let last = app.engine().active_tree().node_by_key(Key(457)).unwrap();
+        assert_eq!(
+            last.layout_rect.intersect(last.clip_rect).w,
+            last.layout_rect.w,
+            "last card is cropped horizontally at {width}x{height}"
+        );
         let dragged = snapshot(&app);
         let snap_step = i32::from(app.engine().model().scroll_physics.snap_step);
         for (button, expected) in [(448, 0), (449, limit), (449, limit)] {

@@ -187,7 +187,6 @@ const SCROLL_CARDS: [(&str, Rgb565); 6] = [
     ("06 Drivers", rgb8(146, 54, 96)),
 ];
 
-const CARD_WIDTH: u16 = 150;
 const CARD_GAP: u16 = 8;
 
 struct StackBuf<const N: usize> {
@@ -308,6 +307,14 @@ impl ShowcaseModel {
 
     fn tr(&self, key: TextKey) -> &'static str {
         LocaleTable::resolve(&LOCALES, self.locale, key)
+    }
+
+    fn card_height(&self) -> Length {
+        if self.compact {
+            Length::Content
+        } else {
+            Length::Fill(1)
+        }
     }
 
     fn theme(&self) -> Theme {
@@ -898,25 +905,25 @@ fn page_declarations(m: &ShowcaseModel) -> [TabPage<ShowcaseTab, ShowcaseModel>;
             ShowcaseTab::Overview,
             Key(11),
             TextRef::Static(m.tr(i18n_keys::TAB_OVERVIEW)),
-            build_tab_overview,
+            |m, t, ui| page_body(m, t, ui, Key(150), build_tab_overview),
         ),
         TabPage::new(
             ShowcaseTab::Forms,
             Key(12),
             TextRef::Static(m.tr(i18n_keys::TAB_FORMS)),
-            build_tab_forms,
+            |m, t, ui| page_body(m, t, ui, Key(228), build_tab_forms),
         ),
         TabPage::new(
             ShowcaseTab::Charts,
             Key(13),
             TextRef::Static(m.tr(i18n_keys::TAB_CHARTS)),
-            build_tab_charts,
+            |m, t, ui| page_body(m, t, ui, Key(315), build_tab_charts),
         ),
         TabPage::new(
             ShowcaseTab::Layout,
             Key(14),
             TextRef::Static(m.tr(i18n_keys::TAB_LAYOUT)),
-            build_tab_layout,
+            |m, t, ui| page_body(m, t, ui, Key(460), build_tab_layout),
         ),
         TabPage::new(
             ShowcaseTab::Motion,
@@ -1007,14 +1014,48 @@ fn build_content(
     })
 }
 
+// Both panel sizes mount the same page. Only the direction of the sections and
+// the space available for reading them change on the handheld.
+fn page_body(
+    model: &ShowcaseModel,
+    theme: Theme,
+    ui: &mut Children<'_, '_>,
+    scroll_key: Key,
+    build: fn(&ShowcaseModel, Theme, &mut Children<'_, '_>) -> Result<(), BuildError>,
+) -> Result<(), BuildError> {
+    if model.compact {
+        ui.scroll_y(
+            scroll_key,
+            NodeProps::new()
+                .size(Length::Fill(1), Length::Fill(1))
+                .gap(8)
+                .scroll_policy(theme.scroll_policy(ScrollPolicy::FREE)),
+            |body| build(model, theme, body),
+        )
+    } else {
+        build(model, theme, ui)
+    }
+}
+
+fn sections(
+    model: &ShowcaseModel,
+    ui: &mut Children<'_, '_>,
+    key: Key,
+    props: NodeProps,
+    build: impl FnOnce(&mut Children<'_, '_>) -> Result<(), BuildError>,
+) -> Result<(), BuildError> {
+    if model.compact {
+        ui.column(key, props.height(Length::Content), build)
+    } else {
+        ui.row(key, props, build)
+    }
+}
+
 fn build_tab_overview(
     model: &ShowcaseModel,
     theme: Theme,
     ui: &mut Children<'_, '_>,
 ) -> Result<(), BuildError> {
-    if model.compact {
-        return compact_overview(model, theme, ui);
-    }
     ui.custom(
         Key(100),
         NodeProps::new()
@@ -1026,7 +1067,9 @@ fn build_tab_overview(
     )?;
     ui.set_custom_rev(Key(100), model.banner_rev)?;
 
-    ui.row(
+    sections(
+        model,
+        ui,
         Key(105),
         NodeProps::new()
             .width(Length::Fill(1))
@@ -1038,7 +1081,7 @@ fn build_tab_overview(
                 Key(106),
                 NodeProps::new()
                     .width(Length::Fill(1))
-                    .height(Length::Fill(1))
+                    .height(model.card_height())
                     .padding(EdgeInsets::all(8))
                     .gap(6)
                     .align_cross(Align::Center)
@@ -1081,7 +1124,7 @@ fn build_tab_overview(
                 Key(107),
                 NodeProps::new()
                     .width(Length::Fill(1))
-                    .height(Length::Fill(1))
+                    .height(model.card_height())
                     .padding(EdgeInsets::all(8))
                     .gap(6)
                     .align_cross(Align::Center)
@@ -1111,7 +1154,7 @@ fn build_tab_overview(
                 Key(108),
                 NodeProps::new()
                     .width(Length::Fill(1))
-                    .height(Length::Fill(1))
+                    .height(model.card_height())
                     .padding(EdgeInsets::all(8))
                     .gap(8)
                     .align_cross(Align::Center)
@@ -1149,13 +1192,19 @@ fn build_tab_overview(
         Key(139),
         NodeProps::new()
             .width(Length::Fill(1))
-            .height(Length::Fill(1))
+            .height(model.card_height())
             .padding(EdgeInsets::symmetric(12, 8))
             .bg(theme.surface)
             .border(theme.border, 1)
             .radius(8),
         |box_ui| {
-            rich_text(box_ui, Key(140), Length::Fill(1), 54, theme)?;
+            rich_text(
+                box_ui,
+                Key(140),
+                Length::Fill(1),
+                if model.compact { 108 } else { 54 },
+                theme,
+            )?;
             box_ui.set_custom_rev(Key(140), model.rich_rev)
         },
     )
@@ -1166,14 +1215,13 @@ fn build_tab_forms(
     theme: Theme,
     ui: &mut Children<'_, '_>,
 ) -> Result<(), BuildError> {
-    if model.compact {
-        return compact_forms(model, theme, ui);
-    }
     let chk_theme = Theme {
         control_height: 28,
         ..theme
     };
-    ui.row(
+    sections(
+        model,
+        ui,
         Key(200),
         NodeProps::new()
             .width(Length::Fill(1))
@@ -1184,7 +1232,7 @@ fn build_tab_forms(
                 Key(205),
                 NodeProps::new()
                     .width(Length::Fill(1))
-                    .height(Length::Fill(1))
+                    .height(model.card_height())
                     .padding(EdgeInsets::all(8))
                     .gap(4)
                     .bg(theme.surface)
@@ -1250,7 +1298,7 @@ fn build_tab_forms(
                 Key(229),
                 NodeProps::new()
                     .width(Length::Fill(1))
-                    .height(Length::Fill(1))
+                    .height(model.card_height())
                     .padding(EdgeInsets::all(10))
                     .gap(8)
                     .bg(theme.surface)
@@ -1304,52 +1352,54 @@ fn build_tab_forms(
                         },
                     )?;
                     multi_line_editor(right, Key(240), Length::Fill(1), 124, &model.editor, theme)?;
-                    right.row(
-                        Key(247),
-                        NodeProps::new()
-                            .width(Length::Fill(1))
-                            .height(Length::Content)
-                            .gap(8)
-                            .justify(Justify::SpaceBetween),
-                        |tb| {
-                            small_btn(
-                                tb,
-                                Key(241),
-                                model.tr(i18n_keys::BTN_ADD_TEXT),
-                                Length::Fill(1),
-                                theme.accent,
-                                theme.background,
-                                theme,
-                            )?;
-                            small_btn(
-                                tb,
-                                Key(242),
-                                model.tr(i18n_keys::BTN_ADD_LINE),
-                                Length::Fill(1),
-                                theme.surface_alt,
-                                theme.text,
-                                theme,
-                            )?;
-                            small_btn(
-                                tb,
-                                Key(245),
-                                model.tr(i18n_keys::BTN_DEL),
-                                Length::Fill(1),
-                                theme.surface_alt,
-                                theme.text,
-                                theme,
-                            )?;
-                            small_btn(
-                                tb,
-                                Key(246),
-                                model.tr(i18n_keys::BTN_RESET),
-                                Length::Fill(1),
-                                theme.surface_alt,
-                                theme.accent,
-                                theme,
-                            )
-                        },
-                    )
+                    let buttons = |tb: &mut Children<'_, '_>| {
+                        small_btn(
+                            tb,
+                            Key(241),
+                            model.tr(i18n_keys::BTN_ADD_TEXT),
+                            Length::Fill(1),
+                            theme.accent,
+                            theme.background,
+                            theme,
+                        )?;
+                        small_btn(
+                            tb,
+                            Key(242),
+                            model.tr(i18n_keys::BTN_ADD_LINE),
+                            Length::Fill(1),
+                            theme.surface_alt,
+                            theme.text,
+                            theme,
+                        )?;
+                        small_btn(
+                            tb,
+                            Key(245),
+                            model.tr(i18n_keys::BTN_DEL),
+                            Length::Fill(1),
+                            theme.surface_alt,
+                            theme.text,
+                            theme,
+                        )?;
+                        small_btn(
+                            tb,
+                            Key(246),
+                            model.tr(i18n_keys::BTN_RESET),
+                            Length::Fill(1),
+                            theme.surface_alt,
+                            theme.accent,
+                            theme,
+                        )
+                    };
+                    let props = NodeProps::new()
+                        .width(Length::Fill(1))
+                        .height(Length::Content)
+                        .gap(8)
+                        .justify(Justify::SpaceBetween);
+                    if model.compact {
+                        right.grid(Key(247), 2, props, buttons)
+                    } else {
+                        right.row(Key(247), props, buttons)
+                    }
                 },
             )
         },
@@ -1361,10 +1411,9 @@ fn build_tab_charts(
     theme: Theme,
     ui: &mut Children<'_, '_>,
 ) -> Result<(), BuildError> {
-    if model.compact {
-        return compact_charts(model, theme, ui);
-    }
-    ui.row(
+    sections(
+        model,
+        ui,
         Key(300),
         NodeProps::new()
             .width(Length::Fill(1))
@@ -1375,7 +1424,11 @@ fn build_tab_charts(
                 Key(301),
                 NodeProps::new()
                     .width(Length::Fill(1))
-                    .height(Length::Fill(1))
+                    .height(if model.compact {
+                        Length::Px(112)
+                    } else {
+                        Length::Fill(1)
+                    })
                     .bg(theme.surface)
                     .border(theme.border, 1),
             )?;
@@ -1384,7 +1437,11 @@ fn build_tab_charts(
                 Key(302),
                 NodeProps::new()
                     .width(Length::Fill(1))
-                    .height(Length::Fill(1))
+                    .height(if model.compact {
+                        Length::Px(112)
+                    } else {
+                        Length::Fill(1)
+                    })
                     .bg(theme.surface)
                     .border(theme.border, 1),
             )?;
@@ -1392,7 +1449,9 @@ fn build_tab_charts(
         },
     )?;
 
-    ui.row(
+    sections(
+        model,
+        ui,
         Key(309),
         NodeProps::new()
             .width(Length::Fill(1))
@@ -1405,7 +1464,11 @@ fn build_tab_charts(
                 bar,
                 Key(310),
                 "Sample +1",
-                Length::Px(130),
+                if model.compact {
+                    Length::Fill(1)
+                } else {
+                    Length::Px(130)
+                },
                 theme.accent,
                 theme.background,
                 theme,
@@ -1419,7 +1482,11 @@ fn build_tab_charts(
                 bar,
                 Key(311),
                 live_lbl,
-                Length::Px(130),
+                if model.compact {
+                    Length::Fill(1)
+                } else {
+                    Length::Px(130)
+                },
                 theme.surface_alt,
                 theme.text,
                 theme,
@@ -1431,20 +1498,45 @@ fn build_tab_charts(
                     .height(Length::Content)
                     .fg(theme.text)
                     .font(FontId::Body16)
-                    .text(TextRef::Static("BarChart + MultiLineChart + DataTable")),
+                    .text(TextRef::Static(if model.compact {
+                        "Charts + DataTable"
+                    } else {
+                        "BarChart + MultiLineChart + DataTable"
+                    })),
             )
         },
     )?;
 
-    data_table(
-        ui,
-        320,
-        &TABLE_COLS,
-        &TABLE_ROWS,
-        model.selected_row,
-        28,
-        theme,
-    )
+    let table = |ui: &mut Children<'_, '_>| {
+        data_table(
+            ui,
+            320,
+            &TABLE_COLS,
+            &TABLE_ROWS,
+            model.selected_row,
+            28,
+            theme,
+        )
+    };
+    if model.compact {
+        ui.scroll_x(
+            Key(316),
+            NodeProps::new()
+                .size(Length::Fill(1), Length::Content)
+                .scroll_policy(theme.scroll_policy(ScrollPolicy::FREE)),
+            |track| {
+                track.column(
+                    Key(317),
+                    NodeProps::new()
+                        .width(Length::Px(500))
+                        .height(Length::Content),
+                    table,
+                )
+            },
+        )
+    } else {
+        table(ui)
+    }
 }
 
 fn build_tab_layout(
@@ -1452,9 +1544,6 @@ fn build_tab_layout(
     theme: Theme,
     ui: &mut Children<'_, '_>,
 ) -> Result<(), BuildError> {
-    if model.compact {
-        return compact_layout(model, theme, ui);
-    }
     let modes = [
         (401, Justify::Start, "Start"),
         (402, Justify::Center, "Center"),
@@ -1464,29 +1553,31 @@ fn build_tab_layout(
         (406, Justify::SpaceEvenly, "Evenly"),
     ];
 
-    ui.row(
-        Key(400),
-        NodeProps::new()
-            .width(Length::Fill(1))
-            .height(Length::Content)
-            .gap(6)
-            .justify(Justify::SpaceBetween),
-        |r| {
-            for (k, mode, label) in modes {
-                let sel = model.justify == mode;
-                small_btn(
-                    r,
-                    Key(k),
-                    label,
-                    Length::Fill(1),
-                    if sel { theme.accent } else { theme.surface_alt },
-                    if sel { theme.background } else { theme.text },
-                    theme,
-                )?;
-            }
-            Ok(())
-        },
-    )?;
+    let mode_buttons = |r: &mut Children<'_, '_>| {
+        for (k, mode, label) in modes {
+            let sel = model.justify == mode;
+            small_btn(
+                r,
+                Key(k),
+                label,
+                Length::Fill(1),
+                if sel { theme.accent } else { theme.surface_alt },
+                if sel { theme.background } else { theme.text },
+                theme,
+            )?;
+        }
+        Ok(())
+    };
+    let bar = NodeProps::new()
+        .width(Length::Fill(1))
+        .height(Length::Content)
+        .gap(6)
+        .justify(Justify::SpaceBetween);
+    if model.compact {
+        ui.grid(Key(400), 3, bar, mode_buttons)?;
+    } else {
+        ui.row(Key(400), bar, mode_buttons)?;
+    }
 
     ui.row(
         Key(410),
@@ -1511,7 +1602,7 @@ fn build_tab_layout(
                 r.label(
                     Key(411 + i as u32),
                     NodeProps::new()
-                        .width(Length::Px(94))
+                        .width(Length::Px(if model.compact { 32 } else { 94 }))
                         .height(Length::Px(32))
                         .bg(c)
                         .fg(rgb8(250, 252, 255))
@@ -1527,7 +1618,7 @@ fn build_tab_layout(
 
     ui.grid(
         Key(420),
-        4,
+        if model.compact { 2 } else { 4 },
         NodeProps::new()
             .width(Length::Fill(1))
             .height(Length::Content)
@@ -1540,12 +1631,16 @@ fn build_tab_layout(
                     NodeProps::new()
                         .width(Length::Fill(1))
                         .height(Length::Px(46))
-                        .padding(EdgeInsets::symmetric(8, 4))
+                        .padding(EdgeInsets::symmetric(if model.compact { 2 } else { 8 }, 4))
                         .bg(if sel { theme.accent } else { theme.surface })
                         .fg(if sel { theme.background } else { theme.text })
                         .border(theme.border, 1)
                         .radius(8)
-                        .font(FontId::Body16)
+                        .font(if model.compact {
+                            FontId::Small12
+                        } else {
+                            FontId::Body16
+                        })
                         .text(TextRef::Static(name))
                         .focusable(true)
                         .clickable(true),
@@ -1555,24 +1650,33 @@ fn build_tab_layout(
         },
     )?;
 
-    scroll_strip(theme, ui)?;
+    scroll_strip(model, theme, ui)?;
     gallery(model, theme, ui)
 }
 
-fn scroll_strip(theme: Theme, ui: &mut Children<'_, '_>) -> Result<(), BuildError> {
+fn scroll_strip(
+    model: &ShowcaseModel,
+    theme: Theme,
+    ui: &mut Children<'_, '_>,
+) -> Result<(), BuildError> {
+    let (card_width, arrow_width, gap) = if model.compact {
+        (120u16, 40, 4)
+    } else {
+        (150, 52, 8)
+    };
     ui.row(
         Key(447),
         NodeProps::new()
             .width(Length::Fill(1))
             .height(Length::Px(74))
-            .gap(8)
+            .gap(gap)
             .align_cross(Align::Center),
         |strip| {
             small_btn(
                 strip,
                 Key(448),
                 "<<",
-                Length::Px(52),
+                Length::Px(arrow_width),
                 theme.surface_alt,
                 theme.text,
                 theme,
@@ -1580,7 +1684,7 @@ fn scroll_strip(theme: Theme, ui: &mut Children<'_, '_>) -> Result<(), BuildErro
             strip.scroll_x(
                 Key(450),
                 NodeProps::new()
-                    .scroll_policy(theme.scroll_policy(ScrollPolicy::snap(CARD_WIDTH + CARD_GAP)))
+                    .scroll_policy(theme.scroll_policy(ScrollPolicy::snap(card_width + CARD_GAP)))
                     .width(Length::Fill(1))
                     .height(Length::Fill(1))
                     .padding(EdgeInsets::all(4))
@@ -1599,7 +1703,7 @@ fn scroll_strip(theme: Theme, ui: &mut Children<'_, '_>) -> Result<(), BuildErro
                                 cards.label(
                                     Key(452 + i as u32),
                                     NodeProps::new()
-                                        .width(Length::Px(CARD_WIDTH.into()))
+                                        .width(Length::Px(card_width.into()))
                                         .height(Length::Fill(1))
                                         .bg(col)
                                         .fg(rgb8(248, 250, 252))
@@ -1618,7 +1722,7 @@ fn scroll_strip(theme: Theme, ui: &mut Children<'_, '_>) -> Result<(), BuildErro
                 strip,
                 Key(449),
                 ">>",
-                Length::Px(52),
+                Length::Px(arrow_width),
                 theme.accent,
                 theme.background,
                 theme,
@@ -1977,172 +2081,4 @@ fn paint_summary_rich_text(
         TextSpan::new(") | Drivers(ST7789/GT911)"),
     ];
     paint_rich_text(&spans, props, canvas)
-}
-
-fn compact_overview(
-    model: &ShowcaseModel,
-    theme: Theme,
-    ui: &mut Children<'_, '_>,
-) -> Result<(), BuildError> {
-    ui.custom(Key(100), row_props(68).bg(theme.surface))?;
-    ui.set_custom_rev(Key(100), model.banner_rev)?;
-    gauge(ui, Key(110), model.load_gauge(), theme)?;
-    ui.row(Key(109), row_props(32), |r| {
-        for (k, label) in [(111, "-"), (112, "+")] {
-            small_btn(
-                r,
-                Key(k),
-                label,
-                Length::Fill(1),
-                theme.surface_alt,
-                theme.text,
-                theme,
-            )?;
-        }
-        Ok(())
-    })?;
-    checkbox(
-        ui,
-        Key(201),
-        TextRef::Static(model.tr(i18n_keys::CHK_LIVE)),
-        model.live_sample,
-        theme,
-    )
-}
-
-fn compact_forms(
-    model: &ShowcaseModel,
-    theme: Theme,
-    ui: &mut Children<'_, '_>,
-) -> Result<(), BuildError> {
-    ui.scroll_y(
-        Key(228),
-        NodeProps::new()
-            .scroll_policy(theme.scroll_policy(ScrollPolicy::FREE))
-            .width(Length::Fill(1))
-            .height(Length::Fill(1))
-            .accent(theme.accent),
-        |ui| {
-            checkbox(
-                ui,
-                Key(202),
-                TextRef::Static(model.tr(i18n_keys::CHK_BRIGHT)),
-                model.chk_bright,
-                theme,
-            )?;
-            radio(
-                ui,
-                Key(213),
-                TextRef::Static(model.tr(i18n_keys::RAD_FADE)),
-                model.trans_kind == TransitionKind::Fade,
-                theme,
-            )?;
-            roller(
-                ui,
-                Key(230),
-                Length::Fill(1),
-                70,
-                CLK_OPTIONS,
-                model.roller,
-                theme,
-            )?;
-            multi_line_editor(ui, Key(240), Length::Fill(1), 98, &model.editor, theme)?;
-            dropdown(
-                ui,
-                Key(220),
-                Key(221),
-                Key(222),
-                223,
-                DRIVER_OPTIONS,
-                model.dropdown,
-                theme,
-            )?;
-            small_btn(
-                ui,
-                Key(241),
-                model.tr(i18n_keys::BTN_ADD_TEXT),
-                Length::Fill(1),
-                theme.surface,
-                theme.text,
-                theme,
-            )
-        },
-    )
-}
-
-fn compact_charts(
-    model: &ShowcaseModel,
-    theme: Theme,
-    ui: &mut Children<'_, '_>,
-) -> Result<(), BuildError> {
-    for k in [301, 302] {
-        ui.custom(Key(k), row_props(112).bg(theme.surface))?;
-        ui.set_custom_rev(Key(k), model.chart_rev)?;
-    }
-    small_btn(
-        ui,
-        Key(310),
-        "Sample",
-        Length::Fill(1),
-        theme.surface,
-        theme.text,
-        theme,
-    )?;
-    let cols = [
-        TableColumn::new("Module", Length::Fill(2), TextAlign::Start),
-        TableColumn::new("State", Length::Fill(1), TextAlign::End),
-    ];
-    let rows = TABLE_ROWS.map(|row| [row[0], row[3]]);
-    data_table(
-        ui,
-        320,
-        &cols,
-        &[&rows[0], &rows[1], &rows[2]],
-        model.selected_row,
-        27,
-        theme,
-    )
-}
-
-fn compact_layout(
-    model: &ShowcaseModel,
-    theme: Theme,
-    ui: &mut Children<'_, '_>,
-) -> Result<(), BuildError> {
-    ui.grid(
-        Key(420),
-        2,
-        NodeProps::new().width(Length::Fill(1)).gap(4),
-        |g| {
-            for (i, label) in [
-                "Grid",
-                "Rows",
-                "Images",
-                "Forms",
-                "Locale",
-                "Input",
-                "Paint",
-                "Simulator",
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                small_btn(
-                    g,
-                    Key(421 + i as u32),
-                    label,
-                    Length::Fill(1),
-                    if model.grid_selected == i {
-                        theme.accent
-                    } else {
-                        theme.surface
-                    },
-                    theme.text,
-                    theme,
-                )?;
-            }
-            Ok(())
-        },
-    )?;
-    scroll_strip(theme, ui)
 }

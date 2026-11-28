@@ -50,9 +50,9 @@ python device-ui/board/build.py --profile basic --offline --out target/starter
 
 | 产品 | 节点 | 深度 | 文字槽 |
 |---|---:|---:|---:|
-| S3 Widget Demo，240 × 536 | 47 | 9 | 36 |
+| S3 Widget Demo，240 × 536 | 57 | 10 | 41 |
 | H743 Widget Demo，800 × 480 | 59 | 9 | 43 |
-| 增强桌面 Widget Demo，含 Studio | 66 | 9 | 43 |
+| 增强桌面 Widget Demo，含 Studio | 66 | 10 | 43 |
 | Cortex-M 终端 | 44 | 8 | 23 |
 | S3 告警 | 29 | 4 | 24 |
 

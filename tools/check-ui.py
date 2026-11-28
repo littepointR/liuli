@@ -45,6 +45,7 @@ def check(screenshots):
     run(*demo, "--size", "240x536", "--headless")
     run(*demo, "--showcase", *landscape)
     for size, trace in (("800x480", "h743-widgets.trace"), ("240x536", "portrait-widgets.trace"),
+                        ("240x536", "portrait-catalog.trace"),
                         ("800x480", "h743-strip-fling.trace"), ("800x480", "h743-composition.trace"),
                         ("800x480", "h743-focus-shapes.trace")):
         run(*demo, "--size", size, "--replay", str(catalog / "tests/fixtures" / trace))
